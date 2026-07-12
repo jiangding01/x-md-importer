@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "markflow-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["-y", "http-server", ".output/chrome-mv3", "-p", "8791", "-c-1", "--silent"],
+      "port": 8791
+    }
+  ]
+}

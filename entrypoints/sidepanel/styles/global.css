@@ -1,0 +1,196 @@
+/* ── 基础 token 兜底（极简·浅色，首帧前的回退值；JS 会在渲染前按偏好覆盖）── */
+:root {
+  --deskBg: radial-gradient(circle, rgba(25, 27, 31, 0.055) 1px, transparent 1px) 0 0 / 22px 22px, #ece9e2;
+  --p: #fbfaf9;
+  --pBorder: rgba(25, 27, 31, 0.12);
+  --p2: #f2f0eb;
+  --ink: #191b1f;
+  --ink2: #70767e;
+  --ink3: #a6abb2;
+  --line: rgba(25, 27, 31, 0.1);
+  --lsoft: rgba(25, 27, 31, 0.055);
+  --acc: #1d9bf0;
+  --accInk: color-mix(in oklab, #1d9bf0, black 16%);
+  --accSoft: color-mix(in oklab, #1d9bf0, transparent 88%);
+  --ok: #1b9a50;
+  --warn: #b07e22;
+  --dgr: #c95454;
+  --fUI: 'Noto Sans SC', -apple-system, 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --fDisp: 'Space Grotesk', 'Noto Sans SC', -apple-system, 'PingFang SC', system-ui, sans-serif;
+  --fMono: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+  --rEl: 8px;
+  --blur: blur(0px);
+  --btnBg: #191b1f;
+  --btnFg: #fbfaf9;
+  --btnR: 99px;
+  --btnShadow: none;
+  --tabBar: #191b1f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--deskBg);
+}
+
+/* 侧边栏即整个窗口：#root 为面板本体（玻璃主题半透明 + blur 透出 body 的渐变）。 */
+#root {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  color: var(--ink);
+  background: var(--p);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  font-family: var(--fUI);
+  overflow: hidden;
+  transition: background 0.35s;
+}
+
+a {
+  color: var(--accInk);
+}
+a:hover {
+  color: var(--acc);
+}
+
+textarea::placeholder,
+input::placeholder {
+  color: var(--ink3);
+}
+
+::selection {
+  background: var(--accSoft);
+}
+
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+select,
+button,
+input,
+textarea {
+  outline: none;
+}
+
+/* ── 交互原语（inline style 无法处理 :hover，统一在此挂 hover 态）── */
+.mf-btn {
+  appearance: none;
+  -webkit-appearance: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+.mf-btn:disabled {
+  cursor: default;
+}
+/* icon / ghost 按钮：hover 变 ink 前景 + p2 底 */
+.mf-hover-soft:hover {
+  color: var(--ink);
+  background: var(--p2);
+}
+/* tab / 纯文字：hover 仅变 ink 前景 */
+.mf-hover-ink:hover {
+  color: var(--ink);
+}
+/* 导入 / accent 描边按钮：hover 变 accSoft 底 + acc 描边 */
+.mf-hover-acc:hover {
+  background: var(--accSoft);
+  border-color: var(--acc);
+}
+/* 危险描边按钮：hover 变 dgr 描边 */
+.mf-hover-danger:hover {
+  border-color: var(--dgr);
+}
+/* 危险文字按钮：hover 变 dgr 前景 */
+.mf-hover-danger-text:hover {
+  color: var(--dgr);
+}
+/* 记录行：hover 变 p2 底 */
+.mf-hist-row:hover {
+  background: var(--p2);
+}
+
+/* ── 关键帧（移植自设计稿）── */
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 14px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+@keyframes drawCheck {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@keyframes blinkDot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+@keyframes burst {
+  0% {
+    transform: translate(0, 0) scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--dx), var(--dy)) scale(0.3);
+    opacity: 0;
+  }
+}
+@keyframes barSlide {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 24px 0;
+  }
+}
