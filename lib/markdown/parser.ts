@@ -34,6 +34,12 @@ const RE_DIVIDER = /^(-{3,}|\*{3,})$/;
 const RE_TWEET = /^https?:\/\/(?:www\.)?(?:x|twitter)\.com\/[^/]+\/status\/(\d+)\/?$/;
 /** 独占一行的图片 `![alt](src)`。src 用贪婪 `.+` 取到最后一个 `)`,容忍 URL 内含括号。 */
 const RE_IMAGE_LINE = /^!\[([^\]]*)\]\((.+)\)$/;
+/**
+ * 独占一行的「带链接图片」`[![alt](imgUrl)](linkUrl)`(推文转 md 常见:图片外套一层
+ * 指向媒体页的链接)。取内层图片 URL 上传,外层链接丢弃(X 图片不能再套超链)。
+ * 组1=alt、组2=图片URL、组3=链接URL(仅用于剥离)。
+ */
+const RE_LINKED_IMAGE_LINE = /^\[!\[([^\]]*)\]\((.+)\)\]\((.+)\)$/;
 const RE_HEADING = /^(#{1,6})\s+(.*)$/;
 const RE_BLOCKQUOTE = /^>/;
 const RE_UL = /^[-*+]\s+(.*)$/;
@@ -114,11 +120,21 @@ export function parseMarkdown(md: string): ImportBlock[] {
 
     // 4. 独占一行的图片 → ImageBlock(字节由 content 准备,injector 走 onFilesAdded 上传)。
     //    行内图片(段落中的 `![]()`)不在此列,仍按普通文本保留(M1 边界)。
-    const imageLine = line.trim().match(RE_IMAGE_LINE);
+    //    先匹配「带链接图片」`[![](img)](link)`(以 `[!` 开头),再匹配裸 `![](img)`(以 `![` 开头)。
+    const trimmed = line.trim();
+    const linkedImage = trimmed.match(RE_LINKED_IMAGE_LINE);
+    if (linkedImage) {
+      const alt = linkedImage[1] ?? '';
+      const src = (linkedImage[2] ?? '').trim(); // 内层图片 URL;外层链接(组3)丢弃
+      blocks.push({ kind: 'image', source: src, alt, fallbackText: trimmed });
+      i += 1;
+      continue;
+    }
+    const imageLine = trimmed.match(RE_IMAGE_LINE);
     if (imageLine) {
       const alt = imageLine[1] ?? '';
       const src = (imageLine[2] ?? '').trim();
-      blocks.push({ kind: 'image', source: src, alt, fallbackText: line.trim() });
+      blocks.push({ kind: 'image', source: src, alt, fallbackText: trimmed });
       i += 1;
       continue;
     }
@@ -213,6 +229,7 @@ function isBlockBoundary(line: string): boolean {
   if (RE_DIVIDER.test(line)) return true;
   if (RE_TWEET.test(line)) return true;
   if (RE_IMAGE_LINE.test(line.trim())) return true;
+  if (RE_LINKED_IMAGE_LINE.test(line.trim())) return true;
   if (RE_HEADING.test(line)) return true;
   if (RE_BLOCKQUOTE.test(line)) return true;
   if (RE_UL.test(line)) return true;
