@@ -26,21 +26,45 @@ function stripQuotes(raw: string): string {
   return v;
 }
 
-/** 从文首 frontmatter 块解析 title;无块 / 无命中 / 值为空 → null。 */
-function fromFrontmatter(md: string): string | null {
-  // 必须以 `---` 独占行开头(允许前导 BOM,不允许前导空行)。
+/** 取文首 frontmatter 块的原文(独占行 `---` 包裹);无则 null。 */
+function frontmatterBody(md: string): string | null {
   const m = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(md);
-  if (!m) return null;
-  const body = m[1] ?? '';
+  return m ? (m[1] ?? '') : null;
+}
+
+/** 在 frontmatter 里按 key 列表取第一个命中的值(去引号);无 / 空 → null。 */
+function frontmatterValue(md: string, keys: readonly string[]): string | null {
+  const body = frontmatterBody(md);
+  if (body === null) return null;
+  const keyRe = new RegExp(`^(${keys.join('|')})[ \\t]*:(.*)$`);
   for (const line of body.split(/\r?\n/)) {
-    // 简易 key: value —— 仅认 title / Title / 标题,不解析嵌套结构。
-    const kv = /^(title|Title|标题)[ \t]*:(.*)$/.exec(line);
+    const kv = keyRe.exec(line);
     if (kv) {
       const value = stripQuotes(kv[2] ?? '');
       return value.length > 0 ? value : null;
     }
   }
   return null;
+}
+
+/** 从文首 frontmatter 块解析 title;无块 / 无命中 / 值为空 → null。 */
+function fromFrontmatter(md: string): string | null {
+  return frontmatterValue(md, ['title', 'Title', '标题']);
+}
+
+/**
+ * 从文首 frontmatter 解析封面 `cover`;支持 Obsidian 的 `![[x]]` / `![](x)` 包裹写法(剥壳)。
+ * 无 → null。仅解析 frontmatter,正文首图由上层用 images() 兜底。
+ */
+export function extractCover(md: string): string | null {
+  const raw = frontmatterValue(md, ['cover', 'Cover', '封面']);
+  if (raw === null) return null;
+  // 兼容 ![[assets/x.png]] / ![](assets/x.png) 包裹
+  const wiki = /^!\[\[(.+?)\]\]$/.exec(raw);
+  if (wiki) return (wiki[1] ?? '').trim();
+  const md2 = /^!\[[^\]]*\]\((.+)\)$/.exec(raw);
+  if (md2) return (md2[1] ?? '').trim();
+  return raw;
 }
 
 /**

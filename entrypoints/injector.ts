@@ -532,6 +532,66 @@ export default defineUnlistedScript(() => {
   };
 
   /**
+   * 在「Edit media」裁剪弹窗里找可见的 Apply/应用/完成 按钮(优先弹窗容器内,避免误点正文的按钮)。
+   * X 设封面后会弹此裁剪弹窗,必须点 Apply 才真正落地。
+   */
+  const findApplyButton = (): HTMLElement | null => {
+    const labels = ['apply', 'save', 'done', '应用', '完成', '保存', '确定'];
+    const modals = Array.from(
+      document.querySelectorAll<HTMLElement>('[aria-modal="true"], [role="dialog"]'),
+    );
+    const roots: Array<Document | HTMLElement> = modals.length ? modals : [document];
+    for (const root of roots) {
+      for (const b of Array.from(root.querySelectorAll<HTMLElement>('[role="button"], button'))) {
+        const rect = b.getBoundingClientRect();
+        if (rect.width < 4 || rect.height < 4) continue;
+        const text = (b.textContent || b.getAttribute('aria-label') || '').trim().toLowerCase();
+        if (labels.includes(text)) return b;
+      }
+    }
+    return null;
+  };
+
+  /**
+   * 设置文章封面:把 File 塞进 X 的封面 fileInput → X 弹出「Edit media」裁剪弹窗 → 自动点 Apply 落地。
+   * 封面输入的 accept 只含图片、不含 video(正文媒体那个含 gif/mp4),据此筛选;**不做通用兜底**,
+   * 找不到确证的封面输入宁可返回 false 也不误伤正文。File 由 content 经 postMessage 送到本 world。
+   * 返回 true 表示已点 Apply(真机确认);弹窗未出现(未能落地)返回 false,不谎报成功。
+   */
+  const setCoverImage = async (file: File): Promise<boolean> => {
+    const inputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="file"]'));
+    const coverInput =
+      inputs.find((inp) => {
+        const accept = (inp.getAttribute('accept') || '').toLowerCase();
+        return accept.includes('image') && !accept.includes('video');
+      }) ?? null;
+    if (!coverInput) return false;
+    try {
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      coverInput.files = dt.files;
+      coverInput.dispatchEvent(new Event('input', { bubbles: true }));
+      coverInput.dispatchEvent(new Event('change', { bubbles: true }));
+      // X 会弹出「Edit media」裁剪弹窗,必须点 Apply 才真正设为封面。轮询等 Apply 出现并点击。
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline) {
+        await delay(200);
+        const apply = findApplyButton();
+        if (apply) {
+          apply.click();
+          await delay(200);
+          return true;
+        }
+      }
+      // 8s 内没等到 Apply 弹窗:未能落地,如实返回 false(不谎报成功)。
+      return false;
+    } catch (err) {
+      console.warn('[MarkFlow] 设置封面失败', err);
+      return false;
+    }
+  };
+
+  /**
    * 核心写入:借页面构造器逐块构造 blockMap 并经 X 自己的 onChange 提交。
    * 全程 try/catch,异常带「失败环节前缀」(stage)返回,便于诊断定位。
    */
@@ -541,6 +601,8 @@ export default defineUnlistedScript(() => {
     // 默认 []:防御旧版 content(未带 images 字段,如页面未刷新仍跑旧 content script)——
     // 缺失时图片一律降级为原文,绝不能因 `images[i]` 读 undefined 而崩(正文已提交却报失败)。
     images: PreparedImage[] = [],
+    // 封面 File(可选);默认 null 防御旧 content。
+    cover: File | null = null,
   ): Promise<ImportResult> => {
     if (importInFlight) return { ok: false, error: 'import already in progress' };
     importInFlight = true;
@@ -763,8 +825,16 @@ export default defineUnlistedScript(() => {
       // 兜底清扫:任何残留 marker(中断/异常时)一并清掉,正文不留脏占位符。
       if (imageMarkers.length) sweepMarkers(markerPrefix);
 
-      console.info('[MarkFlow] 写入成功', { blockCount: blocks.length, effectiveMode, imageOk, imageFail });
-      return { ok: true, blockCount: blocks.length, effectiveMode, imageOk, imageFail };
+      // --- 封面(如有):把 File 塞进封面 fileInput,X 自行上传;失败不影响正文成功结论 ---
+      let coverSet = false;
+      if (cover) {
+        stage = 'cover';
+        coverSet = await setCoverImage(cover);
+        console.info('[MarkFlow] 封面设置', { coverSet });
+      }
+
+      console.info('[MarkFlow] 写入成功', { blockCount: blocks.length, effectiveMode, imageOk, imageFail, coverSet });
+      return { ok: true, blockCount: blocks.length, effectiveMode, imageOk, imageFail, coverSet };
     } catch (err) {
       // 打完整 err 对象(含堆栈),便于定位崩在 Draft 内部的哪一步
       console.error(`[MarkFlow] 写入异常 @${stage}`, err);
@@ -907,7 +977,7 @@ export default defineUnlistedScript(() => {
       post({ source: MAIN_SOURCE, kind: 'probe-result', nonce: msg.nonce, id: msg.id, result });
     } else if (msg.kind === 'import') {
       // 执行写入(async:取样轮询 / 图片上传都要 await),回显 nonce/id
-      const result = await runImport(msg.blocks, msg.mode, msg.images);
+      const result = await runImport(msg.blocks, msg.mode, msg.images, msg.cover);
       post({ source: MAIN_SOURCE, kind: 'import-result', nonce: msg.nonce, id: msg.id, result });
     } else if (msg.kind === 'set-title') {
       // 设置标题(仅 UI 通道),回显 nonce/id
