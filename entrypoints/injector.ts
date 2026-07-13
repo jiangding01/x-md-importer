@@ -538,7 +538,9 @@ export default defineUnlistedScript(() => {
   const runImport = async (
     blocks: ImportBlock[],
     mode: ImportMode,
-    images: PreparedImage[],
+    // 默认 []:防御旧版 content(未带 images 字段,如页面未刷新仍跑旧 content script)——
+    // 缺失时图片一律降级为原文,绝不能因 `images[i]` 读 undefined 而崩(正文已提交却报失败)。
+    images: PreparedImage[] = [],
   ): Promise<ImportResult> => {
     if (importInFlight) return { ok: false, error: 'import already in progress' };
     importInFlight = true;

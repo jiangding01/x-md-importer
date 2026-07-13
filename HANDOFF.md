@@ -166,7 +166,7 @@ pnpm build              # → .output/chrome-mv3
   6. 已知未做（真机验证后按 xposter §3.3 精修）：多图 relocate 的空分裂块清理、marker 被 X 插入破坏时的 fallback 顺序配对。
 - **标题打分（setTitle）**：关键词（title/标题）是**硬门槛**，否则会误命中正文大 contenteditable，overwrite 时清空正文。别放宽。
 - **frontmatter**：parser 跳过与 `extractTitle` 抽取的边界判定必须一致（都用**顶格 `^---`**）；H1 抽取/移除都要**跳过代码块**。
-- **content script 更新不自动生效**：改 content/injector 后必须刷新 X 页面；症状是「三灯绿但写入报未连接」= 页面跑的是旧 content script。
+- **content script 更新不自动生效**：改 content/injector 后必须刷新 X 页面；症状①「三灯绿但写入报未连接」= 页面跑旧 content；症状②「正文写入了却报 `images undefined` 崩溃 / 图片不上传」= 新 injector + 旧 content（旧 content 注入新 injector 但自己不带 images 字段）。injector 已对 images 默认 `[]` 防御（崩溃→降级），但**真正上传图片必须刷新页面**加载新 content。
 - **pnpm 11 构建脚本**：esbuild 需在 `pnpm-workspace.yaml` `allowBuilds` 放行。
 - **CJK 字体**：只打包拉丁字体，中文用系统栈。
 - **`.output`/`.wxt`/`node_modules` 不提交**（已 gitignore）。
