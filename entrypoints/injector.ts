@@ -532,15 +532,34 @@ export default defineUnlistedScript(() => {
   };
 
   /**
-   * 设置文章封面:把 File 塞进 X 的封面 fileInput,派发 change 触发 X 自己的封面上传。
-   * 封面输入的 accept 只含图片、不含 video(正文媒体那个含 gif/mp4),据此从多个 file input 中筛选。
-   * File 由 content 经 postMessage 送到 MAIN world,与页面同世界,赋给 input.files 稳妥。
+   * 在「Edit media」裁剪弹窗里找可见的 Apply/应用/完成 按钮(优先弹窗容器内,避免误点正文的按钮)。
+   * X 设封面后会弹此裁剪弹窗,必须点 Apply 才真正落地。
    */
-  const setCoverImage = (file: File): boolean => {
+  const findApplyButton = (): HTMLElement | null => {
+    const labels = ['apply', 'save', 'done', '应用', '完成', '保存', '确定'];
+    const modals = Array.from(
+      document.querySelectorAll<HTMLElement>('[aria-modal="true"], [role="dialog"]'),
+    );
+    const roots: Array<Document | HTMLElement> = modals.length ? modals : [document];
+    for (const root of roots) {
+      for (const b of Array.from(root.querySelectorAll<HTMLElement>('[role="button"], button'))) {
+        const rect = b.getBoundingClientRect();
+        if (rect.width < 4 || rect.height < 4) continue;
+        const text = (b.textContent || b.getAttribute('aria-label') || '').trim().toLowerCase();
+        if (labels.includes(text)) return b;
+      }
+    }
+    return null;
+  };
+
+  /**
+   * 设置文章封面:把 File 塞进 X 的封面 fileInput → X 弹出「Edit media」裁剪弹窗 → 自动点 Apply 落地。
+   * 封面输入的 accept 只含图片、不含 video(正文媒体那个含 gif/mp4),据此筛选;**不做通用兜底**,
+   * 找不到确证的封面输入宁可返回 false 也不误伤正文。File 由 content 经 postMessage 送到本 world。
+   * 返回 true 表示已点 Apply(真机确认);弹窗未出现(未能落地)返回 false,不谎报成功。
+   */
+  const setCoverImage = async (file: File): Promise<boolean> => {
     const inputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="file"]'));
-    // 只认「accept 含 image 且不含 video」的封面输入;**不做通用 fileInput 兜底**——
-    // 那可能误抓正文媒体输入(含 video/gif),把封面图当正文媒体插入(错误副作用)。
-    // 找不到确证的封面输入宁可返回 false(不设封面),也不误伤正文。
     const coverInput =
       inputs.find((inp) => {
         const accept = (inp.getAttribute('accept') || '').toLowerCase();
@@ -553,7 +572,19 @@ export default defineUnlistedScript(() => {
       coverInput.files = dt.files;
       coverInput.dispatchEvent(new Event('input', { bubbles: true }));
       coverInput.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
+      // X 会弹出「Edit media」裁剪弹窗,必须点 Apply 才真正设为封面。轮询等 Apply 出现并点击。
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline) {
+        await delay(200);
+        const apply = findApplyButton();
+        if (apply) {
+          apply.click();
+          await delay(200);
+          return true;
+        }
+      }
+      // 8s 内没等到 Apply 弹窗:未能落地,如实返回 false(不谎报成功)。
+      return false;
     } catch (err) {
       console.warn('[MarkFlow] 设置封面失败', err);
       return false;
@@ -798,7 +829,7 @@ export default defineUnlistedScript(() => {
       let coverSet = false;
       if (cover) {
         stage = 'cover';
-        coverSet = setCoverImage(cover);
+        coverSet = await setCoverImage(cover);
         console.info('[MarkFlow] 封面设置', { coverSet });
       }
 
