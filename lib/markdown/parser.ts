@@ -50,6 +50,18 @@ export function parseMarkdown(md: string): ImportBlock[] {
   const blocks: ImportBlock[] = [];
   let i = 0;
 
+  // 跳过文首 YAML frontmatter(--- … ---):仅当**第一行即为 ---** 且后续存在闭合 --- 时触发,
+  // 从闭合行之后开始正文解析。frontmatter 的 title/cover 由 lib/markdown/frontmatter.ts 单独抽取,
+  // 不进正文——否则会被误当「分割线 + 文本 + 分割线」写入(正文中间的 --- 分割线不受影响)。
+  if ((lines[0] ?? '').trim() === '---') {
+    for (let j = 1; j < lines.length; j += 1) {
+      if ((lines[j] ?? '').trim() === '---') {
+        i = j + 1;
+        break;
+      }
+    }
+  }
+
   while (i < lines.length) {
     const line = lines[i] ?? '';
 

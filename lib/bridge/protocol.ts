@@ -30,6 +30,11 @@ export interface ProbeResult {
   hasOnFilesAdded: boolean;
   /** 从 URL 提取到的文章草稿 id(未在编辑页则为 null) */
   articleId: string | null;
+  /**
+   * 编辑器正文是否已有文本(blockMap 任一块 text 非空)。
+   * 供「已有内容时询问追加/覆盖」使用;hasDraftNode 为 false 时恒为 false。
+   */
+  hasContent: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -87,23 +92,43 @@ export type ImportBlock = TextBlock | AtomicBlock;
 /** 写入模式:replace 整体替换编辑器内容;append 在现有内容之后追加。 */
 export type ImportMode = 'replace' | 'append';
 
-/** 注入引擎的写入结果。error 为面向诊断的英文短语(UI 层负责本地化归类)。 */
+/**
+ * 注入引擎的写入结果。error 为面向诊断的英文短语(UI 层负责本地化归类)。
+ * effectiveMode 回传实际生效的写入模式——引擎在取样失败/内容为空时会把 append
+ * 降级为 replace,UI 依此感知「用户所选」与「实际执行」的偏差,不再静默。
+ */
 export type ImportResult =
-  | { ok: true; blockCount: number }
+  | { ok: true; blockCount: number; effectiveMode: ImportMode }
+  | { ok: false; error: string };
+
+/**
+ * 标题冲突策略(编辑器已有非空标题时):overwrite 强制覆盖;keep 保留原标题、跳过设置。
+ * 设置页的 'ask' 由 UI 层先询问用户,再转换为这两者之一下发。
+ */
+export type TitleConflict = 'overwrite' | 'keep';
+
+/**
+ * 标题设置结果。applied=false 表示因 keep 策略遇到已有标题而跳过(非错误)。
+ * error 为诊断用英文短语(如 'title field not found')。
+ */
+export type SetTitleResult =
+  | { ok: true; applied: boolean }
   | { ok: false; error: string };
 
 /** ISOLATED → MAIN 的消息。 */
 export type IsoMessage =
   | { source: IsoSource; kind: 'hello'; nonce: string }
   | { source: IsoSource; kind: 'probe'; nonce: string; id: string }
-  | { source: IsoSource; kind: 'import'; nonce: string; id: string; blocks: ImportBlock[]; mode: ImportMode };
+  | { source: IsoSource; kind: 'import'; nonce: string; id: string; blocks: ImportBlock[]; mode: ImportMode }
+  | { source: IsoSource; kind: 'set-title'; nonce: string; id: string; title: string; conflict: TitleConflict };
 
 /** MAIN → ISOLATED 的消息。 */
 export type MainMessage =
   | { source: MainSource; kind: 'ready' }
   | { source: MainSource; kind: 'hello-ack'; nonce: string }
   | { source: MainSource; kind: 'probe-result'; nonce: string; id: string; result: ProbeResult }
-  | { source: MainSource; kind: 'import-result'; nonce: string; id: string; result: ImportResult };
+  | { source: MainSource; kind: 'import-result'; nonce: string; id: string; result: ImportResult }
+  | { source: MainSource; kind: 'set-title-result'; nonce: string; id: string; result: SetTitleResult };
 
 /**
  * sidepanel ↔ content 的 chrome.runtime 消息(第二条通道,区别于上面 window.postMessage
@@ -114,11 +139,13 @@ export type MainMessage =
 /** 判别常量(收发两端共享,避免裸字符串散落)。 */
 export const PROBE_REQUEST_TYPE = 'markflow:probe' as const;
 export const IMPORT_REQUEST_TYPE = 'markflow:import' as const;
+export const SET_TITLE_REQUEST_TYPE = 'markflow:set-title' as const;
 
 /** sidepanel → content 的请求。 */
 export type RuntimeRequest =
   | { type: typeof PROBE_REQUEST_TYPE }
-  | { type: typeof IMPORT_REQUEST_TYPE; blocks: ImportBlock[]; mode: ImportMode };
+  | { type: typeof IMPORT_REQUEST_TYPE; blocks: ImportBlock[]; mode: ImportMode }
+  | { type: typeof SET_TITLE_REQUEST_TYPE; title: string; conflict: TitleConflict };
 
 /** content → sidepanel 的探针应答:成功回结果,失败回明确的错误码。 */
 export type ProbeResponse =
@@ -130,7 +157,12 @@ export type ProbeResponse =
  * 通道层错误(未握手/超时)与引擎错误共用 ok:false 形状,error 短语区分。
  */
 export type ImportResponse =
-  | { ok: true; blockCount: number }
+  | { ok: true; blockCount: number; effectiveMode: ImportMode }
+  | { ok: false; error: 'no-injector' | 'timeout' | string };
+
+/** content → sidepanel 的标题设置应答:透传 SetTitleResult,叠加通道层错误。 */
+export type SetTitleResponse =
+  | { ok: true; applied: boolean }
   | { ok: false; error: 'no-injector' | 'timeout' | string };
 
 /** 运行时守卫:窄化「探针请求」——只认判别字段 `type` 匹配的对象。 */
@@ -150,6 +182,17 @@ export function isImportRequest(
     typeof msg === 'object' &&
     msg !== null &&
     (msg as { type?: unknown }).type === IMPORT_REQUEST_TYPE
+  );
+}
+
+/** 运行时守卫:窄化「标题设置请求」。 */
+export function isSetTitleRequest(
+  msg: unknown,
+): msg is { type: typeof SET_TITLE_REQUEST_TYPE; title: string; conflict: TitleConflict } {
+  return (
+    typeof msg === 'object' &&
+    msg !== null &&
+    (msg as { type?: unknown }).type === SET_TITLE_REQUEST_TYPE
   );
 }
 

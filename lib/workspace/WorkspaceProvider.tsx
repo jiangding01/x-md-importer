@@ -10,9 +10,10 @@ import {
 import { useI18n } from '@/lib/i18n/useI18n';
 import { useSettings } from '@/lib/settings/SettingsProvider';
 import { useConnection } from '@/lib/bridge/useConnection';
-import { importToXTab } from '@/lib/bridge/importArticle';
-import type { ImportMode } from '@/lib/bridge/protocol';
+import { importToXTab, setTitleOnXTab } from '@/lib/bridge/importArticle';
+import type { ImportMode, SetTitleResponse, TitleConflict } from '@/lib/bridge/protocol';
 import { capability, firstTitle } from '@/lib/markdown/capability';
+import { extractTitle } from '@/lib/markdown/frontmatter';
 import { parseMarkdown } from '@/lib/markdown/parser';
 import { sampleEn, sampleZh } from '@/lib/markdown/sample';
 import { saveDraft } from '@/lib/storage/draftStore';
@@ -94,6 +95,14 @@ function importErrorText(error: string, t: Dict): string {
   return `${t.errWriteFail}: ${error}`;
 }
 
+/** 把标题设置结果归类为可读文案。applied:false 属正常(keep 命中已有标题)。 */
+function titleResultText(res: SetTitleResponse, t: Dict): string {
+  if (res.ok) return res.applied ? t.titleSet : t.titleKept;
+  // 标题框未找到单列一类;其余归「标题设置失败」并附原始短语,便于诊断。
+  if (res.error.includes('not found')) return t.titleFieldMissing;
+  return `${t.titleFail}: ${res.error}`;
+}
+
 interface WorkspaceProviderProps {
   initialMd?: string;
   initialHistory?: HistoryItem[];
@@ -107,7 +116,8 @@ export function WorkspaceProvider({
 }: WorkspaceProviderProps) {
   const { t, lang } = useI18n();
   const { opts } = useSettings();
-  const { connected } = useConnection();
+  // review #6:editorHasContent 改为真实探针派生值(hasContent),不再是写死的 mock。
+  const { connected, hasContent: editorHasContent } = useConnection();
   const en = lang === 'en';
 
   const [tab, setTab] = useState<Tab>('draft');
@@ -128,7 +138,6 @@ export function WorkspaceProvider({
   const [celebrating, setCelebrating] = useState(false);
   const [histQ, setHistQ] = useState('');
   const [history, setHistory] = useState<HistoryItem[]>(initialHistory);
-  const [editorHasContent, setEditorHasContent] = useState(true);
   const [histClearArm, setHistClearArm] = useState(false);
 
   const timers = useRef<Timers>({});
@@ -228,7 +237,8 @@ export function WorkspaceProvider({
   }, []);
 
   // ── 导入 ──
-  const finishImport = useCallback(() => {
+  // toastMsg:成功收尾提示,默认「已写入」;标题/空替换场景由 startImport 组合后传入。
+  const finishImport = useCallback((toastMsg: string = t.writtenToast) => {
     const cap = capability(md, en);
     const ok = cap.filter((c) => c.badge !== 'warn').reduce((a, c) => a + c.count, 0);
     const deg = cap.filter((c) => c.badge === 'warn').reduce((a, c) => a + c.count, 0);
@@ -244,7 +254,6 @@ export function WorkspaceProvider({
     };
 
     setImporting(false);
-    setEditorHasContent(true);
     setReportVisible(opts.autoReport !== 'never');
 
     const limit = opts.histLimit === 'inf' ? Infinity : Number(opts.histLimit);
@@ -255,7 +264,7 @@ export function WorkspaceProvider({
       setCelebrating(true);
       timers.current.celebrate = setTimeout(() => setCelebrating(false), 950);
     }
-    showToast(t.writtenToast);
+    showToast(toastMsg);
     playSound();
   }, [md, en, opts.autoReport, opts.histLimit, opts.confetti, history, commitHistory, showToast, t.writtenToast, playSound]);
 
@@ -271,14 +280,33 @@ export function WorkspaceProvider({
         // 解析中(同步、瞬时)
         setStageLabel(t.stParse);
         setStagePct(40);
+        // 标题抽取放在解析前:既决定后续是否设置标题,也决定要不要移除正文首个 H1。
+        // 关闭「设置文章标题」时完全跳过,连抽取都不做。
+        const extracted = opts.setTitle ? extractTitle(md) : null;
         const blocks = parseMarkdown(md);
+        // h1Handle:标题来自 H1 且设为 remove → 移除 blocks 中首个 header-one,避免标题在正文重复。
+        // 必须在 parseMarkdown 之后、importToXTab 之前处理。
+        if (extracted?.source === 'h1' && opts.h1Handle === 'remove') {
+          const idx = blocks.findIndex((b) => b.kind === 'text' && b.type === 'header-one');
+          if (idx !== -1) blocks.splice(idx, 1);
+        }
         // 写入中(等待 content → injector 直写)
         setStageLabel(t.stBody);
         setStagePct(75);
         const res = await importToXTab(blocks, mode);
         if (res.ok) {
           setStagePct(100);
-          finishImport();
+          // #7:所选 append 但引擎实际降级为 replace(编辑器为空)→ 明确提示,不静默。
+          let toastMsg = mode === 'append' && res.effectiveMode === 'replace' ? t.emptyReplaced : t.writtenToast;
+          // 标题流程:正文已成功,再设置标题。标题失败不推翻正文成功结论(部分成功)。
+          if (extracted) {
+            // conflict 映射:'keep'→keep;其余('ask'/'overwrite')→overwrite。
+            // TODO(M2+): 标题 ask 独立询问 —— 目前 'ask' 暂按 overwrite 处理,后续补独立弹窗。
+            const conflict: TitleConflict = opts.titleConflict === 'keep' ? 'keep' : 'overwrite';
+            const titleRes = await setTitleOnXTab(extracted.title, conflict);
+            toastMsg = `${toastMsg} · ${titleResultText(titleRes, t)}`;
+          }
+          finishImport(toastMsg);
         } else {
           // 失败:不写成功记录,以可读中文/英文提示错误(复位在 finally 统一处理)。
           showToast(importErrorText(res.error, t));
@@ -292,7 +320,7 @@ export function WorkspaceProvider({
         setImporting(false);
       }
     },
-    [md, t, finishImport, showToast],
+    [md, t, opts.setTitle, opts.h1Handle, opts.titleConflict, finishImport, showToast],
   );
 
   const writeX = useCallback(() => {

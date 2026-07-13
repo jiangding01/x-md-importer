@@ -15,6 +15,7 @@ import {
   type ProbeResult,
   type RuntimeRequest,
 } from './protocol';
+import { resolveTargetXTab } from './locateXTab';
 
 /**
  * 侧边栏「三灯状态条」探针 —— sidepanel 侧的探针数据流:
@@ -43,7 +44,6 @@ export interface ProbeState {
   refresh: () => void;
 }
 
-const X_TAB_MATCHES = ['*://x.com/*', '*://twitter.com/*'];
 const PROBE_REQUEST: RuntimeRequest = { type: PROBE_REQUEST_TYPE };
 
 const ProbeContext = createContext<ProbeState | null>(null);
@@ -72,35 +72,15 @@ export function ProbeProvider({ children }: ProbeProviderProps) {
       setResult(nextResult);
     };
 
-    let tabs: Awaited<ReturnType<typeof browser.tabs.query>>;
-    try {
-      tabs = await browser.tabs.query({ url: X_TAB_MATCHES });
-    } catch {
-      settle('disconnected', null);
-      return;
-    }
-    if (tabs.length === 0) {
-      settle('disconnected', null);
-      return;
-    }
-
-    // 优先当前窗口的 active tab,取不到当前窗口时退回「任意一个匹配的 tab」。
-    let target = tabs.find((tb) => tb.active) ?? tabs[0];
-    try {
-      const win = await browser.windows.getCurrent();
-      target = tabs.find((tb) => tb.active && tb.windowId === win.id) ?? target;
-    } catch {
-      /* 拿不到当前窗口不影响兜底选择,忽略 */
-    }
-
-    if (target?.id === undefined) {
+    const tabId = await resolveTargetXTab();
+    if (tabId === null) {
       settle('disconnected', null);
       return;
     }
 
     try {
       // 直接复用 protocol 的 ProbeResponse,避免内联 union 与协议定义漂移
-      const response = (await browser.tabs.sendMessage(target.id, PROBE_REQUEST)) as
+      const response = (await browser.tabs.sendMessage(tabId, PROBE_REQUEST)) as
         | ProbeResponse
         | undefined;
       if (!response) {
