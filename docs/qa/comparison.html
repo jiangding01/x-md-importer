@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MarkFlow · 设计稿 vs 实现 像素级对照测试文档</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --ink:#1a1d21; --sub:#6b7280; --line:#e5e7eb;
+    --acc:#2563eb; --ok:#16a34a; --okBg:#dcfce7; --warn:#c2830a; --warnBg:#fef3c7;
+    --radius:14px; --shadow:0 1px 3px rgba(0,0,0,.06),0 8px 24px rgba(0,0,0,.05);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#0e1116; --card:#171b22; --ink:#e6edf3; --sub:#9aa4b2; --line:#2a303a;
+      --acc:#4c8dff; --ok:#3fb950; --okBg:#12331d; --warn:#d29922; --warnBg:#3a2f10;
+      --shadow:0 1px 3px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.3);}
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.6;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1180px;margin:0 auto;padding:40px 24px 80px;}
+  header.hero{margin-bottom:28px;}
+  .hero h1{font-size:26px;margin:0 0 8px;letter-spacing:-.01em;}
+  .hero p{margin:4px 0;color:var(--sub);font-size:14px;}
+  .meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;}
+  .tag{font-size:12px;padding:4px 10px;border-radius:999px;background:var(--card);
+    border:1px solid var(--line);color:var(--sub);}
+  .legend{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+    padding:16px 20px;margin:20px 0 8px;box-shadow:var(--shadow);}
+  .legend h3{margin:0 0 10px;font-size:14px;}
+  .legend ul{margin:0;padding-left:18px;font-size:13px;color:var(--sub);}
+  .legend li{margin:5px 0;}
+  .toc{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+    padding:14px 20px;margin:16px 0 32px;box-shadow:var(--shadow);}
+  .toc h3{margin:0 0 8px;font-size:13px;color:var(--sub);text-transform:uppercase;letter-spacing:.04em;}
+  .toc ol{margin:0;padding-left:20px;columns:2;column-gap:32px;font-size:13.5px;}
+  .toc a{color:var(--acc);text-decoration:none;}
+  .toc a:hover{text-decoration:underline;}
+  section.view{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+    padding:22px 22px 20px;margin-bottom:26px;box-shadow:var(--shadow);scroll-margin-top:20px;}
+  .vhead{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:4px;}
+  .vnum{font-size:13px;color:var(--sub);font-variant-numeric:tabular-nums;font-weight:600;}
+  .vhead h2{font-size:18px;margin:0;letter-spacing:-.01em;}
+  .vsub{font-size:13px;color:var(--sub);margin:0 0 16px;}
+  .pair{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
+  @media (max-width:720px){ .pair{grid-template-columns:1fr;} .toc ol{columns:1;} }
+  figure{margin:0;}
+  figcaption{font-size:12px;font-weight:600;color:var(--sub);margin-bottom:8px;
+    display:flex;align-items:center;gap:6px;}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block;}
+  .dot.d{background:#a855f7;} .dot.i{background:var(--acc);}
+  .shot{width:100%;border:1px solid var(--line);border-radius:10px;display:block;background:#fff;}
+  @media (prefers-color-scheme: dark){ .shot{background:#0d1117;} }
+  .verdict{margin-top:16px;padding:13px 16px;border-radius:10px;font-size:13.5px;
+    border:1px solid var(--line);}
+  .verdict.ok{background:var(--okBg);border-color:transparent;}
+  .verdict.warn{background:var(--warnBg);border-color:transparent;}
+  .badge{display:inline-block;font-size:12px;font-weight:700;padding:2px 9px;border-radius:6px;
+    margin-right:8px;vertical-align:middle;}
+  .badge.ok{background:var(--ok);color:#fff;} .badge.warn{background:var(--warn);color:#fff;}
+  .verdict b{color:var(--ink);}
+  .verdict ul{margin:8px 0 0;padding-left:18px;}
+  .verdict li{margin:3px 0;}
+  footer.foot{margin-top:40px;padding-top:20px;border-top:1px solid var(--line);
+    font-size:12.5px;color:var(--sub);text-align:center;}
+  code{background:var(--bg);padding:1px 6px;border-radius:5px;font-size:.9em;
+    font-family:"JetBrains Mono",ui-monospace,monospace;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>MarkFlow · 设计稿 vs 实现 像素级对照</h1>
+  <p>把「原型设计稿」与「当前 <code>pnpm build</code> 产物」的同一视图两两并排，逐项给出还原度结论。供后续自测参考。</p>
+  <div class="meta">
+    <span class="tag">采集日期 2026-07-13</span>
+    <span class="tag">侧栏宽度 420px（@2x 采集）</span>
+    <span class="tag">富状态视口 1700px · 空态/弹窗 900px</span>
+    <span class="tag">主题 极简/控制台/纸感/玻璃</span>
+    <span class="tag">语言 中 / EN</span>
+    <span class="tag">驱动 Playwright</span>
+  </div>
+</header>
+
+<div class="legend">
+  <h3>阅读说明 & 采集口径</h3>
+  <ul>
+    <li><span class="dot d" style="margin-right:4px"></span><b>左 = 设计稿</b>（<code>MarkFlow v3.dc.html</code>，Vue 原型）　<span class="dot i" style="margin:0 4px"></span><b>右 = 实现</b>（WXT+React 构建产物）。</li>
+    <li>设计稿左缘那行淡色竖排文字「模拟的 X 文章编辑页（演示环境）」是<b>原型的演示外壳</b>，非产品 UI，对比时请忽略。</li>
+    <li><b>下拉默认值差异</b>：设计稿 demo 里「语言=中文 / 外观=浅色」，实现里为「语言=跟随浏览器 / 外观=跟随系统」——这是<b>默认状态差异</b>，实现符合技术方案 §5.2.4 规格，<b>非还原缺陷</b>。</li>
+    <li><b>滚动架构差异</b>：实现用「固定面板 + 内层滚动」（适配真实 Chrome 侧栏固定高度），原型演示用整页增高。本文档已统一用加高视口消除该差异，属正确的产品行为。</li>
+    <li>判定：<span class="badge ok">一致</span>像素级高度还原　<span class="badge warn">留意</span>存在需关注的差异或待定项。</li>
+  </ul>
+</div>
+
+<div class="toc">
+  <h3>视图目录（13 组）</h3>
+  <ol>
+    <li><a href="#v01">待发布 · 空态</a></li>
+    <li><a href="#v02">待发布 · 编辑态</a></li>
+    <li><a href="#v03">待发布 · 预览态</a></li>
+    <li><a href="#v04">能力映射面板（展开）</a></li>
+    <li><a href="#v06">覆盖确认对话框</a></li>
+    <li><a href="#v08">预检结果 + 导入报告</a></li>
+    <li><a href="#v09">记录列表</a></li>
+    <li><a href="#v10">设置 · 极简主题</a></li>
+    <li><a href="#v11">设置 · 控制台主题</a></li>
+    <li><a href="#v12">设置 · 纸感主题</a></li>
+    <li><a href="#v13">设置 · 玻璃主题</a></li>
+    <li><a href="#v14">设置 · 英文</a></li>
+    <li><a href="#v15">待发布 · 英文空态</a></li>
+  </ol>
+</div>
+
+<!-- 01 -->
+<section class="view" id="v01">
+  <div class="vhead"><span class="vnum">01</span><h2>待发布 · 空态</h2></div>
+  <p class="vsub">极简主题 · 中文 · 首屏引导</p>
+  <div class="pair">
+    <figure><figcaption><span class="dot d"></span>设计稿</figcaption><img class="shot" src="shots/01-draft-empty-minimal-zh.design.png" alt="设计稿-待发布空态"></figure>
+    <figure><figcaption><span class="dot i"></span>实现</figcaption><img class="shot" src="shots/01-draft-empty-minimal-zh.impl.png" alt="实现-待发布空态"></figure>
+  </div>
+  <div class="verdict ok"><span class="badge ok">一致</span><b>高度还原。</b> Header（M logo+蓝点 / MarkFlow / MARKDOWN → X 文章）、状态条（三绿灯 + articles/edit/19…）、Tabs、工具栏（B I H# &lt;/&gt; 链接 图片 表格 · 编辑/预览）、三步引导（选择文件 / 载入示例）、Footer（0 字·0 行·UTF-8 + 预检/写入）逐一对齐。唯一差异是设计稿左缘的演示外壳文字（非产品元素）。</div>
+</section>
+
+<!-- 02 -->
+<section class="view" id="v02">
+  <div class="vhead"><span class="vnum">02</span><h2>待发布 · 编辑态</h2></div>
+  <p class="vsub">极简主题 · 中文 · 载入示例后（编辑器 + 素材卡 + 能力映射折叠条）</p>
+  <div class="pair">
+    <figure><figcaption><span class="dot d"></span>设计稿</figcaption><img class="shot" src="shots/02-draft-edit-minimal-zh.design.png" alt="设计稿-编辑态"></figure>
+    <figure><figcaption><span class="dot i"></span>实现</figcaption><img class="shot" src="shots/02-draft-edit-minimal-zh.impl.png" alt="实现-编辑态"></figure>
+  </div>
+  <div class="verdict ok"><span class="badge ok">一致</span><b>布局与内容一致。</b> 编辑器等宽字体、frontmatter/标题/正文渲染、素材卡（2 IMG · 封面「未设置」+更换 · assets/cover.png [本地][待文件夹] · pipeline.png [远程][就绪]）、能力映射折叠条（7 原生·8 特殊块·2 图片·1 降级）、字数统计（476 字·41 行）全部对齐。</div>
+</section>
+
+<!-- 03 -->
+<section class="view" id="v03">
+  <div class="vhead"><span class="vnum">03</span><h2>待发布 · 预览态</h2></div>
+  <p class="vsub">极简主题 · 中文 · react-markdown 渲染</p>
+  <div class="pair">
+    <figure><figcaption><span class="dot d"></span>设计稿</figcaption><img class="shot" src="shots/03-draft-preview-minimal-zh.design.png" alt="设计稿-预览态"></figure>
+    <figure><figcaption><span class="dot i"></span>实现</figcaption><img class="shot" src="shots/03-draft-preview-minimal-zh.impl.png" alt="实现-预览态"></figure>
+  </div>
+  <div class="verdict ok"><span class="badge ok">一致</span><b>渲染基调一致。</b> 大标题、二级标题、带破折号说明的列表项（可迁移 / 更专注 / 更精确）、行内高亮、正文段落间距与设计稿一致。react-markdown + remark-gfm 的输出与原型的渲染样式吻合。</div>
+</section>
+
+<!-- 04 -->
+<section class="view" id="v04">
+  <div class="vhead"><span class="vnum">04</span><h2>能力映射面板（展开）</h2></div>
+  <p class="vsub">极简主题 · 中文 · 产品核心差异化面板</p>
+  <div class="pair">
+    <figure><figcaption><span class="dot d"></span>设计稿</figcaption><img class="shot" src="shots/04-draft-capability-minimal-zh.design.png" alt="设计稿-能力映射"></figure>
+    <figure><figcaption><span class="dot i"></span>实现</figcaption><img class="shot" src="shots/04-draft-capability-minimal-zh.impl.png" alt="实现-能力映射"></figure>
+  </div>
+  <div class="verdict ok"><span class="badge ok">一致</span><b>逐行精确还原。</b> 10 个映射项（二级标题→Heading、粗/斜/删、链接、列表 ×3、引用、表格→原生表格 ×4、代码块→原生代码块、分割线→DIVIDER ×3、图片→上传+图注 ×2、四级以下标题→粗体段落）的名称、计数徽章（×N）、右侧原生映射说明、三色状态圆点（绿=原生 / 蓝=特殊块 / 橙=降级）完全对齐。</div>
+</section>
+
+<!-- 06 -->
+<section class="view" id="v06">
+  <div class="vhead"><span class="vnum">06</span><h2>覆盖确认对话框</h2></div>
+  <p class="vsub">极简主题 · 中文 · 编辑器已有内容时的三选弹窗</p>
+  <div class="pair">
+    <figure><figcaption><span class="dot d"></span>设计稿</figcaption><img class="shot" src="shots/06-draft-overwrite-minimal-zh.design.png" alt="设计稿-覆盖对话框"></figure>
+    <figure><figcaption><span class="dot i"></span>实现</figcaption><img class="shot" src="shots/06-draft-overwrite-minimal-zh.impl.png" alt="实现-覆盖对话框"></figure>
+  </div>
+  <div class="verdict ok"><span class="badge ok">一致</span><b>弹窗一致。</b> 标题「编辑器已有内容」、副文案、追加 / 覆盖（深色主按钮）/ 取消三选、遮罩层一致。（两图背景分别为编辑态/预览态，属截图时机差异，弹窗本体完全一致。）</div>
+</section>
+
+<!-- 08 -->
+<section class="view" id="v08">
+  <div class="vhead"><span class="vnum">08</span><h2>预检结果 + 导入报告</h2></div>
+  <p class="vsub">极简主题 · 中文 · 预检探针卡 + 导入完成逐项报告</p>
+  <div class="pair">
+    <figure><figcaption><span class="dot d"></span>设计稿</figcaption><img class="shot" src="shots/08-draft-report-minimal-zh.design.png" alt="设计稿-预检报告"></figure>
+    <figure><figcaption><span class="dot i"></span>实现</figcaption><img class="shot" src="shots/08-draft-report-minimal-zh.impl.png" alt="实现-预检报告"></figure>
+  </div>
+  <div class="verdict ok"><span class="badge ok">一致</span><b>探针卡 + 报告卡结构一致。</b> 预检结果（目标页面 ✓ / 编辑器实例 ✓ / 上传通道 ✓ / 编辑器内容 ✓ / 素材就绪 ✗ 待文件夹）与导入完成卡（17 成功·1 降级·0 失败 + 逐项映射结果，含「超越竞品」「带语言」「alt 写入图注」等标注）配色与层级对齐。</div>
+</section>
+
+<!-- 09 -->
+<section class="view" id="v09">
+  <div class="vhead"><span class="vnum">09</span><h2>记录列表</h2></div>
+  <p class="vsub">极简主题 · 中文 · 已注入与设计稿相同的 3 条记录</p>
+  <div class="pair">
+    <figure><figcaption><span class="dot d"></span>设计稿</figcaption><img class="shot" src="shots/09-history-minimal-zh.design.png" alt="设计稿-记录"></figure>
+    <figure><figcaption><span class="dot i"></span>实现</figcaption><img class="shot" src="shots/09-history-minimal-zh.impl.png" alt="实现-记录"></figure>
+  </div>
+  <div class="verdict ok"><span class="badge ok">一致</span><b>行渲染一致。</b> MD 头像、标题、日期·结果计数（✓成功 / ~降级 / ×失败）、载入·复制·× 操作、顶部搜索框与计数徽章一致。（实现侧通过 <code>localStorage['markflow:history']</code> 注入了与设计稿相同的 3 条以做 1:1 对比。）</div>
+</section>
+
+<!-- 10 -->
+<section class="view" id="v10">
+  <div class="vhead"><span class="vnum">10</span><h2>设置 · 极简主题</h2></div>
+  <p class="vsub">中文 · 主题四宫格 + 九组手风琴</p>
+  <div class="pair">
+    <figure><figcaption><span class="dot d"></span>设计稿</figcaption><img class="shot" src="shots/10-settings-minimal-zh.design.png" alt="设计稿-设置极简"></figure>
+    <figure><figcaption><span class="dot i"></span>实现</figcaption><img class="shot" src="shots/10-settings-minimal-zh.impl.png" alt="实现-设置极简"></figure>
+  </div>
+  <div class="verdict ok"><span class="badge ok">一致</span><b>结构一致。</b> 「界面主题」四宫格（极简选中蓝框 / 控制台 / 纸感 / 玻璃 swatch）、九组手风琴（序号 + 标题 + 计数 04/06/05/14/05/03/03/01/04 + chevron）、01 界面展开内容、footer 标语一致。<b>留意</b>：语言/外观下拉默认值差异见顶部说明（非缺陷）。</div>
+</section>
+
+<!-- 11 -->
+<section class="view" id="v11">
+  <div class="vhead"><span class="vnum">11</span><h2>设置 · 控制台主题</h2></div>
+  <p class="vsub">中文 · 深色终端风（#0D1117 / 绿 / 等宽 / 小圆角）</p>
+  <div class="pair">
+    <figure><figcaption><span class="dot d"></span>设计稿</figcaption><img class="shot" src="shots/11-settings-console-zh.design.png" alt="设计稿-控制台"></figure>
+    <figure><figcaption><span class="dot i"></span>实现</figcaption><img class="shot" src="shots/11-settings-console-zh.impl.png" alt="实现-控制台"></figure>
+  </div>
+  <div class="verdict ok"><span class="badge ok">一致</span><b>主题变量还原到位。</b> 深色背景、绿色选中描边、蓝色强调、等宽字体、小圆角、footer 标语一致。</div>
+</section>
+
+<!-- 12 -->
+<section class="view" id="v12">
+  <div class="vhead"><span class="vnum">12</span><h2>设置 · 纸感主题</h2></div>
+  <p class="vsub">中文 · 米黄暖色纸张风</p>
+  <div class="pair">
+    <figure><figcaption><span class="dot d"></span>设计稿</figcaption><img class="shot" src="shots/12-settings-paper-zh.design.png" alt="设计稿-纸感"></figure>
+    <figure><figcaption><span class="dot i"></span>实现</figcaption><img class="shot" src="shots/12-settings-paper-zh.impl.png" alt="实现-纸感"></figure>
+  </div>
+  <div class="verdict ok"><span class="badge ok">一致</span><b>暖色纸张质感还原。</b> 米黄背景、暖色描边、选中态、字体与设计稿一致。</div>
+</section>
+
+<!-- 13 -->
+<section class="view" id="v13">
+  <div class="vhead"><span class="vnum">13</span><h2>设置 · 玻璃主题</h2></div>
+  <p class="vsub">中文 · 蓝紫渐变 + 半透明卡片</p>
+  <div class="pair">
+    <figure><figcaption><span class="dot d"></span>设计稿</figcaption><img class="shot" src="shots/13-settings-glass-zh.design.png" alt="设计稿-玻璃"></figure>
+    <figure><figcaption><span class="dot i"></span>实现</figcaption><img class="shot" src="shots/13-settings-glass-zh.impl.png" alt="实现-玻璃"></figure>
+  </div>
+  <div class="verdict ok"><span class="badge ok">一致</span><b>渐变与玻璃质感还原。</b> 蓝紫→浅绿渐变背景、玻璃选中蓝框、半透明白卡片、蓝色强调一致。整体质感与设计稿吻合。</div>
+</section>
+
+<!-- 14 -->
+<section class="view" id="v14">
+  <div class="vhead"><span class="vnum">14</span><h2>设置 · 英文</h2></div>
+  <p class="vsub">极简主题 · English · i18n 密度最高的页面</p>
+  <div class="pair">
+    <figure><figcaption><span class="dot d"></span>设计稿</figcaption><img class="shot" src="shots/14-settings-minimal-en.design.png" alt="设计稿-设置英文"></figure>
+    <figure><figcaption><span class="dot i"></span>实现</figcaption><img class="shot" src="shots/14-settings-minimal-en.impl.png" alt="实现-设置英文"></figure>
+  </div>
+  <div class="verdict ok"><span class="badge ok">一致</span><b>i18n 完整。</b> Interface theme / Four built-in visual themes / Minimal·Console·Paper·Glass / Language·Appearance·Editor font size·Word wrap / 九组标题（Import behavior … Advanced）/ 状态条 PAGE·EDITOR·UPLOAD / footer 全部翻译到位。</div>
+</section>
+
+<!-- 15 -->
+<section class="view" id="v15">
+  <div class="vhead"><span class="vnum">15</span><h2>待发布 · 英文空态</h2></div>
+  <p class="vsub">极简主题 · English · Compose 空态引导</p>
+  <div class="pair">
+    <figure><figcaption><span class="dot d"></span>设计稿</figcaption><img class="shot" src="shots/15-draft-empty-minimal-en.design.png" alt="设计稿-英文空态"></figure>
+    <figure><figcaption><span class="dot i"></span>实现</figcaption><img class="shot" src="shots/15-draft-empty-minimal-en.impl.png" alt="实现-英文空态"></figure>
+  </div>
+  <div class="verdict ok"><span class="badge ok">一致</span><b>英文引导翻译到位。</b> Compose/History/Settings 标签、空态三步引导、工具栏与 Footer 英文文案与设计稿一致。</div>
+</section>
+
+<footer class="foot">
+  <p><b>总体结论：</b>已完成的三个 Tab（待发布 / 记录 / 设置）在四主题 × 中英下的还原度<b>整体很高</b>，未发现真实的像素级偏离。已记录的差异均为「默认状态差异 / 演示外壳 / 滚动架构」三类<b>非缺陷</b>项。</p>
+  <p style="margin-top:10px">MarkFlow · QA 对照文档 · 采集 2026-07-13 · 截图位于 <code>docs/qa/shots/</code></p>
+</footer>
+
+</div>
+</body>
+</html>

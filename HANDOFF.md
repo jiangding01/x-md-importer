@@ -7,7 +7,7 @@
 > - 本文档随代码一起提交到 git 仓库。任何一台电脑上开发，都按此约定更新并提交。
 > - 更新时重点维护：`## 当前进度`、`## 待办与路线图`、`## 最近一次会话小结`，并在顶部更新「最后更新」。
 
-**最后更新**：2026-07-13 · 个人电脑（初始开发）· 分支 `main`
+**最后更新**：2026-07-13 · 个人电脑 · 分支 `main`（Phase D 启动：建立设计稿↔实现像素级对照文档 `docs/qa/`；复核确认各 Tab 滚动行为正常、无 bug）
 
 ---
 
@@ -16,7 +16,7 @@
 - **是什么**：Chrome MV3 扩展，把 Markdown 一键导入 X（Twitter）Articles 长文编辑器，全格式排版，不用官方 API。
 - **现在到哪了**：**侧边栏 UI 全部完成并验证**（Phase A 脚手架+四主题 / Phase B 待发布 Tab / Phase C 记录+设置 Tab）。`pnpm build` 可出包并加载。
 - **还没做**：真实的 Draft.js **注入引擎**——目前「写入 X」「预检」「连接文件夹」等都是 **mock 时序演示**，接口已预留，等 M1 替换。
-- **下一步**：Phase D 最终 QA → M1 实现注入引擎（M0 探针已验证过关键假设，产物在 `docs/research/m0/`）。
+- **下一步**：Phase D 收尾（已产出四主题×中英的设计稿↔实现对照文档 `docs/qa/comparison.html`，13 组视图还原度整体很高）→ M1 实现注入引擎（M0 探针已验证过关键假设，产物在 `docs/research/m0/`）。
 - **怎么跑**：`pnpm install && pnpm build` → Chrome 加载 `.output/chrome-mv3`。详见 §7。
 
 ---
@@ -77,6 +77,7 @@ docs/
   research/xposter-analysis.md  # 竞品 xPoster 源码深析（注入引擎实现范本）
   research/m0/                  # M0 探针产物（entity 渲染截图等）
   research/screenshots/         # X 编辑器实机勘察截图
+  qa/                           # ⭐Phase D 对照测试：comparison.html（设计稿↔实现双图并排+结论）+ README + shots/（26 张基准截图）
 ```
 
 ## 4. 架构：状态与执行环境
@@ -147,7 +148,10 @@ pnpm build              # → .output/chrome-mv3
 ## 9. 待办与路线图
 
 **近期**
-- [ ] **Phase D**：在真实 Chrome 侧边栏做最终 QA（四主题 × 中英逐屏），修边角。
+- [~] **Phase D · 进行中**：
+  - [x] 建立设计稿↔实现**像素级对照文档** `docs/qa/comparison.html`（13 组视图 × 双图并排 + 逐项结论；四主题 + 中英抽查）。结论：还原度整体很高，未发现真实偏离；差异均为「默认状态 / 演示外壳 / 滚动架构」三类非缺陷。
+  - [x] 复核各 Tab 竖向滚动：外壳 `flex:1 + minHeight:0 + overflow-y:auto`，内容超出即内层滚动，**正常无 bug**（早前误报源于测试视口设过高、内容未溢出）。
+  - [ ] 在**真实 Chrome 侧边栏**逐屏走查、修边角（对照文档可作 checklist）。
 - [ ] **M1 · 注入引擎（核心）**：新建 `content.ts`(ISOLATED) + `injector.content.ts`(MAIN world) + background 图片代理；实现 fiber 直写 + 合成 paste + onFilesAdded + marker 事务；把 §6 的 mock 逐个换成真实实现。M0 探针已验证关键假设，产物见 `docs/research/m0/`。
 - [ ] 把 `useConnection` / `importService` 接到真实 content script 消息。
 
@@ -173,4 +177,7 @@ pnpm build              # → .output/chrome-mv3
 
 ## 11. 最近一次会话小结
 
-**2026-07-13 · 个人电脑**：从零搭建工程，完成 Phase A/B/C 全部侧边栏 UI（四主题、待发布、记录、设置），逐屏验证，`tsc` 全绿、`build` 通过。补齐 README / CHANGELOG / HANDOFF 三份文档并首次提交推送。注入引擎仍为 mock，下一步 Phase D + M1。
+**2026-07-13 · 个人电脑（首次会话）**：从零搭建工程，完成 Phase A/B/C 全部侧边栏 UI（四主题、待发布、记录、设置），逐屏验证，`tsc` 全绿、`build` 通过。补齐 README / CHANGELOG / HANDOFF 三份文档并首次提交推送。注入引擎仍为 mock，下一步 Phase D + M1。
+
+**2026-07-13 · 个人电脑（第二次会话）**：启动 Phase D。用 Playwright 驱动，把设计稿（`MarkFlow v3.dc.html`，Vue 原型 + `support.js`）与 `pnpm build` 产物在 420px 侧栏宽度下逐视图截图对照，产出 `docs/qa/`（`comparison.html` 双图并排+结论 / `README.md` / `shots/` 26 张基准图）——13 组视图（待发布空态/编辑/预览/能力映射/覆盖弹窗/预检+报告、记录、设置四主题、中英）**还原度整体很高**。期间用户反馈「设置页滚不动」，复核确认是**测试视口设过高（1700px）导致内容未溢出**的误报，实际滚动正常、无需改码。**未改任何产品代码**；`docs/qa/` 尚未提交。下一步：真机走查 + M1 注入引擎。
+> 采集口径备忘：设计稿需同目录 `support.js`；富状态用 1700px 视口整页截、空态/弹窗用 900px；记录 Tab 用 `localStorage['markflow:history']` 注入 3 条与设计稿一致的数据。截图临时用的 `.output/chrome-mv3/_design.html`+`support.js` 及静态服务器已清理。
