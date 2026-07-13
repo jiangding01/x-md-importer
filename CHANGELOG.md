@@ -7,16 +7,31 @@
 
 ## [Unreleased]
 
-### 新增（Phase D 进行中）
-- **QA 对照测试** `docs/qa/`：设计稿↔实现**像素级对照文档** `comparison.html`（13 组视图双图并排 + 逐项结论）、`README.md`（采集口径与复现）、`shots/`（26 张基准截图）。覆盖待发布（空态/编辑/预览/能力映射/覆盖弹窗/预检+报告）、记录、设置（极简/控制台/纸感/玻璃/英文）、英文空态。
-- 结论：三 Tab 在四主题 × 中英下**还原度整体很高**，未发现真实像素级偏离；差异均为「默认状态 / 演示外壳 / 滚动架构」三类非缺陷。
+### 新增 · M2 Phase 1 — 标题设置（PR #2）
+- **文章标题自动设置**（仅 UI 通道）：`extractTitle` 抽取（frontmatter `title` > 正文首个 H1，跳过代码块），injector `setTitle` 打分定位标题输入框写入；`h1Handle=remove` 时在 md 文本层去重首个 H1（`stripFirstH1`）。GraphQL 通道（queryId 易随 X 发版失效）留 TODO。
+- **frontmatter 不再泄入正文**：parser 跳过文首 `---…---` 块（此前会被当「分割线+文本+分割线」写入正文）。
 
-### 复核
-- 各 Tab 竖向滚动正常（外壳 `flex:1 + minHeight:0 + overflow-y:auto`，内容溢出即滚动）；早前「设置页滚不动」为测试视口过高、内容未溢出的误报，**非 bug、未改码**。
+### 修复 · M1 code review 遗留（PR #2）
+- `connected` 去掉 articleId 要求 → 新建文章页（URL 无 `/edit/数字`）也可写。
+- `editorHasContent` 接真实探针 `hasContent`（不再恒 true）；写入成功后重探，避免二次写入静默覆盖。
+- `ImportResult` 回传 `effectiveMode`：append 被降级为 replace 时明确提示。
+- `locateXTab` 统一 tab 定位；`content.ts` 抽通用请求桥（probe/import/set-title 三通道复用，含 kind 校验防串扰）。
+- 标题打分加关键词硬门槛 + 排除正文编辑器（防误命中清空正文）；标题冲突 `ask` 暂按保守 `keep`。
+
+### 新增 · M1 — 注入引擎（PR #1）
+- **三方通信架构**：`content.ts`(ISOLATED) + `injector.ts`(MAIN world，injectScript 注入) + `lib/bridge/protocol.ts` 类型化消息协议，nonce 握手 + 并发中转。
+- **fiber 探针（三灯）**：定位正文编辑器 / Draft 实例（`editorState`+`onChange`）/ `onFilesAdded` 上传回调，算法照搬 xposter 实证；状态条、预检卡、写入按钮门控全部接真实探针。
+- **Draft.js 直写引擎**：借页面 Immutable 构造器逐块构造 blockMap → `EditorState.push` + `onChange`；replace/append 双模式；支持标题、粗/斜/删/行内代码、链接（LINK entity）、有序无序列表、引用、代码块（MARKDOWN entity）、分割线（DIVIDER）、推文（TWEET）。
+- **Markdown 解析器** `lib/markdown/parser.ts`：递归下降行内解析（offset 精确），块级映射按技术方案 §4.2。
+- **品牌图标**：3a 方案（M 造型 + 蓝点），16/32/48/128。
+- 移除 UI 文案中的竞品对比表述（改为中性描述）。
+- 删除旧 mock 假进度服务 `lib/workspace/importService.ts`。
+
+### 新增 · Phase D — 设计稿↔实现对照（已随 M1 合并）
+- `docs/qa/`：`comparison.html`（13 组视图双图并排 + 结论）、`README.md`、`shots/`（26 张基准截图）。结论：四主题 × 中英还原度整体很高。
 
 ### 待办
-- Phase D 收尾：真实 Chrome 侧边栏逐屏走查与打磨（对照文档 `docs/qa/comparison.html` 可作 checklist）。
-- M0/M1：把 mock 的注入/预检/文件夹服务替换为真实的 Draft.js 注入引擎（接口已预留）。
+- **M2 Phase 2**：图片上传（onFilesAdded 桥 + MEDIA entity diff + mediaId 轮询 + marker 归位）+ 封面设置 + 本地文件夹（FS Access）。
 
 ## [0.1.0] - 2026-07-13
 
