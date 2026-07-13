@@ -32,16 +32,78 @@ export interface ProbeResult {
   articleId: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// 写入(Import)数据结构 —— 解析器(lib/markdown/parser)产出、注入引擎消费。
+// 形状对齐 Draft.js RawBlock,块映射遵循《技术方案设计.md》§4.2 矩阵。
+// ---------------------------------------------------------------------------
+
+/** 行内样式区间。style 为 Draft.js 标准 inline style 名(X 原生支持这四种)。 */
+export interface InlineStyleRange {
+  offset: number;
+  length: number;
+  style: 'BOLD' | 'ITALIC' | 'STRIKETHROUGH' | 'CODE';
+}
+
+/** 链接区间:按字符区间挂 LINK entity(MUTABLE)。 */
+export interface LinkRange {
+  offset: number;
+  length: number;
+  url: string;
+}
+
+/**
+ * 文本类块的 Draft block type(M1 范围)。映射:H1/H2→header-one、H3→header-two、
+ * H4+→unstyled+全段 BOLD(X 仅两级标题);列表不嵌套(depth 恒 0)。
+ */
+export type TextBlockType =
+  | 'unstyled'
+  | 'header-one'
+  | 'header-two'
+  | 'blockquote'
+  | 'unordered-list-item'
+  | 'ordered-list-item';
+
+/** 文本类块。 */
+export interface TextBlock {
+  kind: 'text';
+  type: TextBlockType;
+  text: string;
+  inlineStyleRanges: InlineStyleRange[];
+  links: LinkRange[];
+}
+
+/**
+ * 特殊块:atomic block + X 编辑器内部 entity(类型名/数据形状为 xposter 源码实证)。
+ * M1 仅这三种(无需上传通道);图片/表格 MEDIA 在 M2 加入。
+ */
+export type AtomicBlock =
+  | { kind: 'atomic'; entityType: 'DIVIDER'; data: Record<string, never> }
+  | { kind: 'atomic'; entityType: 'MARKDOWN'; data: { markdown: string } }
+  | { kind: 'atomic'; entityType: 'TWEET'; data: { url: string; tweetId: string } };
+
+/** 写入块 = 文本块 | 特殊块,按文档顺序排列。 */
+export type ImportBlock = TextBlock | AtomicBlock;
+
+/** 写入模式:replace 整体替换编辑器内容;append 在现有内容之后追加。 */
+export type ImportMode = 'replace' | 'append';
+
+/** 注入引擎的写入结果。error 为面向诊断的英文短语(UI 层负责本地化归类)。 */
+export type ImportResult =
+  | { ok: true; blockCount: number }
+  | { ok: false; error: string };
+
 /** ISOLATED → MAIN 的消息。 */
 export type IsoMessage =
   | { source: IsoSource; kind: 'hello'; nonce: string }
-  | { source: IsoSource; kind: 'probe'; nonce: string; id: string };
+  | { source: IsoSource; kind: 'probe'; nonce: string; id: string }
+  | { source: IsoSource; kind: 'import'; nonce: string; id: string; blocks: ImportBlock[]; mode: ImportMode };
 
 /** MAIN → ISOLATED 的消息。 */
 export type MainMessage =
   | { source: MainSource; kind: 'ready' }
   | { source: MainSource; kind: 'hello-ack'; nonce: string }
-  | { source: MainSource; kind: 'probe-result'; nonce: string; id: string; result: ProbeResult };
+  | { source: MainSource; kind: 'probe-result'; nonce: string; id: string; result: ProbeResult }
+  | { source: MainSource; kind: 'import-result'; nonce: string; id: string; result: ImportResult };
 
 /**
  * sidepanel ↔ content 的 chrome.runtime 消息(第二条通道,区别于上面 window.postMessage
@@ -49,16 +111,27 @@ export type MainMessage =
  * 以后扩展更多 type(如 'markflow:import'、'markflow:page-status');应答复用 ProbeResult。
  */
 
+/** 判别常量(收发两端共享,避免裸字符串散落)。 */
+export const PROBE_REQUEST_TYPE = 'markflow:probe' as const;
+export const IMPORT_REQUEST_TYPE = 'markflow:import' as const;
+
 /** sidepanel → content 的请求。 */
-export type RuntimeRequest = { type: 'markflow:probe' };
+export type RuntimeRequest =
+  | { type: typeof PROBE_REQUEST_TYPE }
+  | { type: typeof IMPORT_REQUEST_TYPE; blocks: ImportBlock[]; mode: ImportMode };
 
 /** content → sidepanel 的探针应答:成功回结果,失败回明确的错误码。 */
 export type ProbeResponse =
   | { ok: true; result: ProbeResult }
   | { ok: false; error: 'no-injector' | 'timeout' };
 
-/** 探针请求的判别常量(收发两端共享,避免裸字符串散落)。 */
-export const PROBE_REQUEST_TYPE = 'markflow:probe' as const;
+/**
+ * content → sidepanel 的写入应答:透传注入引擎的 ImportResult;
+ * 通道层错误(未握手/超时)与引擎错误共用 ok:false 形状,error 短语区分。
+ */
+export type ImportResponse =
+  | { ok: true; blockCount: number }
+  | { ok: false; error: 'no-injector' | 'timeout' | string };
 
 /** 运行时守卫:窄化「探针请求」——只认判别字段 `type` 匹配的对象。 */
 export function isProbeRequest(msg: unknown): msg is { type: typeof PROBE_REQUEST_TYPE } {
@@ -66,6 +139,17 @@ export function isProbeRequest(msg: unknown): msg is { type: typeof PROBE_REQUES
     typeof msg === 'object' &&
     msg !== null &&
     (msg as { type?: unknown }).type === PROBE_REQUEST_TYPE
+  );
+}
+
+/** 运行时守卫:窄化「写入请求」。blocks/mode 的字段校验由 TS 端到端类型保证,这里只判别 type。 */
+export function isImportRequest(
+  msg: unknown,
+): msg is { type: typeof IMPORT_REQUEST_TYPE; blocks: ImportBlock[]; mode: ImportMode } {
+  return (
+    typeof msg === 'object' &&
+    msg !== null &&
+    (msg as { type?: unknown }).type === IMPORT_REQUEST_TYPE
   );
 }
 

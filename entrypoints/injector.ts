@@ -1,6 +1,9 @@
 import {
   MAIN_SOURCE,
   isIsoMessage,
+  type ImportBlock,
+  type ImportMode,
+  type ImportResult,
   type MainMessage,
   type ProbeResult,
 } from '@/lib/bridge/protocol';
@@ -38,6 +41,90 @@ interface FiberNode {
   sibling: FiberNode | null;
   stateNode: FiberStateNode | null;
   memoizedProps: FiberProps | null;
+}
+
+/**
+ * Draft.js / Immutable.js 的最小化局部形状——这些对象都来自**页面运行时**(X 打包的 Draft),
+ * 本扩展不打包任何 Draft/Immutable 依赖,全部从现有 editorState 上「借」构造器(见
+ * docs/research/xposter-analysis.md §1.3)。故这里按鸭子类型只声明本文件真正调用到的方法,
+ * 不追求覆盖 Draft 完整 API;边界处用受控 `as` 收口,避免裸 any 蔓延到逻辑层。
+ */
+
+/** Immutable.OrderedSet<string>(inline style 集合):不可变,每次操作返回新实例。 */
+interface DraftStyleSet {
+  clear(): DraftStyleSet;
+  add(style: string): DraftStyleSet;
+}
+
+/** Draft.js CharacterMetadata:无公开构造器,靠「样本字符」派生克隆(set 返回新实例)。 */
+interface DraftCharacter {
+  getStyle(): DraftStyleSet;
+  set(key: string, value: unknown): DraftCharacter;
+}
+
+/**
+ * Immutable.List<CharacterMetadata>。用**实例方法** clear()/push() 逐个构建,
+ * 不用 `constructor(数组)` 直造(对 Draft 内部子类不安全)。
+ */
+interface DraftCharacterList {
+  forEach(cb: (ch: DraftCharacter) => void): void;
+  clear(): DraftCharacterList;
+  push(ch: DraftCharacter): DraftCharacterList;
+}
+
+/** Immutable.Map(ContentBlock 的 data 字段):只用到 clear。 */
+interface DraftBlockData {
+  clear(): DraftBlockData;
+}
+
+/** Draft.js ContentBlock。 */
+interface DraftBlock {
+  getKey(): string;
+  getText(): string;
+  getCharacterList(): DraftCharacterList;
+  getData(): DraftBlockData;
+  merge(props: Record<string, unknown>): DraftBlock;
+}
+
+/**
+ * Immutable.OrderedMap<string, ContentBlock>。用实例方法 clear()/set() 逐个构建
+ * (set 新 key 追加在尾部,保序);不用 `constructor(entries)` 直造。
+ */
+interface DraftBlockMap {
+  first(): DraftBlock;
+  forEach(cb: (block: DraftBlock) => void): void;
+  clear(): DraftBlockMap;
+  set(key: string, block: DraftBlock): DraftBlockMap;
+}
+
+/** Draft.js ContentState(entity 存储 + blockMap 容器,均不可变)。 */
+interface DraftContentState {
+  getBlockMap(): DraftBlockMap;
+  createEntity(type: string, mutability: string, data: unknown): DraftContentState;
+  getLastCreatedEntityKey(): string;
+  set(key: string, value: unknown): DraftContentState;
+}
+
+/** Draft.js SelectionState 实例(Immutable Record:merge 返回新实例)。 */
+interface DraftSelection {
+  merge(props: Record<string, unknown>): DraftSelection;
+}
+
+/** Draft.js SelectionState 类(从 editorState.getSelection().constructor 取得)。 */
+interface DraftSelectionStatic {
+  createEmpty(blockKey: string): DraftSelection;
+}
+
+/** Draft.js EditorState 实例。 */
+interface DraftEditorState {
+  getSelection(): DraftSelection;
+  getCurrentContent(): DraftContentState;
+}
+
+/** Draft.js EditorState 类(静态方法,从 editorState.constructor 取得)。 */
+interface DraftEditorStateStatic {
+  push(editorState: DraftEditorState, content: DraftContentState, changeType: string): DraftEditorState;
+  forceSelection(editorState: DraftEditorState, selection: DraftSelection): DraftEditorState;
 }
 
 export default defineUnlistedScript(() => {
@@ -142,7 +229,220 @@ export default defineUnlistedScript(() => {
     return { hasEditor, hasDraftNode, hasOnFilesAdded, articleId: getArticleId() };
   };
 
-  window.addEventListener('message', (e) => {
+  // -------------------------------------------------------------------------
+  // 写入引擎(runImport)—— 借页面 Draft 构造器直写 blockMap,不打包任何依赖。
+  // 蓝本见 docs/research/xposter-analysis.md §1.3/§1.4/§2.2。
+  // -------------------------------------------------------------------------
+
+  const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+  /** 从 draftNode 上取 Draft EditorState 实例(受控收口)。 */
+  const readEditorState = (node: FiberStateNode): DraftEditorState =>
+    node.props?.editorState as DraftEditorState;
+
+  /**
+   * 遍历 blockMap 各块的 characterList,找出第一个带 `set`/`getStyle` 方法的字符实例作为样本。
+   * CharacterMetadata 无公开构造器,后续新字符全靠 `sample.set(...)` 克隆派生。
+   */
+  const findCharacterSample = (blockMap: DraftBlockMap): DraftCharacter | null => {
+    let found: DraftCharacter | null = null;
+    blockMap.forEach((block) => {
+      if (found) return;
+      block.getCharacterList().forEach((ch) => {
+        if (found) return;
+        if (ch && typeof ch.set === 'function' && typeof ch.getStyle === 'function') {
+          found = ch;
+        }
+      });
+    });
+    return found;
+  };
+
+  /** atomic entity 的 mutability 映射(值为 xposter 源码实证,见 §2.2)。 */
+  const atomicMutability = (entityType: 'DIVIDER' | 'MARKDOWN' | 'TWEET'): string =>
+    entityType === 'MARKDOWN' ? 'MUTABLE' : 'IMMUTABLE';
+
+  /**
+   * 核心写入:借页面构造器逐块构造 blockMap 并经 X 自己的 onChange 提交。
+   * 全程 try/catch,异常带「失败环节前缀」(stage)返回,便于诊断定位。
+   */
+  const runImport = async (blocks: ImportBlock[], mode: ImportMode): Promise<ImportResult> => {
+    let stage = 'draft node';
+    console.info('[MarkFlow] 写入开始', { blocks: blocks.length, mode });
+    try {
+      let draftNode = findDraftStateNode();
+      if (!draftNode) return { ok: false, error: 'draft state node not found' };
+
+      // --- 取样本字符 -------------------------------------------------------
+      stage = 'sample character';
+      let sample = findCharacterSample(readEditorState(draftNode).getCurrentContent().getBlockMap());
+      // 凡走 execCommand 取样,后续一律按 replace 处理(插入的 'x' 会被整体替换掉)。
+      let forcedReplace = false;
+
+      if (!sample) {
+        // 全空草稿:focus 编辑器 → execCommand 强插一个字符逼出样本 → 轮询重抓等 React 落盘。
+        findEditorElement()?.focus();
+        document.execCommand('insertText', false, 'x');
+        for (let waited = 0; waited < 1600 && !sample; waited += 100) {
+          await delay(100);
+          const node = findDraftStateNode();
+          if (!node) continue;
+          const bm = readEditorState(node).getCurrentContent().getBlockMap();
+          const s = findCharacterSample(bm);
+          if (s) {
+            sample = s;
+            draftNode = node; // 采用取样后的最新状态节点
+          }
+        }
+        if (!sample) return { ok: false, error: 'sample character: unable to acquire via execCommand' };
+        forcedReplace = true;
+      }
+
+      // --- 借构造器(从取样后的最新 draftNode 上取)---------------------------
+      const editorState = readEditorState(draftNode);
+      const EditorStateClass = editorState.constructor as unknown as DraftEditorStateStatic;
+      // 借 SelectionState 类:提交时必须构造「指向新块」的合法 selection——
+      // 沿用旧 selection(携带被替换掉的旧块 key)会让 X 的 onChange 内部按旧 key
+      // 找块得到 undefined 而崩(_getPlaintextFromCurrentBlock,本次事故根因)。
+      const SelectionStateClass = editorState.getSelection()
+        .constructor as unknown as DraftSelectionStatic;
+      const contentState = editorState.getCurrentContent();
+      const blockMap = contentState.getBlockMap();
+      const sampleBlock = blockMap.first();
+      // 空 characterList 模板:从真实 Immutable 实例 clear() 得到,后续用 push() 逐个填充。
+      // **不**用 `constructor(数组)` 直造——那样对 Draft 内部 Immutable 子类不安全,
+      // 会产出畸形集合,Draft 遍历时拿到 undefined block → getText 崩(本次事故根因)。
+      const emptyCharList = sampleBlock.getCharacterList().clear();
+      // 空 data 模板:merge 不覆盖的字段会继承 sampleBlock 的——若首块 data 非空
+      // (如 append 到首块为 atomic 的文章),新块会悄悄继承那份 data,故显式清空。
+      const emptyBlockData = sampleBlock.getData().clear();
+
+      // append 语义:现有内容为空(所有块 text 均为空)时等价 replace。
+      let contentEmpty = true;
+      blockMap.forEach((b) => {
+        if (b.getText().length > 0) contentEmpty = false;
+      });
+      const effectiveMode: ImportMode = forcedReplace || contentEmpty ? 'replace' : mode;
+      console.info('[MarkFlow] 写入模式', { effectiveMode, forcedReplace, contentEmpty });
+
+      // --- 逐块构造(在一个 contentState 事务里累积 entity)---------------------
+      stage = 'build blocks';
+      let nextContent = contentState;
+      const emptyStyle = sample.getStyle().clear();
+      const built: Array<[string, DraftBlock]> = [];
+
+      blocks.forEach((block, index) => {
+        const key = Math.random().toString(36).slice(2, 7) + index.toString(36);
+
+        if (block.kind === 'text') {
+          // 每个 link 区间创建一个共享的 LINK entity(同区间字符共用一个 entity key)。
+          const linkKeys = block.links.map((link) => {
+            nextContent = nextContent.createEntity('LINK', 'MUTABLE', { url: link.url });
+            return { range: link, entityKey: nextContent.getLastCreatedEntityKey() };
+          });
+
+          const chars: DraftCharacter[] = [];
+          for (let i = 0; i < block.text.length; i += 1) {
+            // style:清空后叠加所有命中 inlineStyleRanges 的样式名。
+            let style = sample.getStyle().clear();
+            for (const r of block.inlineStyleRanges) {
+              if (i >= r.offset && i < r.offset + r.length) style = style.add(r.style);
+            }
+            // entity:命中 link 区间时挂对应 LINK entity key,否则为 null。
+            let entity: string | null = null;
+            for (const lk of linkKeys) {
+              if (i >= lk.range.offset && i < lk.range.offset + lk.range.length) {
+                entity = lk.entityKey;
+                break;
+              }
+            }
+            chars.push(sample.set('style', style).set('entity', entity));
+          }
+
+          // characterList:从空模板用实例方法 push() 逐个追加(不用 constructor 直造)。
+          let characterList = emptyCharList;
+          for (const c of chars) characterList = characterList.push(c);
+          const nextBlock = sampleBlock.merge({
+            key,
+            type: block.type,
+            text: block.text,
+            characterList,
+            depth: 0,
+            data: emptyBlockData,
+          });
+          built.push([key, nextBlock]);
+        } else {
+          // atomic 块:M1 单趟构造(无需 marker 占位再替换,那是 M2 图片时序才需要的)。
+          const mutability = atomicMutability(block.entityType);
+          nextContent = nextContent.createEntity(block.entityType, mutability, block.data);
+          const entityKey = nextContent.getLastCreatedEntityKey();
+          const char = sample.set('style', emptyStyle).set('entity', entityKey);
+          const nextBlock = sampleBlock.merge({
+            key,
+            type: 'atomic',
+            text: ' ', // atomic 块约定单空格文本,该字符挂 entity key
+            characterList: emptyCharList.push(char),
+            depth: 0,
+            data: emptyBlockData,
+          });
+          built.push([key, nextBlock]);
+        }
+      });
+
+      // --- blockMap 组装(实例方法 set 逐个填充:replace 从空建,append 从现有续)----
+      stage = 'assemble blockMap';
+      let nextBlockMap = effectiveMode === 'replace' ? blockMap.clear() : blockMap;
+      for (const [k, b] of built) nextBlockMap = nextBlockMap.set(k, b);
+
+      // --- 提交(走 X 自己的 onChange,undo 栈 / 自动保存全由 X 接管)-----------
+      stage = 'commit';
+      // 光标钉到「最后一个新块」的末尾:selectionBefore/After 与编辑器 selection 三处
+      // 都必须指向新 blockMap 中真实存在的块,X 内部任何按 key 找块的读取才不会落空。
+      const lastEntry = built[built.length - 1];
+      if (!lastEntry) return { ok: false, error: 'commit: no blocks to write' };
+      const [lastKey, lastBlock] = lastEntry;
+      const lastLen = lastBlock.getText().length;
+      const endSelection = SelectionStateClass.createEmpty(lastKey).merge({
+        anchorOffset: lastLen,
+        focusOffset: lastLen,
+      });
+      nextContent = nextContent
+        .set('blockMap', nextBlockMap)
+        .set('selectionBefore', endSelection)
+        .set('selectionAfter', endSelection);
+      let next = EditorStateClass.push(editorState, nextContent, 'insert-fragment');
+      next = EditorStateClass.forceSelection(next, endSelection);
+      (draftNode.props?.onChange as (s: DraftEditorState) => void)(next);
+      console.info('[MarkFlow] onChange 已提交,块数', built.length);
+
+      // --- 轻验证(仅 replace 强校验:新 blockMap 含我们的 key 数 ≥ blocks.length)------
+      stage = 'verify';
+      await delay(150);
+      if (effectiveMode === 'replace') {
+        const verifyNode = findDraftStateNode();
+        if (verifyNode) {
+          const verifyMap = readEditorState(verifyNode).getCurrentContent().getBlockMap();
+          const ourKeys = new Set(built.map(([k]) => k));
+          let hit = 0;
+          verifyMap.forEach((b) => {
+            if (ourKeys.has(b.getKey())) hit += 1;
+          });
+          if (hit < blocks.length) {
+            return { ok: false, error: `verify: only ${hit}/${blocks.length} blocks landed` };
+          }
+        }
+      }
+
+      console.info('[MarkFlow] 写入成功', { blockCount: blocks.length });
+      return { ok: true, blockCount: blocks.length };
+    } catch (err) {
+      // 打完整 err 对象(含堆栈),便于定位崩在 Draft 内部的哪一步
+      console.error(`[MarkFlow] 写入异常 @${stage}`, err);
+      return { ok: false, error: `${stage}: ${String(err)}` };
+    }
+  };
+
+  window.addEventListener('message', async (e) => {
     if (!isIsoMessage(e)) return;
     const msg = e.data;
     if (msg.kind === 'hello') {
@@ -152,6 +452,10 @@ export default defineUnlistedScript(() => {
       // 执行探针,回显请求的 nonce/id 以便 content 侧精确匹配并发请求
       const result = runProbe();
       post({ source: MAIN_SOURCE, kind: 'probe-result', nonce: msg.nonce, id: msg.id, result });
+    } else if (msg.kind === 'import') {
+      // 执行写入(async:取样轮询 / 提交后验证都要 await),回显 nonce/id
+      const result = await runImport(msg.blocks, msg.mode);
+      post({ source: MAIN_SOURCE, kind: 'import-result', nonce: msg.nonce, id: msg.id, result });
     }
   });
 

@@ -1,8 +1,13 @@
 import {
   ISO_SOURCE,
   createNonce,
+  isImportRequest,
   isMainMessage,
   isProbeRequest,
+  type ImportBlock,
+  type ImportMode,
+  type ImportResponse,
+  type ImportResult,
   type IsoMessage,
   type ProbeResponse,
   type ProbeResult,
@@ -45,6 +50,12 @@ export default defineContentScript({
       { resolve: (r: ProbeResult) => void; timer: ReturnType<typeof setTimeout> }
     >();
 
+    // 进行中的写入请求表:结构同 pendingProbes,按 id 索引以支持并发/精确匹配。
+    const pendingImports = new Map<
+      string,
+      { resolve: (r: ImportResult) => void; timer: ReturnType<typeof setTimeout> }
+    >();
+
     const onMessage = (e: MessageEvent) => {
       if (!isMainMessage(e)) return;
       const msg = e.data;
@@ -61,6 +72,14 @@ export default defineContentScript({
         if (p) {
           clearTimeout(p.timer);
           pendingProbes.delete(msg.id);
+          p.resolve(msg.result);
+        }
+      } else if (msg.kind === 'import-result' && msg.nonce === nonce) {
+        // nonce+id 双匹配:拦截历史残留 / 其他会话,并精确对应到发起的写入请求
+        const p = pendingImports.get(msg.id);
+        if (p) {
+          clearTimeout(p.timer);
+          pendingImports.delete(msg.id);
           p.resolve(msg.result);
         }
       }
@@ -89,10 +108,35 @@ export default defineContentScript({
       });
     };
 
-    // sidepanel ↔ content 的 chrome.runtime 通道:收到 markflow:probe 请求 → 转探针。
+    /**
+     * 向 injector 发起一次写入并等待应答(结构同 probeInjector):
+     * - 未握手 → 立即回 no-injector;
+     * - 已握手 → 生成唯一 id,postMessage import(携带 blocks/mode),等匹配的 import-result;
+     *   30s 超时回 timeout(写入含取样轮询 / DOM 落盘,给足冗余)。
+     */
+    const importInjector = (blocks: ImportBlock[], mode: ImportMode): Promise<ImportResponse> => {
+      if (!handshaked) return Promise.resolve({ ok: false, error: 'no-injector' });
+      const id = crypto.randomUUID();
+      return new Promise<ImportResponse>((resolve) => {
+        const timer = setTimeout(() => {
+          pendingImports.delete(id);
+          resolve({ ok: false, error: 'timeout' });
+        }, 30_000);
+        pendingImports.set(id, {
+          resolve: (result) => resolve(result),
+          timer,
+        });
+        post({ source: ISO_SOURCE, kind: 'import', nonce, id, blocks, mode });
+      });
+    };
+
+    // sidepanel ↔ content 的 chrome.runtime 通道:markflow:probe → 转探针;markflow:import → 转写入。
     // 返回 Promise 即异步应答(WXT/webextension-polyfill 约定:回 Promise 或 return true)。
-    const onRuntimeMessage = (message: unknown): Promise<ProbeResponse> | undefined => {
+    const onRuntimeMessage = (
+      message: unknown,
+    ): Promise<ProbeResponse | ImportResponse> | undefined => {
       if (isProbeRequest(message)) return probeInjector();
+      if (isImportRequest(message)) return importInjector(message.blocks, message.mode);
       return undefined; // 非本扩展关心的消息:不应答,交给其他监听器
     };
     browser.runtime.onMessage.addListener(onRuntimeMessage);
@@ -127,9 +171,11 @@ export default defineContentScript({
       stopRetry();
       window.removeEventListener('message', onMessage);
       browser.runtime.onMessage.removeListener(onRuntimeMessage);
-      // 清掉悬挂的探针定时器,避免失效后回调仍触发
+      // 清掉悬挂的探针 / 写入定时器,避免失效后回调仍触发
       for (const p of pendingProbes.values()) clearTimeout(p.timer);
       pendingProbes.clear();
+      for (const p of pendingImports.values()) clearTimeout(p.timer);
+      pendingImports.clear();
     });
   },
 });
