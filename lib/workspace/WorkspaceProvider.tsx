@@ -12,6 +12,7 @@ import { useSettings } from '@/lib/settings/SettingsProvider';
 import { useConnection } from '@/lib/bridge/useConnection';
 import { useProbe } from '@/lib/bridge/useProbe';
 import { importToXTab, setTitleOnXTab } from '@/lib/bridge/importArticle';
+import { requestRemoteImagePermissions } from '@/lib/bridge/imagePermissions';
 import type { ImportMode, SetTitleResponse, TitleConflict } from '@/lib/bridge/protocol';
 import { capability, firstTitle } from '@/lib/markdown/capability';
 import { extractTitle, stripFirstH1 } from '@/lib/markdown/frontmatter';
@@ -245,7 +246,7 @@ export function WorkspaceProvider({
 
   // ── 导入 ──
   // toastMsg:成功收尾提示,默认「已写入」;标题/空替换场景由 startImport 组合后传入。
-  const finishImport = useCallback((toastMsg: string = t.writtenToast) => {
+  const finishImport = useCallback((toastMsg: string = t.writtenToast, imageFail = 0) => {
     const cap = capability(md, en);
     const ok = cap.filter((c) => c.badge !== 'warn').reduce((a, c) => a + c.count, 0);
     const deg = cap.filter((c) => c.badge === 'warn').reduce((a, c) => a + c.count, 0);
@@ -256,7 +257,8 @@ export function WorkspaceProvider({
       date: `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')} ${now.toTimeString().slice(0, 5)}`,
       ok,
       deg,
-      fail: 0,
+      // 图片上传失败计入 fail(记录/报告如实反映),其余降级仍归 deg。
+      fail: imageFail,
       md,
     };
 
@@ -287,6 +289,9 @@ export function WorkspaceProvider({
       setReportVisible(false);
       setStageIdx(0);
       try {
+        // 远程图片 host 权限:必须在用户手势(写入点击链)内、任何其它 await 之前发起,
+        // 否则 Chrome 会以「非用户手势」拒绝弹窗。用户拒绝 → 那些图降级为原文,不阻断正文。
+        await requestRemoteImagePermissions(md);
         // 解析中(同步、瞬时)
         setStageLabel(t.stParse);
         setStagePct(40);
@@ -307,6 +312,11 @@ export function WorkspaceProvider({
           setStagePct(100);
           // #7:所选 append 但引擎实际降级为 replace(编辑器为空)→ 明确提示,不静默。
           let toastMsg = mode === 'append' && res.effectiveMode === 'replace' ? t.emptyReplaced : t.writtenToast;
+          // 图片上传结果:有图片时如实附上「成功/总数」,失败图已被引擎降级为原文。
+          const totalImg = res.imageOk + res.imageFail;
+          if (totalImg > 0) {
+            toastMsg = `${toastMsg} · ${en ? 'images' : '图片'} ${res.imageOk}/${totalImg}`;
+          }
           // 标题流程:正文已成功,再设置标题。标题失败不推翻正文成功结论(部分成功)。
           if (extracted) {
             // conflict 映射:'overwrite'→overwrite;'keep'/'ask' 一律 keep(保守)。
@@ -317,7 +327,7 @@ export function WorkspaceProvider({
             const titleRes = await setTitleOnXTab(extracted.title, conflict);
             toastMsg = `${toastMsg} · ${titleResultText(titleRes, t)}`;
           }
-          finishImport(toastMsg);
+          finishImport(toastMsg, res.imageFail);
         } else {
           // 失败:不写成功记录,以可读中文/英文提示错误(复位在 finally 统一处理)。
           showToast(importErrorText(res.error, t));
@@ -331,7 +341,7 @@ export function WorkspaceProvider({
         setImporting(false);
       }
     },
-    [md, t, opts.setTitle, opts.h1Handle, opts.titleConflict, finishImport, showToast],
+    [md, en, t, opts.setTitle, opts.h1Handle, opts.titleConflict, finishImport, showToast],
   );
 
   const writeX = useCallback(() => {
