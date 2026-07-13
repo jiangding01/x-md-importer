@@ -2,6 +2,7 @@ import type { CSSProperties } from 'react';
 import { useI18n } from '@/lib/i18n/useI18n';
 import { useWorkspace } from '@/lib/workspace/WorkspaceProvider';
 import { useConnection } from '@/lib/bridge/useConnection';
+import { useProbe } from '@/lib/bridge/useProbe';
 import { Celebration } from './Celebration';
 
 const barTrack: CSSProperties = {
@@ -16,6 +17,13 @@ export function Footer() {
   const { t } = useI18n();
   const { md, importing, stageLabel, stagePct, cancelImport, runCheck, writeX, celebrating } = useWorkspace();
   const { connected } = useConnection();
+  const { refresh: refreshProbe, loading: probing } = useProbe();
+
+  // 展开预检卡片的同时触发一轮真实探测,而不是只展示上一轮的旧结果。
+  const handleCheck = () => {
+    runCheck();
+    refreshProbe();
+  };
 
   const empty = !md.trim();
   const writeDisabled = empty || importing || !connected;
@@ -71,8 +79,17 @@ export function Footer() {
           <span style={{ flex: 1 }} />
           <button
             className="mf-btn mf-hover-soft"
-            onClick={runCheck}
-            style={{ border: '1px solid var(--line)', padding: '7px 14px', borderRadius: 'var(--btnR)', font: '500 11.5px var(--fUI)', color: 'var(--ink2)' }}
+            onClick={handleCheck}
+            disabled={probing}
+            style={{
+              border: '1px solid var(--line)',
+              padding: '7px 14px',
+              borderRadius: 'var(--btnR)',
+              font: '500 11.5px var(--fUI)',
+              color: probing ? 'var(--ink3)' : 'var(--ink2)',
+              cursor: probing ? 'default' : 'pointer',
+              opacity: probing ? 0.7 : 1,
+            }}
           >
             {t.check}
           </button>

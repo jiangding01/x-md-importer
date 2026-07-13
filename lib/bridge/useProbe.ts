@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  createContext,
+  createElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import {
   PROBE_REQUEST_TYPE,
   type ProbeResponse,
@@ -7,12 +17,16 @@ import {
 } from './protocol';
 
 /**
- * 侧边栏「三灯状态条」探针 hook —— sidepanel 侧的探针数据流:
+ * 侧边栏「三灯状态条」探针 —— sidepanel 侧的探针数据流:
  *   1. 定位目标 X 标签页(优先当前窗口的 active tab,其次任意一个);
  *   2. 经 browser.tabs.sendMessage 向该 tab 的 content script 发起 markflow:probe 请求;
  *   3. content 再转 injector,层层转译为下面五态之一。
  *
  * 触发时机:面板挂载时探一次 + 手动调用 refresh();不做轮询。
+ *
+ * M1 重构:由「每个消费组件各自独立探测」改为「整个面板共享一次探测」——
+ * 状态与 runProbe 逻辑上提到 <ProbeProvider>,useProbe() 退化为消费 context。
+ * 逻辑本身未改动(seq 防竞态、五态映射、tab 选取策略、错误兜底全保留)。
  */
 
 /** 探针状态机:挂载即视为「探测中」,而非额外的 idle 态。 */
@@ -32,7 +46,17 @@ export interface ProbeState {
 const X_TAB_MATCHES = ['*://x.com/*', '*://twitter.com/*'];
 const PROBE_REQUEST: RuntimeRequest = { type: PROBE_REQUEST_TYPE };
 
-export function useProbe(): ProbeState {
+const ProbeContext = createContext<ProbeState | null>(null);
+
+interface ProbeProviderProps {
+  children: ReactNode;
+}
+
+/**
+ * 探针状态 Provider:持有面板级别唯一的一份探针状态与 runProbe 逻辑,
+ * 挂载时自动探一次。所有消费者(StatusBar、useConnection)共享同一份状态。
+ */
+export function ProbeProvider({ children }: ProbeProviderProps) {
   const [status, setStatus] = useState<ProbeStatus>('probing');
   const [result, setResult] = useState<ProbeResult | null>(null);
   // 探测序号:防止「刷新中又刷新」时,上一轮迟到的结果覆盖新一轮已落地的状态。
@@ -92,9 +116,26 @@ export function useProbe(): ProbeState {
     }
   }, []);
 
+  // 面板挂载时探一次(整个面板只探一次,而非每个消费者各探一次)。
   useEffect(() => {
     void runProbe();
   }, [runProbe]);
 
-  return { status, result, loading: status === 'probing', refresh: runProbe };
+  const value = useMemo<ProbeState>(
+    () => ({ status, result, loading: status === 'probing', refresh: runProbe }),
+    [status, result, runProbe],
+  );
+
+  // 保持本文件为 .ts(不引入 JSX),用 createElement 挂 Provider。
+  return createElement(ProbeContext.Provider, { value }, children);
+}
+
+/**
+ * 消费共享探针状态。对外 API 与重构前完全一致:{status, result, loading, refresh}。
+ * 必须在 <ProbeProvider> 内使用,否则抛出清晰错误。
+ */
+export function useProbe(): ProbeState {
+  const ctx = useContext(ProbeContext);
+  if (!ctx) throw new Error('useProbe 必须在 <ProbeProvider> 内使用');
+  return ctx;
 }

@@ -1,6 +1,10 @@
+import { useProbe } from './useProbe';
+
 /**
  * 与 X 文章编辑页的连接状态。
- * Phase A 为 mock；M1 接真实 content-script 探针（页面 / 编辑器实例 / 上传通道）。
+ * M1 起为真探针适配层:基于共享的 <ProbeProvider> 派生,不再是 Phase A 的写死 mock。
+ * 对外仍暴露同一份 ConnectionState 接口,4 处消费者(PreflightCard / Footer /
+ * DraftTab / WorkspaceProvider)无需改动。
  */
 export interface ConnectionState {
   connected: boolean;
@@ -8,6 +12,10 @@ export interface ConnectionState {
 }
 
 export function useConnection(): ConnectionState {
-  // TODO(M1): 替换为真实探针订阅
-  return { connected: true, route: 'articles/edit/19…' };
+  const { status, result } = useProbe();
+  // 语义:真正「在文章编辑页且 Draft 可写」——探针 ready + 定位到 Draft 实例 + 拿到 articleId。
+  const connected =
+    status === 'ready' && result !== null && result.hasDraftNode && result.articleId !== null;
+  const route = result?.articleId ? `articles/edit/${result.articleId}` : '';
+  return { connected, route };
 }
