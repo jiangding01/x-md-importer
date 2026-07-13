@@ -44,7 +44,7 @@ export function capability(md: string, en: boolean): CapItem[] {
     en ? 'Tables → native' : '表格 → 原生表格',
     c(/^\s*\|?[\s:|-]+\|?\s*$/gm),
     'special',
-    en ? 'atomic entity · beats competitors' : 'atomic entity·超越竞品',
+    en ? 'atomic entity · native table' : 'atomic entity·原生渲染',
   );
   add(
     en ? 'Code blocks → native' : '代码块 → 原生代码块',

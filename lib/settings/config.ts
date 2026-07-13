@@ -94,7 +94,7 @@ export function settingsConfig({ en, folderConnected, wipeArm }: ConfigCtx): Set
         { k: 'compress', t: 'toggle', label: T('图片压缩', 'Image compression'), desc: T('>150KB 才压;上传更快、更抗限流。', 'Only if >150KB; faster & safer uploads.') },
         { k: 'maxEdge', t: 'select', label: T('最大长边', 'Max long edge'), desc: T('压缩时的尺寸上限。', 'Size cap when compressing.'), opts: [o('960', '960px', '960px'), o('1280', '1280px', '1280px'), o('1600', '1600px', '1600px'), o('orig', '原图', 'Original')] },
         { k: 'quality', t: 'select', label: T('压缩质量', 'Quality'), desc: T('JPEG 质量(60-95)。', 'JPEG quality (60-95).'), opts: [o('60', '60', '60'), o('70', '70', '70'), o('82', '82(推荐)', '82 (rec.)'), o('90', '90', '90'), o('95', '95', '95')] },
-        { k: 'altCaption', t: 'toggle', label: T('alt 写入图注 ★', 'Alt → caption ★'), desc: T('![alt](src) 的 alt 自动填入 X 图片 caption,竞品均未做。', 'Auto-fill X image captions from alt text.') },
+        { k: 'altCaption', t: 'toggle', label: T('alt 写入图注 ★', 'Alt → caption ★'), desc: T('![alt](src) 的 alt 自动填入 X 图片 caption。', 'Auto-fill X image captions from alt text.') },
       ],
     },
     {
