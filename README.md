@@ -11,13 +11,13 @@ Chrome 扩展（Manifest V3）· WXT + React 18 + TypeScript · 侧边栏工作�
 - **Markdown → X 文章**：解析后写入 X 的 Draft.js 编辑器，尽可能保留原生排版。
 - **四套界面主题**：极简 / 控制台 / 纸感 / 玻璃，每套再分明暗，一键切换。
 - **能力映射预览** ⭐：写入前逐项告知每个 Markdown 元素会变成什么（原生 / 特殊块 / 图片 / 降级），不会「导入完才发现表格丢了」。
-- **原生表格 & 代码块**：走 X 的 atomic entity（`MARKDOWN` / 表格 entity），而非把表格转图片——这是相较现有竞品的核心差异化。
-- **预检探针**：写入前检查目标页面 / 编辑器实例 / 上传通道 / 已有内容 / 素材就绪。
+- **原生代码块 & 特殊块**：代码块走 X 的 `MARKDOWN` atomic entity（带语言）、分割线走 `DIVIDER`、推文走 `TWEET`，而非一律转图片。表格原生渲染在后续里程碑。
+- **预检探针**：写入前检查目标页面 / 编辑器实例 / 上传通道是否就绪。
 - **导入报告 + 记录**：逐项成功/降级/失败清单；历史记录可搜索、载入、复制、重导。
 - **丰富设置**：导入行为、标题与封面、内容转换、图片与媒体、成功反馈、快捷键、高级项等九组（渐进披露，开箱即用）。
 - **中英双语** · **永不自动发布**（发布按钮永远留给用户）。
 
-> ⚠️ 当前状态：**Side Panel UI 已完成**；「写入 X」等注入动作暂为 mock 时序演示，真实的 Draft.js 注入引擎将在 M1 接入（接口已预留，不改 UI）。详见 [HANDOFF.md](./HANDOFF.md)。
+> ⚠️ 当前状态：**侧边栏 UI + M1 注入引擎 + M2 标题设置已完成**——Markdown 正文可**真实写入** X 编辑器（标题/粗斜删/行内代码/链接/引用/列表/代码块/分割线/推文），标题自动填入。**图片上传与封面**在 M2 Phase 2 进行中。详见 [HANDOFF.md](./HANDOFF.md)。
 
 ## 快速开始
 
@@ -52,6 +52,8 @@ pnpm compile          # 仅类型检查（tsc --noEmit）
 x-md-importer/
 ├── entrypoints/
 │   ├── background.ts              # MV3 service worker（打开侧边栏）
+│   ├── content.ts                 # ISOLATED world：注入 injector + 握手 + 请求桥
+│   ├── injector.ts                # MAIN world：fiber 探针 + Draft 直写 + 标题设置
 │   └── sidepanel/                 # 侧边栏 React 应用
 │       ├── main.tsx               # 入口：加载偏好/设置/草稿/记录 → 挂载 Provider
 │       ├── App.tsx                # 外壳 + tab 路由
@@ -62,10 +64,10 @@ x-md-importer/
 │   ├── i18n/                      # 中英字典 + useI18n
 │   ├── prefs/                     # PrefsProvider（主题/语言）
 │   ├── settings/                  # Options 模型 + SettingsProvider + 九组配置
-│   ├── workspace/                 # WorkspaceProvider（草稿/记录/导入时序）+ importService（mock）
-│   ├── markdown/                  # 预览渲染 + 能力映射分析 + 示例
+│   ├── workspace/                 # WorkspaceProvider（草稿/记录 + 真实导入流程）
+│   ├── markdown/                  # 解析器 parser + 标题抽取 frontmatter + 预览 + 能力映射
 │   ├── storage/                   # chrome.storage 持久化切片
-│   └── bridge/                    # 与 X 页面的连接状态（M1 接真实探针）
+│   └── bridge/                    # 三方通信协议 + 探针 + 写入/标题发送 + tab 定位
 └── docs/                          # 技术方案设计、调研报告、M0 探针产物
 ```
 
