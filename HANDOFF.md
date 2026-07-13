@@ -125,7 +125,7 @@ background（开侧栏）                          injector.ts（MAIN world，�
 | **图片上传·远程 http(s)** | ✅ 已实现（`feat/m2-media-cover`，待真机验证）：background 代理 + onFilesAdded + marker 归位 | M2 Phase 2a |
 | **图片上传·dataURI** | ✅ 已实现（content 就地解析） | M2 Phase 2a |
 | **图片·本地相对路径** | 降级为原文（`prepareOneImage` local 分支返回 null） | **M2 Phase 2b**（FS Access 文件夹授权） |
-| **封面设置**（frontmatter cover / 正文首图） | 🚧 已实现（`feat/m2-cover`，待真机验证）：injector `setCoverImage` 塞 X 封面 fileInput | M2 Phase 2b |
+| **封面设置**（frontmatter cover / 正文首图·远程/dataURI） | ✅ 真机验证通过（`feat/m2-cover` PR #5）：`setCoverImage` 塞封面 fileInput + 自动点「Edit media」弹窗 Apply 落地 | M2 Phase 2b |
 | **alt → 图注（caption）** | 未做:caption 是弹窗（`data-testid="sheetDialog"` + contenteditable + Save）,需逐图 UI 自动化,跳过垃圾/空 alt | M2 Phase 2b（下一个） |
 | 表格 → canvas 渲图 | parser 未特殊处理表格（当前按文本） | M3 |
 | 「打开 X Articles」按钮 | 仅文案，无 `tabs.create` 跳转 | 顺手补 |
