@@ -43,6 +43,32 @@ export type MainMessage =
   | { source: MainSource; kind: 'hello-ack'; nonce: string }
   | { source: MainSource; kind: 'probe-result'; nonce: string; id: string; result: ProbeResult };
 
+/**
+ * sidepanel ↔ content 的 chrome.runtime 消息(第二条通道,区别于上面 window.postMessage
+ * 的 content ↔ injector 通道)。用 discriminated union(判别字段 `type`)描述请求,便于
+ * 以后扩展更多 type(如 'markflow:import'、'markflow:page-status');应答复用 ProbeResult。
+ */
+
+/** sidepanel → content 的请求。 */
+export type RuntimeRequest = { type: 'markflow:probe' };
+
+/** content → sidepanel 的探针应答:成功回结果,失败回明确的错误码。 */
+export type ProbeResponse =
+  | { ok: true; result: ProbeResult }
+  | { ok: false; error: 'no-injector' | 'timeout' };
+
+/** 探针请求的判别常量(收发两端共享,避免裸字符串散落)。 */
+export const PROBE_REQUEST_TYPE = 'markflow:probe' as const;
+
+/** 运行时守卫:窄化「探针请求」——只认判别字段 `type` 匹配的对象。 */
+export function isProbeRequest(msg: unknown): msg is { type: typeof PROBE_REQUEST_TYPE } {
+  return (
+    typeof msg === 'object' &&
+    msg !== null &&
+    (msg as { type?: unknown }).type === PROBE_REQUEST_TYPE
+  );
+}
+
 /** 生成一次会话的 nonce:每次注入独立,防止与历史残留 / 其他扩展的消息串扰。 */
 export function createNonce(): string {
   return crypto.randomUUID();

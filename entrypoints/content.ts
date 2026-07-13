@@ -2,7 +2,10 @@ import {
   ISO_SOURCE,
   createNonce,
   isMainMessage,
+  isProbeRequest,
   type IsoMessage,
+  type ProbeResponse,
+  type ProbeResult,
 } from '@/lib/bridge/protocol';
 
 /**
@@ -35,6 +38,13 @@ export default defineContentScript({
       }
     };
 
+    // 进行中的探针请求表:按 id 索引(而非单一全局变量),以支持同一时刻多个 probe 并发。
+    // 每项持有 resolve 回调与超时定时器,收到匹配的 probe-result 或超时后从表中删除。
+    const pendingProbes = new Map<
+      string,
+      { resolve: (r: ProbeResult) => void; timer: ReturnType<typeof setTimeout> }
+    >();
+
     const onMessage = (e: MessageEvent) => {
       if (!isMainMessage(e)) return;
       const msg = e.data;
@@ -45,9 +55,47 @@ export default defineContentScript({
         handshaked = true;
         stopRetry();
         console.info('[MarkFlow] content↔injector 握手成功', { nonce });
+      } else if (msg.kind === 'probe-result' && msg.nonce === nonce) {
+        // 用 id 精确匹配并发探针;nonce 校验拦截历史残留 / 其他会话的串扰
+        const p = pendingProbes.get(msg.id);
+        if (p) {
+          clearTimeout(p.timer);
+          pendingProbes.delete(msg.id);
+          p.resolve(msg.result);
+        }
       }
     };
     window.addEventListener('message', onMessage);
+
+    /**
+     * 向 injector 发起一次探针并等待应答:
+     * - 未握手 → 立即回 no-injector;
+     * - 已握手 → 生成唯一 id,postMessage probe,等匹配(nonce+id)的 probe-result;
+     *   2500ms 超时回 timeout。
+     */
+    const probeInjector = (): Promise<ProbeResponse> => {
+      if (!handshaked) return Promise.resolve({ ok: false, error: 'no-injector' });
+      const id = crypto.randomUUID();
+      return new Promise<ProbeResponse>((resolve) => {
+        const timer = setTimeout(() => {
+          pendingProbes.delete(id);
+          resolve({ ok: false, error: 'timeout' });
+        }, 2500);
+        pendingProbes.set(id, {
+          resolve: (result) => resolve({ ok: true, result }),
+          timer,
+        });
+        post({ source: ISO_SOURCE, kind: 'probe', nonce, id });
+      });
+    };
+
+    // sidepanel ↔ content 的 chrome.runtime 通道:收到 markflow:probe 请求 → 转探针。
+    // 返回 Promise 即异步应答(WXT/webextension-polyfill 约定:回 Promise 或 return true)。
+    const onRuntimeMessage = (message: unknown): Promise<ProbeResponse> | undefined => {
+      if (isProbeRequest(message)) return probeInjector();
+      return undefined; // 非本扩展关心的消息:不应答,交给其他监听器
+    };
+    browser.runtime.onMessage.addListener(onRuntimeMessage);
 
     // 注入 MAIN world 引擎(WXT 会自动将 injector.js 加入 web_accessible_resources)。
     // x.com CSP 可能拦截 chrome-extension 脚本加载,故 try/catch 明确报错以便诊断。
@@ -78,6 +126,10 @@ export default defineContentScript({
     ctx.onInvalidated(() => {
       stopRetry();
       window.removeEventListener('message', onMessage);
+      browser.runtime.onMessage.removeListener(onRuntimeMessage);
+      // 清掉悬挂的探针定时器,避免失效后回调仍触发
+      for (const p of pendingProbes.values()) clearTimeout(p.timer);
+      pendingProbes.clear();
     });
   },
 });
