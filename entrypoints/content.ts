@@ -1,21 +1,94 @@
 import {
+  FETCH_IMAGE_TYPE,
   ISO_SOURCE,
+  classifyImageSource,
   createNonce,
   isImportRequest,
   isMainMessage,
   isProbeRequest,
   isSetTitleRequest,
+  type FetchImageResponse,
+  type ImageBlock,
   type ImportBlock,
   type ImportMode,
   type ImportResponse,
   type ImportResult,
   type IsoMessage,
+  type PreparedImage,
   type ProbeResponse,
   type ProbeResult,
   type SetTitleResponse,
   type SetTitleResult,
   type TitleConflict,
 } from '@/lib/bridge/protocol';
+
+/** 允许的图片 MIME(与 background 一致):dataURI 解析时也据此校验。 */
+const ALLOWED_IMAGE_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+
+/**
+ * base64 → Uint8Array(atob 逐字符;非法 base64 抛错由调用方兜底)。
+ * 显式在 ArrayBuffer 上构造(而非 `new Uint8Array(len)`),以得到 `Uint8Array<ArrayBuffer>`——
+ * TS 5.9 的 typed-array 泛型下,只有它能直接作 BlobPart 传给 File/Blob 构造器。
+ */
+function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(new ArrayBuffer(binary.length));
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+/** 解析 dataURI 图片为 File;非图片 / 非白名单 MIME / 解析失败 → null。 */
+function dataUriToFile(uri: string): File | null {
+  // mime 后允许任意参数段(如 ;charset=utf-8),base64 标记可能夹在参数中间。
+  const m = /^data:([^;,]+)?((?:;[^;,]+)*),([\s\S]*)$/.exec(uri);
+  if (!m) return null;
+  const mime = (m[1] || '').toLowerCase();
+  // 无 mime(data:,…)或非白名单图片一律拒绝——不默认 png,避免把文本字节当图片上传。
+  if (!ALLOWED_IMAGE_MIME.has(mime)) return null;
+  const isBase64 = /;base64\b/.test((m[2] || '').toLowerCase());
+  const data = m[3] ?? '';
+  try {
+    let bytes: Uint8Array<ArrayBuffer>;
+    if (isBase64) {
+      bytes = base64ToBytes(data);
+    } else {
+      const enc = new TextEncoder().encode(decodeURIComponent(data));
+      bytes = new Uint8Array(new ArrayBuffer(enc.length));
+      bytes.set(enc);
+    }
+    const ext = mime.slice(mime.indexOf('/') + 1).replace('jpeg', 'jpg');
+    return new File([bytes], `image.${ext}`, { type: mime });
+  } catch {
+    return null;
+  }
+}
+
+/** 准备单张图片的字节:dataURI 就地解析,远程委托 background 代理,本地暂不支持(降级)。 */
+async function prepareOneImage(block: ImageBlock): Promise<PreparedImage> {
+  try {
+    const kind = classifyImageSource(block.source);
+    if (kind === 'data') return { file: dataUriToFile(block.source) };
+    if (kind === 'remote') {
+      const resp = (await browser.runtime.sendMessage({ type: FETCH_IMAGE_TYPE, url: block.source })) as
+        | FetchImageResponse
+        | undefined;
+      if (resp?.ok) {
+        return { file: new File([base64ToBytes(resp.base64)], resp.fileName, { type: resp.mime }) };
+      }
+      return { file: null };
+    }
+    // local(本地相对路径):本 PR 不支持,留待 FS Access 里程碑;降级为 fallbackText。
+    return { file: null };
+  } catch {
+    return { file: null };
+  }
+}
+
+/** 按文档顺序准备 blocks 中所有 ImageBlock 的字节,返回与之对齐的 PreparedImage[]。 */
+async function prepareImages(blocks: ImportBlock[]): Promise<PreparedImage[]> {
+  const imageBlocks = blocks.filter((b): b is ImageBlock => b.kind === 'image');
+  return Promise.all(imageBlocks.map(prepareOneImage));
+}
 
 /**
  * ISOLATED world content script:x.com 文章编辑页的编排器。
@@ -155,12 +228,19 @@ export default defineContentScript({
      * - 已握手 → 经桥发 import(携带 blocks/mode),等匹配的 import-result;30s 超时回 timeout
      *   (写入含取样轮询 / DOM 落盘,给足冗余)。ImportResult 成功分支含 effectiveMode,透传即可。
      */
-    const importInjector = (blocks: ImportBlock[], mode: ImportMode): Promise<ImportResponse> => {
-      if (!handshaked) return Promise.resolve({ ok: false, error: 'no-injector' });
+    const importInjector = async (blocks: ImportBlock[], mode: ImportMode): Promise<ImportResponse> => {
+      if (!handshaked) return { ok: false, error: 'no-injector' };
+      // 先在 ISOLATED 侧准备图片字节(dataURI 就地解析 / 远程走 background 代理),
+      // 再随 import 消息把 File 交给 injector——File 经结构化克隆跨 world 传递。
+      const images = await prepareImages(blocks);
+      // 通道超时必须显著大于「图片数 × injector 单图 30s 预算」,否则慢图/多图会先在通道超时,
+      // 报失败并丢弃 injector 事后回来的成功结果(而 injector 仍在后台改写编辑器)。基础 45s +
+      // 每图 40s(单图 30s 预算 + 归位/清理冗余)。
+      const timeoutMs = 45_000 + images.length * 40_000;
       return bridge.request<ImportResult, ImportResponse>(
         'import-result',
-        (id) => post({ source: ISO_SOURCE, kind: 'import', nonce, id, blocks, mode }),
-        30_000,
+        (id) => post({ source: ISO_SOURCE, kind: 'import', nonce, id, blocks, mode, images }),
+        timeoutMs,
         (result) => result,
         () => ({ ok: false, error: 'timeout' }),
       );

@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+### 新增 · M2 Phase 2 — 图片上传：远程 + dataURI（feat/m2-media-cover，待合并）
+- **图片上传引擎**：独占一行的 `![alt](src)` → `ImageBlock`；injector 走「marker 占位 → `onFilesAdded` 交 File → 轮询新增 MEDIA entity + 递归挖 mediaId → 归位到 marker 处 → 清 marker」异步事务；上传失败降级写回原文 `![alt](src)`，不静默丢内容。遵守 M1 三条 Draft 直写硬约束。
+- **远程图片**：background service worker 代理下载，含 SSRF 防护（私网/回环/链路本地 + IPv4-mapped IPv6 黑名单 + 跟随重定向后复检最终落点）、流式读取 + 16MB 体积上限、magic-byte 真实类型嗅探（响应头/扩展名不可信）；`optional_host_permissions` 在写入手势内按图片 origin 运行时申请。
+- **dataURI**：content 就地解析（白名单图片 MIME，容忍 charset 等参数）。
+- **健壮性**：injector 并发导入护栏（防重试并发写坏 Draft）；content→injector 通道超时随图片数放大（`45s + 图数×40s`，防慢图/多图误判超时并丢弃成功结果）；图片上传结果如实计入 toast 与历史记录。
+- **两轮 code review**（注入正确性 + 跨 world 数据流/安全）修复 7 条阻断/安全问题：超时不放大、`sweepMarkers` 删空导致空 blockMap 崩、权限申请 `contains` 预检打断手势链、SSRF IPv4-mapped/重定向绕过、体积上限读完才判导致内存耗尽、dataURI 参数误伤等。
+- **已知差异（待真机验证后精修）**：多图 relocate 未清理 X 原子插入产生的空分裂块（正文可能多空行）；marker 被 X 插入破坏时无 fallback 顺序配对（多图可能错位）。
+- **暂未做**：本地图片文件夹（FS Access 授权）、封面设置（走 X 封面 fileInput）——留待下一 PR。
+
 ### 新增 · M2 Phase 1 — 标题设置（PR #2）
 - **文章标题自动设置**（仅 UI 通道）：`extractTitle` 抽取（frontmatter `title` > 正文首个 H1，跳过代码块），injector `setTitle` 打分定位标题输入框写入；`h1Handle=remove` 时在 md 文本层去重首个 H1（`stripFirstH1`）。GraphQL 通道（queryId 易随 X 发版失效）留 TODO。
 - **frontmatter 不再泄入正文**：parser 跳过文首 `---…---` 块（此前会被当「分割线+文本+分割线」写入正文）。
@@ -31,7 +40,7 @@
 - `docs/qa/`：`comparison.html`（13 组视图双图并排 + 结论）、`README.md`、`shots/`（26 张基准截图）。结论：四主题 × 中英还原度整体很高。
 
 ### 待办
-- **M2 Phase 2**：图片上传（onFilesAdded 桥 + MEDIA entity diff + mediaId 轮询 + marker 归位）+ 封面设置 + 本地文件夹（FS Access）。
+- **M2 Phase 2 收尾**：本地图片文件夹（FS Access 授权 + IndexedDB 存 handle）、封面设置（X 封面 fileInput）；真机验证后精修多图 relocate 的空块清理与 fallback 配对。
 
 ## [0.1.0] - 2026-07-13
 

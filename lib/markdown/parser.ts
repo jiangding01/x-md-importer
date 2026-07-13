@@ -32,6 +32,8 @@ interface Fence {
 
 const RE_DIVIDER = /^(-{3,}|\*{3,})$/;
 const RE_TWEET = /^https?:\/\/(?:www\.)?(?:x|twitter)\.com\/[^/]+\/status\/(\d+)\/?$/;
+/** 独占一行的图片 `![alt](src)`。src 用贪婪 `.+` 取到最后一个 `)`,容忍 URL 内含括号。 */
+const RE_IMAGE_LINE = /^!\[([^\]]*)\]\((.+)\)$/;
 const RE_HEADING = /^(#{1,6})\s+(.*)$/;
 const RE_BLOCKQUOTE = /^>/;
 const RE_UL = /^[-*+]\s+(.*)$/;
@@ -110,7 +112,18 @@ export function parseMarkdown(md: string): ImportBlock[] {
       continue;
     }
 
-    // 4. 空行:跳过
+    // 4. 独占一行的图片 → ImageBlock(字节由 content 准备,injector 走 onFilesAdded 上传)。
+    //    行内图片(段落中的 `![]()`)不在此列,仍按普通文本保留(M1 边界)。
+    const imageLine = line.trim().match(RE_IMAGE_LINE);
+    if (imageLine) {
+      const alt = imageLine[1] ?? '';
+      const src = (imageLine[2] ?? '').trim();
+      blocks.push({ kind: 'image', source: src, alt, fallbackText: line.trim() });
+      i += 1;
+      continue;
+    }
+
+    // 5. 空行:跳过
     if (line.trim() === '') {
       i += 1;
       continue;
@@ -199,6 +212,7 @@ function isBlockBoundary(line: string): boolean {
   if (matchFenceOpen(line)) return true;
   if (RE_DIVIDER.test(line)) return true;
   if (RE_TWEET.test(line)) return true;
+  if (RE_IMAGE_LINE.test(line.trim())) return true;
   if (RE_HEADING.test(line)) return true;
   if (RE_BLOCKQUOTE.test(line)) return true;
   if (RE_UL.test(line)) return true;

@@ -86,8 +86,44 @@ export type AtomicBlock =
   | { kind: 'atomic'; entityType: 'MARKDOWN'; data: { markdown: string } }
   | { kind: 'atomic'; entityType: 'TWEET'; data: { url: string; tweetId: string } };
 
-/** 写入块 = 文本块 | 特殊块,按文档顺序排列。 */
-export type ImportBlock = TextBlock | AtomicBlock;
+/**
+ * 图片块(M2 Phase 2)。解析器只产出「来源 + alt + 兜底原文」,不含字节;
+ * 字节由 content(ISOLATED)按来源准备(dataURI 就地解析 / 远程走 background 代理),
+ * 再以 PreparedImage 随 import 消息经 window.postMessage 交给 injector 走 onFilesAdded 上传。
+ * 上传失败 → injector 把 marker 占位替换回 fallbackText(原始 `![alt](src)`),不静默丢内容。
+ */
+export interface ImageBlock {
+  kind: 'image';
+  /** 原始图片来源:远程 http(s) URL / dataURI / 本地相对路径。 */
+  source: string;
+  /** 图片替代文本(M2 Phase 2b 将写入 X 图注)。 */
+  alt: string;
+  /** 上传失败时写回正文的原始 Markdown(如 `![alt](src)`)。 */
+  fallbackText: string;
+}
+
+/** 写入块 = 文本块 | 特殊块 | 图片块,按文档顺序排列。 */
+export type ImportBlock = TextBlock | AtomicBlock | ImageBlock;
+
+/** 图片来源分类:决定字节的准备路径。 */
+export type ImageSourceKind = 'remote' | 'data' | 'local';
+
+/** 判定图片来源类别(与 lib/markdown/capability.ts 的 images() 分类一致)。 */
+export function classifyImageSource(src: string): ImageSourceKind {
+  if (src.startsWith('data:')) return 'data';
+  if (/^https?:\/\//i.test(src)) return 'remote';
+  return 'local';
+}
+
+/**
+ * content 准备好、随 import 消息交给 injector 的单张图片字节。
+ * file 为 null 表示该图准备失败(远程被拒/权限未授/本地暂不支持)——injector 据此走
+ * fallbackText 降级。数组按**文档顺序**与 blocks 中的 ImageBlock 一一对齐(第 k 个
+ * ImageBlock 用 images[k]),不额外传 marker,避免跨数组 key 维护。
+ */
+export interface PreparedImage {
+  file: File | null;
+}
 
 /** 写入模式:replace 整体替换编辑器内容;append 在现有内容之后追加。 */
 export type ImportMode = 'replace' | 'append';
@@ -98,7 +134,7 @@ export type ImportMode = 'replace' | 'append';
  * 降级为 replace,UI 依此感知「用户所选」与「实际执行」的偏差,不再静默。
  */
 export type ImportResult =
-  | { ok: true; blockCount: number; effectiveMode: ImportMode }
+  | { ok: true; blockCount: number; effectiveMode: ImportMode; imageOk: number; imageFail: number }
   | { ok: false; error: string };
 
 /**
@@ -119,7 +155,16 @@ export type SetTitleResult =
 export type IsoMessage =
   | { source: IsoSource; kind: 'hello'; nonce: string }
   | { source: IsoSource; kind: 'probe'; nonce: string; id: string }
-  | { source: IsoSource; kind: 'import'; nonce: string; id: string; blocks: ImportBlock[]; mode: ImportMode }
+  | {
+      source: IsoSource;
+      kind: 'import';
+      nonce: string;
+      id: string;
+      blocks: ImportBlock[];
+      mode: ImportMode;
+      /** 与 blocks 中 ImageBlock 按文档顺序对齐的已准备图片字节(File 经结构化克隆传递)。 */
+      images: PreparedImage[];
+    }
   | { source: IsoSource; kind: 'set-title'; nonce: string; id: string; title: string; conflict: TitleConflict };
 
 /** MAIN → ISOLATED 的消息。 */
@@ -157,7 +202,7 @@ export type ProbeResponse =
  * 通道层错误(未握手/超时)与引擎错误共用 ok:false 形状,error 短语区分。
  */
 export type ImportResponse =
-  | { ok: true; blockCount: number; effectiveMode: ImportMode }
+  | { ok: true; blockCount: number; effectiveMode: ImportMode; imageOk: number; imageFail: number }
   | { ok: false; error: 'no-injector' | 'timeout' | string };
 
 /** content → sidepanel 的标题设置应答:透传 SetTitleResult,叠加通道层错误。 */
@@ -193,6 +238,34 @@ export function isSetTitleRequest(
     typeof msg === 'object' &&
     msg !== null &&
     (msg as { type?: unknown }).type === SET_TITLE_REQUEST_TYPE
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 远程图片抓取(content → background)。content script 受页面 CORS 约束不能跨域取图,
+// 故委托给 background service worker(持扩展 host 权限)代理下载,base64 回传。
+// ---------------------------------------------------------------------------
+
+export const FETCH_IMAGE_TYPE = 'markflow:fetch-image' as const;
+
+/** content → background:请求代理下载一张远程图片。 */
+export interface FetchImageRequest {
+  type: typeof FETCH_IMAGE_TYPE;
+  url: string;
+}
+
+/** background → content:成功回 base64 + MIME;失败回诊断短语。 */
+export type FetchImageResponse =
+  | { ok: true; base64: string; mime: string; fileName: string }
+  | { ok: false; error: string };
+
+/** 运行时守卫:窄化「抓图请求」。 */
+export function isFetchImageRequest(msg: unknown): msg is FetchImageRequest {
+  return (
+    typeof msg === 'object' &&
+    msg !== null &&
+    (msg as { type?: unknown }).type === FETCH_IMAGE_TYPE &&
+    typeof (msg as { url?: unknown }).url === 'string'
   );
 }
 

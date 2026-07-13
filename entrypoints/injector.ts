@@ -5,6 +5,7 @@ import {
   type ImportMode,
   type ImportResult,
   type MainMessage,
+  type PreparedImage,
   type ProbeResult,
   type SetTitleResult,
   type TitleConflict,
@@ -82,26 +83,41 @@ interface DraftBlockData {
 /** Draft.js ContentBlock。 */
 interface DraftBlock {
   getKey(): string;
+  getType(): string;
   getText(): string;
   getCharacterList(): DraftCharacterList;
   getData(): DraftBlockData;
+  /** 取该块 offset 处字符挂的 entity key(无则 null)——用于识别 atomic 块的 MEDIA entity。 */
+  getEntityAt(offset: number): string | null;
   merge(props: Record<string, unknown>): DraftBlock;
 }
 
 /**
  * Immutable.OrderedMap<string, ContentBlock>。用实例方法 clear()/set() 逐个构建
  * (set 新 key 追加在尾部,保序);不用 `constructor(entries)` 直造。
+ * forEach 回调按 Immutable 约定接 (value, key)。
  */
 interface DraftBlockMap {
   first(): DraftBlock;
-  forEach(cb: (block: DraftBlock) => void): void;
+  last(): DraftBlock;
+  get(key: string): DraftBlock | undefined;
+  has(key: string): boolean;
+  forEach(cb: (block: DraftBlock, key: string) => void): void;
   clear(): DraftBlockMap;
   set(key: string, block: DraftBlock): DraftBlockMap;
+  delete(key: string): DraftBlockMap;
+}
+
+/** Draft.js EntityInstance(createEntity 后按 key 取回)。 */
+interface DraftEntity {
+  getType(): string;
+  getData(): unknown;
 }
 
 /** Draft.js ContentState(entity 存储 + blockMap 容器,均不可变)。 */
 interface DraftContentState {
   getBlockMap(): DraftBlockMap;
+  getEntity(key: string): DraftEntity;
   createEntity(type: string, mutability: string, data: unknown): DraftContentState;
   getLastCreatedEntityKey(): string;
   set(key: string, value: unknown): DraftContentState;
@@ -131,6 +147,10 @@ interface DraftEditorStateStatic {
 
 export default defineUnlistedScript(() => {
   const post = (msg: MainMessage) => window.postMessage(msg, '*');
+
+  // 并发导入护栏:一次写入正在进行时拒绝第二次(防止 content 误判超时后用户重试,
+  // 两个 runImport 交错直改同一 Draft blockMap 造成重复/错位/按旧 key 找块崩溃)。
+  let importInFlight = false;
 
   // 多级 fallback 选择器(照搬 xposter EDITOR_SELECTOR):优先精确匹配 Draft 正文容器,
   // 逐级放宽到任意 contenteditable,兼容 X 改版后的结构漂移。
@@ -275,13 +295,260 @@ export default defineUnlistedScript(() => {
   const atomicMutability = (entityType: 'DIVIDER' | 'MARKDOWN' | 'TWEET'): string =>
     entityType === 'MARKDOWN' ? 'MUTABLE' : 'IMMUTABLE';
 
+  // -------------------------------------------------------------------------
+  // 图片上传引擎(M2 Phase 2)—— marker 占位 → onFilesAdded → 轮询 MEDIA → 归位 → 清 marker。
+  // 蓝本 docs/research/xposter-analysis.md §3.1–3.3。图片上传是**异步**的(X 自己压缩/分片/
+  // 插入 MEDIA 块),故不能像 M1 文本那样单趟构造,必须占位 + 事后归位。
+  // 每步都重新 findDraftStateNode()——onChange 后旧 stateNode 过期。
+  // -------------------------------------------------------------------------
+
+  /** 定位 marker 所在块:返回 blockKey 与「该块是否仅含 marker」(exact)。 */
+  const findMarkerBlock = (
+    content: DraftContentState,
+    marker: string,
+  ): { blockKey: string; exact: boolean } | null => {
+    let hit: { blockKey: string; exact: boolean } | null = null;
+    content.getBlockMap().forEach((block, key) => {
+      if (hit) return;
+      const text = block.getText();
+      if (text.indexOf(marker) >= 0) hit = { blockKey: key, exact: text.trim() === marker };
+    });
+    return hit;
+  };
+
+  /** 把光标钉到 marker 块起始——X 的 onFilesAdded 会把 MEDIA 块插到光标处。 */
+  const placeSelectionAtMarker = (node: FiberStateNode, marker: string): boolean => {
+    const es = readEditorState(node);
+    const loc = findMarkerBlock(es.getCurrentContent(), marker);
+    if (!loc) return false;
+    const SelStatic = es.getSelection().constructor as unknown as DraftSelectionStatic;
+    const ESStatic = es.constructor as unknown as DraftEditorStateStatic;
+    const sel = SelStatic.createEmpty(loc.blockKey).merge({ anchorOffset: 0, focusOffset: 0 });
+    (node.props?.onChange as (s: DraftEditorState) => void)(ESStatic.forceSelection(es, sel));
+    return true;
+  };
+
+  /** 快照当前所有 MEDIA atomic 块的 key(上传前)——上传后据此识别「新增」的媒体块。 */
+  const snapshotMediaKeys = (node: FiberStateNode): Set<string> => {
+    const set = new Set<string>();
+    const content = readEditorState(node).getCurrentContent();
+    content.getBlockMap().forEach((block, key) => {
+      if (block.getType() !== 'atomic') return;
+      const ek = block.getEntityAt(0);
+      if (!ek) return;
+      try {
+        if (content.getEntity(ek).getType() === 'MEDIA') set.add(key);
+      } catch {
+        /* entity 读取失败忽略 */
+      }
+    });
+    return set;
+  };
+
+  /** 从 MEDIA entity data 递归穷举 mediaId(键名/形状防御,照搬 xposter §3.2)。 */
+  const extractMediaId = (data: unknown, depth = 0): string | null => {
+    if (depth > 5 || data == null) return null;
+    if (typeof data === 'string') return /^\d+$/.test(data.trim()) ? data.trim() : null;
+    if (typeof data === 'number') return Number.isInteger(data) ? String(data) : null;
+    if (typeof data !== 'object') return null;
+    const obj = data as Record<string, unknown>;
+    for (const k of ['mediaId', 'media_id', 'media_id_string', 'mediaKey', 'media_key', 'id_str', 'id', 'rest_id']) {
+      const v = obj[k];
+      if (typeof v === 'string' && /^\d/.test(v)) return v;
+      if (typeof v === 'number' && Number.isInteger(v)) return String(v);
+    }
+    for (const v of Object.values(obj)) {
+      const r = extractMediaId(v, depth + 1);
+      if (r) return r;
+    }
+    return null;
+  };
+
+  /**
+   * 轮询等待「快照外新增的 MEDIA atomic 块」。有 mediaId 即视为完成;budget 内始终 pending
+   * (有块但无 mediaId)则返回该块 key(正文图不强依赖 mediaId,封面才需——留待下一里程碑)。
+   */
+  const waitForNewMedia = async (before: Set<string>, budgetMs: number): Promise<string | null> => {
+    const deadline = Date.now() + budgetMs;
+    let lastPending: string | null = null;
+    while (Date.now() < deadline) {
+      await delay(350);
+      const node = findDraftStateNode();
+      if (!node) continue;
+      const content = readEditorState(node).getCurrentContent();
+      let readyKey: string | null = null;
+      content.getBlockMap().forEach((block, key) => {
+        if (readyKey) return;
+        if (block.getType() !== 'atomic' || before.has(key)) return;
+        const ek = block.getEntityAt(0);
+        if (!ek) return;
+        try {
+          const ent = content.getEntity(ek);
+          if (ent.getType() !== 'MEDIA') return;
+          if (extractMediaId(ent.getData()) !== null) readyKey = key;
+          else lastPending = key;
+        } catch {
+          /* ignore */
+        }
+      });
+      if (readyKey) return readyKey;
+    }
+    return lastPending;
+  };
+
+  /** 重排 blockMap:删除 marker 块,把 MEDIA 块移到 marker 原位置。 */
+  const relocateMediaToMarker = (node: FiberStateNode, marker: string, mediaKey: string): boolean => {
+    const es = readEditorState(node);
+    const content = es.getCurrentContent();
+    const blockMap = content.getBlockMap();
+    const loc = findMarkerBlock(content, marker);
+    if (!loc || !blockMap.has(mediaKey) || loc.blockKey === mediaKey) return false;
+
+    // 目标顺序:原顺序遍历,marker 处放 MEDIA 块、丢弃 marker 块;MEDIA 原位置删除。
+    const orderedKeys: string[] = [];
+    blockMap.forEach((_b, key) => {
+      if (key === mediaKey) return;
+      if (key === loc.blockKey) orderedKeys.push(mediaKey);
+      else orderedKeys.push(key);
+    });
+
+    let nextMap = blockMap.clear();
+    for (const k of orderedKeys) {
+      const b = blockMap.get(k);
+      if (b) nextMap = nextMap.set(k, b);
+    }
+
+    const SelStatic = es.getSelection().constructor as unknown as DraftSelectionStatic;
+    const ESStatic = es.constructor as unknown as DraftEditorStateStatic;
+    const lastKey = orderedKeys[orderedKeys.length - 1] ?? mediaKey;
+    const sel = SelStatic.createEmpty(lastKey);
+    const nc = content.set('blockMap', nextMap).set('selectionBefore', sel).set('selectionAfter', sel);
+    let ns = ESStatic.push(es, nc, 'move-block');
+    ns = ESStatic.forceSelection(ns, sel);
+    (node.props?.onChange as (s: DraftEditorState) => void)(ns);
+    return true;
+  };
+
+  /** 把 marker 块整体替换为一段普通文本(上传失败时写回 fallbackText 原文,不静默丢内容)。 */
+  const replaceMarkerWithText = (node: FiberStateNode, marker: string, text: string): void => {
+    const es = readEditorState(node);
+    const content = es.getCurrentContent();
+    const blockMap = content.getBlockMap();
+    const loc = findMarkerBlock(content, marker);
+    if (!loc) return;
+    const block = blockMap.get(loc.blockKey);
+    if (!block) return;
+    const sample = findCharacterSample(blockMap);
+    if (!sample) return;
+    const nextText = loc.exact ? text : block.getText().split(marker).join(text);
+    let characterList = block.getCharacterList().clear();
+    const plain = sample.set('style', sample.getStyle().clear()).set('entity', null);
+    for (let i = 0; i < nextText.length; i += 1) characterList = characterList.push(plain);
+    const nextBlock = block.merge({ type: 'unstyled', text: nextText, characterList });
+    const nextMap = blockMap.set(loc.blockKey, nextBlock);
+    const SelStatic = es.getSelection().constructor as unknown as DraftSelectionStatic;
+    const ESStatic = es.constructor as unknown as DraftEditorStateStatic;
+    const sel = SelStatic.createEmpty(loc.blockKey);
+    const nc = content.set('blockMap', nextMap).set('selectionBefore', sel).set('selectionAfter', sel);
+    let ns = ESStatic.push(es, nc, 'change-block-data');
+    ns = ESStatic.forceSelection(ns, sel);
+    (node.props?.onChange as (s: DraftEditorState) => void)(ns);
+  };
+
+  /** 兜底清扫:把任何残留的 __MARKFLOW_IMG_ marker 块清空删除,防中断后正文留脏占位符。 */
+  const sweepMarkers = (prefix: string): void => {
+    const node = findDraftStateNode();
+    if (!node) return;
+    const es = readEditorState(node);
+    const content = es.getCurrentContent();
+    const blockMap = content.getBlockMap();
+    const toDelete: string[] = [];
+    blockMap.forEach((block, key) => {
+      if (block.getType() === 'atomic') return;
+      if (block.getText().includes(prefix)) toDelete.push(key);
+    });
+    if (!toDelete.length) return;
+    // Draft 不接受空 blockMap:若待删覆盖全部块(如纯单图文档 + 上传与降级都失败),
+    // 保留第一个待删块、把它清空为普通空段落,只删其余——避免空 map + 指向已删块的 selection 崩。
+    let survivorCount = 0;
+    blockMap.forEach((_b, key) => {
+      if (!toDelete.includes(key)) survivorCount += 1;
+    });
+    let nextMap = blockMap;
+    let delKeys = toDelete;
+    if (survivorCount === 0) {
+      const keepKey = toDelete[0]!;
+      delKeys = toDelete.slice(1);
+      const keepBlock = blockMap.get(keepKey);
+      if (keepBlock) {
+        nextMap = nextMap.set(
+          keepKey,
+          keepBlock.merge({ type: 'unstyled', text: '', characterList: keepBlock.getCharacterList().clear() }),
+        );
+      }
+    }
+    for (const k of delKeys) nextMap = nextMap.delete(k);
+    const last = nextMap.last();
+    const SelStatic = es.getSelection().constructor as unknown as DraftSelectionStatic;
+    const ESStatic = es.constructor as unknown as DraftEditorStateStatic;
+    // nextMap 此时保证非空(survivorCount===0 时已保留 keepKey),last() 必有值。
+    const sel = SelStatic.createEmpty((last ?? blockMap.first()).getKey());
+    const nc = content.set('blockMap', nextMap).set('selectionBefore', sel).set('selectionAfter', sel);
+    let ns = ESStatic.push(es, nc, 'remove-range');
+    ns = ESStatic.forceSelection(ns, sel);
+    (node.props?.onChange as (s: DraftEditorState) => void)(ns);
+  };
+
+  /**
+   * 上传单张图:钉光标到 marker → 找 onFilesAdded → 交 File → 轮询新 MEDIA → 归位 + 清 marker。
+   * 成功 true;失败(无回调/超时)false——由调用方写回 fallbackText。
+   */
+  const uploadOneImage = async (marker: string, file: File, budgetMs: number): Promise<boolean> => {
+    let node = findDraftStateNode();
+    if (!node) return false;
+    if (!placeSelectionAtMarker(node, marker)) return false;
+    await delay(80);
+
+    node = findDraftStateNode();
+    if (!node) return false;
+    const onFilesAdded = findOnFilesAdded();
+    if (!onFilesAdded) return false;
+    const before = snapshotMediaKeys(node);
+
+    try {
+      onFilesAdded([file]);
+    } catch (err) {
+      console.warn('[MarkFlow] onFilesAdded 调用失败', err);
+      return false;
+    }
+
+    const mediaKey = await waitForNewMedia(before, budgetMs);
+    if (!mediaKey) return false;
+
+    await delay(120);
+    node = findDraftStateNode();
+    if (node) relocateMediaToMarker(node, marker, mediaKey);
+    return true;
+  };
+
   /**
    * 核心写入:借页面构造器逐块构造 blockMap 并经 X 自己的 onChange 提交。
    * 全程 try/catch,异常带「失败环节前缀」(stage)返回,便于诊断定位。
    */
-  const runImport = async (blocks: ImportBlock[], mode: ImportMode): Promise<ImportResult> => {
+  const runImport = async (
+    blocks: ImportBlock[],
+    mode: ImportMode,
+    images: PreparedImage[],
+  ): Promise<ImportResult> => {
+    if (importInFlight) return { ok: false, error: 'import already in progress' };
+    importInFlight = true;
     let stage = 'draft node';
-    console.info('[MarkFlow] 写入开始', { blocks: blocks.length, mode });
+    const imageCount = blocks.filter((b) => b.kind === 'image').length;
+    console.info('[MarkFlow] 写入开始', { blocks: blocks.length, mode, images: imageCount });
+    // 每次运行独立的 marker 前缀,避免与历史残留 / 并发写入串扰。
+    const markerPrefix = `__MARKFLOW_IMG_${Math.random().toString(36).slice(2, 8)}_`;
+    // 记录每个图片 marker、其在 images[] 中的下标(按文档顺序 = 第几个 ImageBlock)、及失败兜底原文。
+    const imageMarkers: Array<{ marker: string; imageIndex: number; fallbackText: string }> = [];
     try {
       let draftNode = findDraftStateNode();
       if (!draftNode) return { ok: false, error: 'draft state node not found' };
@@ -384,8 +651,8 @@ export default defineUnlistedScript(() => {
             data: emptyBlockData,
           });
           built.push([key, nextBlock]);
-        } else {
-          // atomic 块:M1 单趟构造(无需 marker 占位再替换,那是 M2 图片时序才需要的)。
+        } else if (block.kind === 'atomic') {
+          // 代码块 / 分割线 / 推文:M1 单趟构造(无需 marker,这三类不走异步上传)。
           const mutability = atomicMutability(block.entityType);
           nextContent = nextContent.createEntity(block.entityType, mutability, block.data);
           const entityKey = nextContent.getLastCreatedEntityKey();
@@ -395,6 +662,24 @@ export default defineUnlistedScript(() => {
             type: 'atomic',
             text: ' ', // atomic 块约定单空格文本,该字符挂 entity key
             characterList: emptyCharList.push(char),
+            depth: 0,
+            data: emptyBlockData,
+          });
+          built.push([key, nextBlock]);
+        } else {
+          // 图片:先写一个「仅含 marker」的 unstyled 占位块;上传阶段再替换为 MEDIA / fallback。
+          // 图片上传是异步的,必须占位 + 事后归位(见 uploadOneImage)。
+          const imageIndex = imageMarkers.length;
+          const marker = `${markerPrefix}${imageIndex}__`;
+          imageMarkers.push({ marker, imageIndex, fallbackText: block.fallbackText });
+          let characterList = emptyCharList;
+          const plain = sample.set('style', emptyStyle).set('entity', null);
+          for (let ci = 0; ci < marker.length; ci += 1) characterList = characterList.push(plain);
+          const nextBlock = sampleBlock.merge({
+            key,
+            type: 'unstyled',
+            text: marker,
+            characterList,
             depth: 0,
             data: emptyBlockData,
           });
@@ -446,12 +731,50 @@ export default defineUnlistedScript(() => {
         }
       }
 
-      console.info('[MarkFlow] 写入成功', { blockCount: blocks.length, effectiveMode });
-      return { ok: true, blockCount: blocks.length, effectiveMode };
+      // --- 图片上传阶段(marker 占位已随正文提交;逐图异步上传 + 归位 + 清 marker)------
+      stage = 'images';
+      let imageOk = 0;
+      let imageFail = 0;
+      for (const { marker, imageIndex, fallbackText } of imageMarkers) {
+        const file = images[imageIndex]?.file ?? null;
+        if (!file) {
+          // 准备失败(远程被拒/权限未授/本地暂不支持):写回原文,不静默丢内容。
+          const node = findDraftStateNode();
+          if (node) replaceMarkerWithText(node, marker, fallbackText);
+          imageFail += 1;
+          continue;
+        }
+        let uploaded = false;
+        try {
+          uploaded = await uploadOneImage(marker, file, 30_000);
+        } catch (e) {
+          console.warn('[MarkFlow] 图片上传异常', e);
+        }
+        if (uploaded) {
+          imageOk += 1;
+        } else {
+          imageFail += 1;
+          const node = findDraftStateNode();
+          if (node) replaceMarkerWithText(node, marker, fallbackText);
+        }
+      }
+      // 兜底清扫:任何残留 marker(中断/异常时)一并清掉,正文不留脏占位符。
+      if (imageMarkers.length) sweepMarkers(markerPrefix);
+
+      console.info('[MarkFlow] 写入成功', { blockCount: blocks.length, effectiveMode, imageOk, imageFail });
+      return { ok: true, blockCount: blocks.length, effectiveMode, imageOk, imageFail };
     } catch (err) {
       // 打完整 err 对象(含堆栈),便于定位崩在 Draft 内部的哪一步
       console.error(`[MarkFlow] 写入异常 @${stage}`, err);
+      // 出错也尽力清掉已写入的 marker 占位,避免正文残留脏 token。
+      try {
+        sweepMarkers(markerPrefix);
+      } catch {
+        /* 兜底清扫本身失败则放弃 */
+      }
       return { ok: false, error: `${stage}: ${String(err)}` };
+    } finally {
+      importInFlight = false;
     }
   };
 
@@ -581,8 +904,8 @@ export default defineUnlistedScript(() => {
       const result = runProbe();
       post({ source: MAIN_SOURCE, kind: 'probe-result', nonce: msg.nonce, id: msg.id, result });
     } else if (msg.kind === 'import') {
-      // 执行写入(async:取样轮询 / 提交后验证都要 await),回显 nonce/id
-      const result = await runImport(msg.blocks, msg.mode);
+      // 执行写入(async:取样轮询 / 图片上传都要 await),回显 nonce/id
+      const result = await runImport(msg.blocks, msg.mode, msg.images);
       post({ source: MAIN_SOURCE, kind: 'import-result', nonce: msg.nonce, id: msg.id, result });
     } else if (msg.kind === 'set-title') {
       // 设置标题(仅 UI 通道),回显 nonce/id

@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**：2026-07-13 · `main`（`3d3f79d`）· **M1 注入引擎 + M2 Phase 1 标题设置 均已完成并真机验证**。下一步 M2 Phase 2（图片上传 + 封面）。
+**最后更新**：2026-07-13 · 分支 `feat/m2-media-cover`（基于 `main` `d015a75`）· **M2 Phase 2a 图片上传（远程 + dataURI）已实现 + 两轮 code review 修复，tsc/build 绿，待真机验证后合并**。下一步 M2 Phase 2b（本地文件夹 FS Access + 封面）。
 
 ---
 
@@ -19,8 +19,9 @@
   - ✅ **侧边栏 UI 全部完成**（Phase A/B/C，四主题 + 中英）。
   - ✅ **M1 注入引擎全线打通**（PR #1）：三方通信 + fiber 探针（三灯）+ **Draft.js 直写**（标题/粗斜删/行内代码/链接/引用/列表/代码块/分割线/推文），真机验证 68 块文章写入成功。预检卡、写入按钮门控均接真实探针，**已无 mock**。
   - ✅ **M2 Phase 1 标题设置**（PR #2）：H1 / frontmatter title 抽取 → UI 打分写入 X 标题字段；frontmatter 不再泄入正文；并修掉 M1 code review 的探针/桥接层遗留。
-- **还没做**：**图片上传、封面设置**（M2 Phase 2，最硬一役）；本地文件夹（FS Access）、「打开 X Articles」跳转、备份/诊断/快捷键等仍是演示。
-- **下一步**：M2 Phase 2 —— onFilesAdded 上传桥 + MEDIA entity diff + mediaId 轮询 + **marker 归位机制**（M1 特意简化掉的，图片异步上传必须引入）+ 封面（GraphQL）。
+  - 🚧 **M2 Phase 2a 图片上传（远程 + dataURI）**（分支 `feat/m2-media-cover`，未合并）：独占行 `![alt](src)` → ImageBlock；injector marker 占位 + onFilesAdded 上传 + MEDIA 轮询 + 归位 + 清 marker + 失败降级；background 远程代理（SSRF/流式/magic-byte）+ 运行时 host 权限。两轮 review 修完阻断/安全问题。**tsc/build 绿，尚未真机验证**。
+- **还没做**：**本地图片文件夹（FS Access）、封面设置**（M2 Phase 2b）；「打开 X Articles」跳转、备份/诊断/快捷键等仍是演示。
+- **下一步**：① 真机验证 Phase 2a（登录 X + 文章编辑页 + 刷新页面后测远程图/dataURI 上传）→ 按实际表现精修多图 relocate 空块/fallback 配对；② Phase 2b 本地文件夹 + 封面。
 - **怎么跑**：`pnpm install && pnpm build` → Chrome 加载 `.output/chrome-mv3`。详见 §7。
 
 ---
@@ -121,9 +122,11 @@ background（开侧栏）                          injector.ts（MAIN world，�
 
 | 位置 | 现状 | 目标里程碑 |
 |---|---|---|
-| **图片上传**（远程/本地/dataURI/表格→图） | parser 保留为原文文本，不上传 | **M2 Phase 2** |
-| **封面设置**（frontmatter cover / 正文首图） | 设置页开关就绪，链路未接 | **M2 Phase 2**（需先有图片 mediaId） |
-| 本地图片文件夹（FS Access） | `opts.folder` 仅布尔 toggle + toast | M2 Phase 2 |
+| **图片上传·远程 http(s)** | ✅ 已实现（`feat/m2-media-cover`，待真机验证）：background 代理 + onFilesAdded + marker 归位 | M2 Phase 2a |
+| **图片上传·dataURI** | ✅ 已实现（content 就地解析） | M2 Phase 2a |
+| **图片·本地相对路径** | 降级为原文（`prepareOneImage` local 分支返回 null） | **M2 Phase 2b**（FS Access 文件夹授权） |
+| **封面设置**（frontmatter cover / 正文首图） | 设置页开关就绪，链路未接 | **M2 Phase 2b**（走 X 封面 fileInput，非 GraphQL；需先有图片上传） |
+| 表格 → canvas 渲图 | parser 未特殊处理表格（当前按文本） | M3 |
 | 「打开 X Articles」按钮 | 仅文案，无 `tabs.create` 跳转 | 顺手补 |
 | 标题冲突 `titleConflict='ask'` | 暂按保守 `keep` 处理 | M2+ 补独立询问弹窗 |
 | 备份/导出、诊断快照、快捷键跳转 | toast 演示 | M4 |
@@ -154,6 +157,13 @@ pnpm build              # → .output/chrome-mv3
   1. 借页面 Immutable 构造集合**必须用实例方法** `clear()`+`push()`/`set()` 逐个填充，**不能** `constructor(数组)` 直造（对 Draft 内部子类会产出畸形集合，遍历时 `undefined.getText()` 崩）。
   2. 提交前必须借 `SelectionState` 构造**指向新块**的 selection + `forceSelection`——沿用旧 selection（旧块 key）会让 X 的 `onChange` 内部按 key 找块崩。
   3. `ContentBlock.merge` 要显式清空 `data`，防继承样本块的非空 data。
+- **图片上传（M2 Phase 2a · injector `uploadOneImage` / marker 事务）**——改动务必保留：
+  1. 图片异步上传：必须「marker 占位块 → 提交正文 → 逐图 `onFilesAdded` → 轮询新增 MEDIA entity + 挖 mediaId → 归位到 marker + 清 marker」，不能像文本那样单趟构造。
+  2. **通道超时必须随图片数放大**（content `45s + 图数×40s`）+ injector 并发导入护栏（`importInFlight`）——否则慢图误判超时、用户重试→两个 `runImport` 并发写坏同一 Draft（review 揪出的最严重 bug）。
+  3. `sweepMarkers` 删 marker 块时**不能把 blockMap 删空**（空 map + selection 指向已删块会崩）——删空时保留一个块并清空其文本。
+  4. background 是持任意 host 权限的取数代理，SSRF 防护（IPv4-mapped IPv6 `::ffff:`、跟随重定向后复检 `resp.url` 落点、流式体积上限、magic-byte 真实类型）不可删。
+  5. 远程图 host 权限用运行时 `permissions.request`，**必须是写入手势链上第一个 await**——不能先 `await permissions.contains`（会消耗用户手势导致 request 被拒）。
+  6. 已知未做（真机验证后按 xposter §3.3 精修）：多图 relocate 的空分裂块清理、marker 被 X 插入破坏时的 fallback 顺序配对。
 - **标题打分（setTitle）**：关键词（title/标题）是**硬门槛**，否则会误命中正文大 contenteditable，overwrite 时清空正文。别放宽。
 - **frontmatter**：parser 跳过与 `extractTitle` 抽取的边界判定必须一致（都用**顶格 `^---`**）；H1 抽取/移除都要**跳过代码块**。
 - **content script 更新不自动生效**：改 content/injector 后必须刷新 X 页面；症状是「三灯绿但写入报未连接」= 页面跑的是旧 content script。
@@ -165,13 +175,15 @@ pnpm build              # → .output/chrome-mv3
 
 ## 9. 待办与路线图
 
-**已完成**：✅ Phase A/B/C UI · ✅ Phase D 对照 · ✅ M1 注入引擎（PR #1）· ✅ M2 Phase 1 标题（PR #2）
+**已完成**：✅ Phase A/B/C UI · ✅ Phase D 对照 · ✅ M1 注入引擎（PR #1）· ✅ M2 Phase 1 标题（PR #2）· 🚧 M2 Phase 2a 图片上传（远程 + dataURI，分支 `feat/m2-media-cover`，待真机验证合并）
 
-**下一步：M2 Phase 2 · 图片上传 + 封面（核心硬骨头）**
-- [ ] 图片来源准备：远程 http(s)（background 代理下载 + SSRF 防护）、本地文件（FS Access 文件夹授权）、data URI、表格→canvas 渲图。
-- [ ] 上传引擎：fiber 找 `onFilesAdded` → 交 File → MEDIA entity diff + mediaId 轮询 + **marker 占位/归位事务**。
-- [ ] 封面：frontmatter cover / 正文首图 → 上传 → GraphQL 设封面。
-- [ ] 权限：远程图 `optional_host_permissions` 运行时申请；本地图文件夹授权 UI。
+**当前正在进行：M2 Phase 2a 真机验证**
+- [ ] 真机测远程图 / dataURI 上传（登录 X + 文章编辑页 + **刷新页面**后测）；按实际 X 插入行为精修：多图 relocate 空分裂块清理、marker 被破坏的 fallback 顺序配对。
+
+**下一步：M2 Phase 2b · 本地文件夹 + 封面**
+- [ ] 本地图片：File System Access 文件夹授权 UI + IndexedDB 存 handle，`prepareOneImage` 的 local 分支接真实读取。
+- [ ] 封面：frontmatter cover / 正文首图 → 上传得 mediaId → 走 X 封面 fileInput（非 GraphQL，技术方案 §11 定 GraphQL 默认关）。
+- [ ] 顺手：「打开 X Articles」按钮 `tabs.create`；标题 `ask` 独立询问弹窗。
 
 **M2 小遗留**（可在 Phase 2 顺带）：标题 `ask` 独立询问弹窗；tab 彻底锁定（Check→写入同一 tab，参考 xposter target-lock）。
 
@@ -205,4 +217,9 @@ pnpm build              # → .output/chrome-mv3
 - **两轮 code review**（多角度并行 + 验证）各修 8~10 条，其中标题打分误命中（可清空正文）、二次写入静默覆盖、frontmatter 双实现不一致等是真机测不出的边界风险——确立「先 review 再提交」流程。
 - **环境教训**：本机曾有 rtk（token 压缩 hook）伪造 git 命令输出，导致一度误以为提交成功；已删除。git 校验改用 reflog/cat-file/ls-remote 或直接看 GitHub 为准。
 
-> 下一步接续：开 `feat/m2-media-cover` 分支，先出 M2 Phase 2 详细方案（重点 marker 时序与上传检测，是 xposter 最精华也最易错处），再按文件边界拆并行任务。
+**2026-07-13 · 第四次会话（本次，M2 Phase 2a 图片上传）· 分支 `feat/m2-media-cover`**：
+- 实现远程 + dataURI 图片上传：parser 产出 ImageBlock；injector marker 占位事务（onFilesAdded + MEDIA 轮询 + 归位 + 清 marker + 失败降级）；background 远程代理（SSRF/流式/magic-byte）；`optional_host_permissions` 运行时申请；协议扩展 imageOk/imageFail。改 8 文件、约 600+ 行。
+- **两轮并行 code review**（注入正确性 + 数据流/安全）共揪出并修 7 条阻断/安全问题：**通道超时不随图片数放大**（慢图误判超时→重试并发写坏文章，最严重）、`sweepMarkers` 删空崩、**权限 `contains` 预检打断手势链**（远程图权限首次永远申请不到）、SSRF IPv4-mapped/重定向绕过、体积上限读完才判致内存耗尽、dataURI 参数误伤等。修后 tsc/build 绿。
+- **本机无法真机验证注入**（无登录 X 环境）→ 走 PR 交由有登录态的机器真机测。MEDIUM 级差异（多图空块/fallback 配对）作为已知项记入本文档 §8/§9，真机验证后精修。
+
+> 下一步接续：真机验证 Phase 2a（远程图/dataURI 上传）；据实际表现精修多图 relocate；随后 Phase 2b（本地 FS Access 文件夹 + 封面）。
