@@ -54,19 +54,24 @@ export default defineContentScript({
      * 故无需按类型分表。nonce 匹配仍由调用方在 onMessage 里前置校验(拦截历史残留 / 串扰)。
      */
     const createBridge = () => {
-      // 每项持有 resolve 回调与超时定时器;raw 为 injector 回传的原始 result(类型由 request 泛型约束)。
+      // 每项持有:期望的应答 kind、resolve 回调、超时定时器。
+      // 存 kind 是为了让 resolve 校验「回来的 result 类型」与「该 id 登记时的请求类型」一致——
+      // 单 Map 承载 probe/import/set-title 三类,虽 id 是 UUID 全局唯一,但页面 JS 能读到
+      // postMessage('*') 广播的 nonce/id,加 kind 校验可挡住构造跨类型 result 的通道混淆。
       const pending = new Map<
         string,
-        { resolve: (raw: unknown) => void; timer: ReturnType<typeof setTimeout> }
+        { kind: string; resolve: (raw: unknown) => void; timer: ReturnType<typeof setTimeout> }
       >();
 
       /**
        * 发起一次请求并等待应答:
-       * - 生成唯一 id → 登记 resolve+timer → 调用 send(id) 发消息;
-       * - 收到匹配的 result → onResult(raw) 映射为最终应答;
+       * - 生成唯一 id → 登记 kind+resolve+timer → 调用 send(id) 发消息;
+       * - 收到匹配(id + kind)的 result → onResult(raw) 映射为最终应答;
        * - timeoutMs 超时 → onTimeout() 兜底(并把 id 出表)。
+       * @param kind 期望的应答消息 kind(如 'probe-result'),resolve 时据此校验类型一致。
        */
       const request = <TRaw, TResponse>(
+        kind: string,
         send: (id: string) => void,
         timeoutMs: number,
         onResult: (raw: TRaw) => TResponse,
@@ -79,6 +84,7 @@ export default defineContentScript({
             resolve(onTimeout());
           }, timeoutMs);
           pending.set(id, {
+            kind,
             resolve: (raw) => resolve(onResult(raw as TRaw)),
             timer,
           });
@@ -86,10 +92,10 @@ export default defineContentScript({
         });
       };
 
-      // 收到匹配的 result:清定时器、出表、兑现 Promise(超时已先出表则无操作)。
-      const resolve = (id: string, raw: unknown) => {
+      // 收到匹配的 result:id 命中且 kind 一致才兑现(否则忽略——跨类型/伪造的 result 不放行)。
+      const resolve = (id: string, kind: string, raw: unknown) => {
         const entry = pending.get(id);
-        if (!entry) return;
+        if (!entry || entry.kind !== kind) return;
         clearTimeout(entry.timer);
         pending.delete(id);
         entry.resolve(raw);
@@ -117,12 +123,12 @@ export default defineContentScript({
         stopRetry();
         console.info('[MarkFlow] content↔injector 握手成功', { nonce });
       } else if (msg.kind === 'probe-result' && msg.nonce === nonce) {
-        // 用 id 精确匹配并发请求;nonce 校验拦截历史残留 / 其他会话的串扰
-        bridge.resolve(msg.id, msg.result);
+        // 用 id + kind 精确匹配并发请求;nonce 校验拦截历史残留 / 其他会话的串扰
+        bridge.resolve(msg.id, msg.kind, msg.result);
       } else if (msg.kind === 'import-result' && msg.nonce === nonce) {
-        bridge.resolve(msg.id, msg.result);
+        bridge.resolve(msg.id, msg.kind, msg.result);
       } else if (msg.kind === 'set-title-result' && msg.nonce === nonce) {
-        bridge.resolve(msg.id, msg.result);
+        bridge.resolve(msg.id, msg.kind, msg.result);
       }
     };
     window.addEventListener('message', onMessage);
@@ -135,6 +141,7 @@ export default defineContentScript({
     const probeInjector = (): Promise<ProbeResponse> => {
       if (!handshaked) return Promise.resolve({ ok: false, error: 'no-injector' });
       return bridge.request<ProbeResult, ProbeResponse>(
+        'probe-result',
         (id) => post({ source: ISO_SOURCE, kind: 'probe', nonce, id }),
         2500,
         (result) => ({ ok: true, result }),
@@ -151,6 +158,7 @@ export default defineContentScript({
     const importInjector = (blocks: ImportBlock[], mode: ImportMode): Promise<ImportResponse> => {
       if (!handshaked) return Promise.resolve({ ok: false, error: 'no-injector' });
       return bridge.request<ImportResult, ImportResponse>(
+        'import-result',
         (id) => post({ source: ISO_SOURCE, kind: 'import', nonce, id, blocks, mode }),
         30_000,
         (result) => result,
@@ -167,6 +175,7 @@ export default defineContentScript({
     const setTitleInjector = (title: string, conflict: TitleConflict): Promise<SetTitleResponse> => {
       if (!handshaked) return Promise.resolve({ ok: false, error: 'no-injector' });
       return bridge.request<SetTitleResult, SetTitleResponse>(
+        'set-title-result',
         (id) => post({ source: ISO_SOURCE, kind: 'set-title', nonce, id, title, conflict }),
         8000,
         (result) => result,

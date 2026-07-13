@@ -43,12 +43,48 @@ function fromFrontmatter(md: string): string | null {
   return null;
 }
 
-/** 从正文抽取第一个 H1(仅 `# `,不含 `## `);无则 null。 */
+/**
+ * 逐行扫描定位「首个位于代码围栏外的 H1」(仅 `# `,不含 `## `),返回其行号与标题。
+ * **必须跳过围栏代码块**——否则代码示例里的 `# 注释` 会被误当文章标题(与 parser 一致)。
+ * extractTitle 与 stripFirstH1 共用它,保证「抽为标题的 H1」与「从正文移除的 H1」是同一行。
+ */
+function findFirstH1(lines: string[]): { index: number; title: string } | null {
+  let fence: string | null = null; // 当前围栏字符(` 或 ~),null=不在围栏内
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? '';
+    const fenceMatch = /^(`{3,}|~{3,})/.exec(line);
+    if (fenceMatch) {
+      const marker = (fenceMatch[1] ?? '')[0] ?? '`';
+      if (fence === null) fence = marker; // 开栏
+      else if (marker === fence) fence = null; // 同字符闭栏
+      continue;
+    }
+    if (fence !== null) continue; // 围栏内一律不解析
+    const h1 = /^#\s+(.+)$/.exec(line);
+    if (h1) {
+      const title = (h1[1] ?? '').trim();
+      if (title.length > 0) return { index: i, title };
+    }
+  }
+  return null;
+}
+
+/** 从正文抽取第一个 H1(跳过代码块);无则 null。 */
 function fromH1(md: string): string | null {
-  const m = /^#\s+(.+)$/m.exec(md);
-  if (!m) return null;
-  const value = (m[1] ?? '').trim();
-  return value.length > 0 ? value : null;
+  return findFirstH1(md.split(/\r?\n/))?.title ?? null;
+}
+
+/**
+ * 删除正文中「被抽为标题的那一行 H1」(跳过代码块,与 extractTitle 同源)。
+ * 在 md 文本层按行删除——而非 blocks 层,因为 parser 把 H1/H2 都映射成 header-one,
+ * blocks 层无法区分,按 type 删首个 header-one 会在「H2 在 H1 之前」时删错块。
+ */
+export function stripFirstH1(md: string): string {
+  const lines = md.split(/\r?\n/);
+  const found = findFirstH1(lines);
+  if (!found) return md;
+  lines.splice(found.index, 1);
+  return lines.join('\n');
 }
 
 /**

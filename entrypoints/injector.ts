@@ -476,7 +476,6 @@ export default defineUnlistedScript(() => {
     const rect = el.getBoundingClientRect();
     // 不可见元素(零尺寸)直接淘汰。
     if (rect.width <= 0 || rect.height <= 0) return 0;
-    let score = 0;
     const hints = [
       el.getAttribute('aria-label'),
       el.getAttribute('placeholder'),
@@ -485,20 +484,26 @@ export default defineUnlistedScript(() => {
       .filter((v): v is string => typeof v === 'string')
       .join(' ')
       .toLowerCase();
-    if (/title|标题|add title/.test(hints)) score += 10;
+    // 关键词是**硬门槛**:未命中 title/标题 一律 0 分——否则正文大 contenteditable 会因
+    // 「页面上部 + 够宽」的几何分被误选为标题框,setTitle 的 overwrite 会全选替换、
+    // 把刚写入的正文清空成一行标题(数据破坏)。找不到带关键词的框宁可不设标题也不误伤正文。
+    if (!/title|标题/.test(hints)) return 0;
+    let score = 10;
     if (rect.top < 240) score += 3;
     if (rect.width > 240) score += 2;
     return score;
   };
 
-  /** 遍历所有可见 input/textarea/[contenteditable],取打分最高且 > 0 者。 */
+  /** 遍历所有可见 input/textarea/[contenteditable],取打分最高且 > 0 者(排除正文编辑器)。 */
   const findTitleField = (): TitleFieldLike | null => {
+    const editor = findEditorElement(); // 正文编辑器绝不能当标题框,双保险显式排除
     const nodes = document.querySelectorAll<HTMLElement>(
       "input, textarea, [contenteditable='true'], [contenteditable='']",
     );
     let best: TitleFieldLike | null = null;
     let bestScore = 0;
     for (const el of nodes) {
+      if (el === editor) continue;
       const score = scoreTitleField(el);
       if (score > bestScore) {
         bestScore = score;
@@ -541,18 +546,20 @@ export default defineUnlistedScript(() => {
         field.dispatchEvent(new Event('input', { bubbles: true }));
         field.dispatchEvent(new Event('change', { bubbles: true }));
       } else {
-        // contenteditable:focus + 全选 + execCommand insertText,确保 React/X 感知输入。
+        // contenteditable:focus + 全选 + execCommand insertText 覆盖。
+        // 关键:只有**成功全选**后才用 insertText——无选区时 insertText 会在光标处
+        // 追加而非替换,得到「旧标题+新标题」;故无选区/失败一律走 textContent 覆盖。
         field.focus();
         const selection = window.getSelection();
+        let replaced = false;
         if (selection) {
           const range = document.createRange();
           range.selectNodeContents(field);
           selection.removeAllRanges();
           selection.addRange(range);
+          replaced = document.execCommand('insertText', false, title);
         }
-        const ok = document.execCommand('insertText', false, title);
-        if (!ok) {
-          // execCommand 不可用时降级:直接设 textContent 并派发 input 事件。
+        if (!replaced) {
           field.textContent = title;
           field.dispatchEvent(new Event('input', { bubbles: true }));
         }
