@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**：2026-07-13 · 分支 `feat/m2-media-cover`（基于 `main` `d015a75`）· **M2 Phase 2a 图片上传（远程 + dataURI）已实现 + 两轮 code review 修复，tsc/build 绿，待真机验证后合并**。下一步 M2 Phase 2b（本地文件夹 FS Access + 封面）。
+**最后更新**：2026-07-13 · 分支 `feat/m2-cover`（基于 `main`，PR #4 图片上传已合并）· **M2 Phase 2a 图片上传已真机验证合并（9 图干净落位）；本分支做封面设置，tsc/build 绿，待真机验证**。下一步 alt→图注（caption 弹窗自动化）+ 本地文件夹 FS Access。
 
 ---
 
@@ -125,7 +125,8 @@ background（开侧栏）                          injector.ts（MAIN world，�
 | **图片上传·远程 http(s)** | ✅ 已实现（`feat/m2-media-cover`，待真机验证）：background 代理 + onFilesAdded + marker 归位 | M2 Phase 2a |
 | **图片上传·dataURI** | ✅ 已实现（content 就地解析） | M2 Phase 2a |
 | **图片·本地相对路径** | 降级为原文（`prepareOneImage` local 分支返回 null） | **M2 Phase 2b**（FS Access 文件夹授权） |
-| **封面设置**（frontmatter cover / 正文首图） | 设置页开关就绪，链路未接 | **M2 Phase 2b**（走 X 封面 fileInput，非 GraphQL；需先有图片上传） |
+| **封面设置**（frontmatter cover / 正文首图） | 🚧 已实现（`feat/m2-cover`，待真机验证）：injector `setCoverImage` 塞 X 封面 fileInput | M2 Phase 2b |
+| **alt → 图注（caption）** | 未做:caption 是弹窗（`data-testid="sheetDialog"` + contenteditable + Save）,需逐图 UI 自动化,跳过垃圾/空 alt | M2 Phase 2b（下一个） |
 | 表格 → canvas 渲图 | parser 未特殊处理表格（当前按文本） | M3 |
 | 「打开 X Articles」按钮 | 仅文案，无 `tabs.create` 跳转 | 顺手补 |
 | 标题冲突 `titleConflict='ask'` | 暂按保守 `keep` 处理 | M2+ 补独立询问弹窗 |
@@ -222,4 +223,9 @@ pnpm build              # → .output/chrome-mv3
 - **两轮并行 code review**（注入正确性 + 数据流/安全）共揪出并修 7 条阻断/安全问题：**通道超时不随图片数放大**（慢图误判超时→重试并发写坏文章，最严重）、`sweepMarkers` 删空崩、**权限 `contains` 预检打断手势链**（远程图权限首次永远申请不到）、SSRF IPv4-mapped/重定向绕过、体积上限读完才判致内存耗尽、dataURI 参数误伤等。修后 tsc/build 绿。
 - **本机无法真机验证注入**（无登录 X 环境）→ 走 PR 交由有登录态的机器真机测。MEDIUM 级差异（多图空块/fallback 配对）作为已知项记入本文档 §8/§9，真机验证后精修。
 
-> 下一步接续：真机验证 Phase 2a（远程图/dataURI 上传）；据实际表现精修多图 relocate；随后 Phase 2b（本地 FS Access 文件夹 + 封面）。
+**2026-07-14 · 第五次会话（本次）· Phase 2a 真机验证合并 + Phase 2b 封面**：
+- **Phase 2a 真机验证通过并合并（PR #4）**：9 图干净落位——审查担心的多图空分裂块/错位在真实 X 上未发生，relocate 工作良好。真机迭代修了两个真机才暴露的 bug：injector 对缺失 images 默认 `[]`（旧 content 未刷新页面时不崩）、parser 支持**带链接图片** `[![](img)](link)`（推文转 md 常见,原只认裸图）。
+- **Phase 2b 封面**（分支 `feat/m2-cover`）：frontmatter cover / 正文首图 → injector `setCoverImage` 塞 X 封面 fileInput。一轮 review 修了确定性 bug（首图封面源改用 blocks 首个 ImageBlock，与移除同源）+ 收紧 fileInput 选择（去通用兜底防误伤正文媒体）。tsc/build 绿,**待真机验证**。
+- **caption 弹窗已探清**（`sheetDialog` + contenteditable + Save），下一个做 alt→图注 UI 自动化(跳过垃圾/空 alt)。
+
+> 下一步接续：真机验证封面（打开「设置文章封面」开关后测,确认 fileInput 定位对、change 触发上传、coverSet 名副其实——这是 review #2/#3 的未验证假设）；随后 alt→图注 + 本地 FS Access 文件夹。

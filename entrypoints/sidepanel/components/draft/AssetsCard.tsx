@@ -3,6 +3,7 @@ import { useI18n } from '@/lib/i18n/useI18n';
 import { useSettings } from '@/lib/settings/SettingsProvider';
 import { useWorkspace } from '@/lib/workspace/WorkspaceProvider';
 import { images, type ImageKind } from '@/lib/markdown/capability';
+import { extractCover } from '@/lib/markdown/frontmatter';
 
 const card: CSSProperties = {
   margin: '10px 18px 0',
@@ -31,7 +32,8 @@ export function AssetsCard() {
   if (!md.trim() || (imgs.length === 0 && !opts.setCover)) return null;
 
   const kindLabel: Record<ImageKind, string> = { local: t.kindLocal, remote: t.kindRemote, data: t.kindData };
-  const fmCover = /^cover\s*:/m.test(md);
+  // 与 extractCover 一致(仅 frontmatter、支持 Cover/封面),避免预览标签与实际行为不符。
+  const fmCover = extractCover(md) !== null;
   const coverSource = opts.setCover ? (fmCover ? t.coverFm : imgs.length ? t.coverFirst : t.coverNone) : t.coverNone;
 
   return (

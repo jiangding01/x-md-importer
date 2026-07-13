@@ -228,18 +228,27 @@ export default defineContentScript({
      * - 已握手 → 经桥发 import(携带 blocks/mode),等匹配的 import-result;30s 超时回 timeout
      *   (写入含取样轮询 / DOM 落盘,给足冗余)。ImportResult 成功分支含 effectiveMode,透传即可。
      */
-    const importInjector = async (blocks: ImportBlock[], mode: ImportMode): Promise<ImportResponse> => {
+    const importInjector = async (
+      blocks: ImportBlock[],
+      mode: ImportMode,
+      coverSource: string | null,
+    ): Promise<ImportResponse> => {
       if (!handshaked) return { ok: false, error: 'no-injector' };
       // 先在 ISOLATED 侧准备图片字节(dataURI 就地解析 / 远程走 background 代理),
       // 再随 import 消息把 File 交给 injector——File 经结构化克隆跨 world 传递。
       const images = await prepareImages(blocks);
+      // 封面同样在 content 准备好 File 再交给 injector(injector 在 MAIN world 设到封面 fileInput,
+      // File 同世界赋值更稳)。
+      const cover = coverSource
+        ? (await prepareOneImage({ kind: 'image', source: coverSource, alt: '', fallbackText: '' })).file
+        : null;
       // 通道超时必须显著大于「图片数 × injector 单图 30s 预算」,否则慢图/多图会先在通道超时,
       // 报失败并丢弃 injector 事后回来的成功结果(而 injector 仍在后台改写编辑器)。基础 45s +
-      // 每图 40s(单图 30s 预算 + 归位/清理冗余)。
-      const timeoutMs = 45_000 + images.length * 40_000;
+      // 每图 40s(单图 30s 预算 + 归位/清理冗余)+ 封面 20s。
+      const timeoutMs = 45_000 + images.length * 40_000 + (cover ? 20_000 : 0);
       return bridge.request<ImportResult, ImportResponse>(
         'import-result',
-        (id) => post({ source: ISO_SOURCE, kind: 'import', nonce, id, blocks, mode, images }),
+        (id) => post({ source: ISO_SOURCE, kind: 'import', nonce, id, blocks, mode, images, cover }),
         timeoutMs,
         (result) => result,
         () => ({ ok: false, error: 'timeout' }),
@@ -269,7 +278,7 @@ export default defineContentScript({
       message: unknown,
     ): Promise<ProbeResponse | ImportResponse | SetTitleResponse> | undefined => {
       if (isProbeRequest(message)) return probeInjector();
-      if (isImportRequest(message)) return importInjector(message.blocks, message.mode);
+      if (isImportRequest(message)) return importInjector(message.blocks, message.mode, message.coverSource ?? null);
       if (isSetTitleRequest(message)) return setTitleInjector(message.title, message.conflict);
       return undefined; // 非本扩展关心的消息:不应答,交给其他监听器
     };

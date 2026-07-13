@@ -10,16 +10,19 @@ import { images } from '@/lib/markdown/capability';
  * ⚠️ 必须在用户手势(写入按钮点击链)的同步阶段发起——故调用方应把它放在 startImport 的
  * 最前面、任何 await 之前。
  */
-export async function requestRemoteImagePermissions(md: string): Promise<void> {
+export async function requestRemoteImagePermissions(md: string, extraUrls: string[] = []): Promise<void> {
   const origins = new Set<string>();
-  for (const img of images(md)) {
-    if (img.kind !== 'remote') continue;
+  const addRemote = (src: string) => {
+    if (!/^https?:\/\//i.test(src)) return; // 仅远程需要 host 权限
     try {
-      origins.add(`${new URL(img.src).origin}/*`);
+      origins.add(`${new URL(src).origin}/*`);
     } catch {
       /* 非法 URL 跳过 */
     }
-  }
+  };
+  for (const img of images(md)) if (img.kind === 'remote') addRemote(img.src);
+  // 额外来源(如 frontmatter cover 可能不在正文 images() 里)
+  for (const url of extraUrls) addRemote(url);
   if (origins.size === 0) return;
 
   // ⚠️ 不能在 request() 之前再 await（如 permissions.contains）——那会消耗用户手势,

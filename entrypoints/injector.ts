@@ -532,6 +532,35 @@ export default defineUnlistedScript(() => {
   };
 
   /**
+   * 设置文章封面:把 File 塞进 X 的封面 fileInput,派发 change 触发 X 自己的封面上传。
+   * 封面输入的 accept 只含图片、不含 video(正文媒体那个含 gif/mp4),据此从多个 file input 中筛选。
+   * File 由 content 经 postMessage 送到 MAIN world,与页面同世界,赋给 input.files 稳妥。
+   */
+  const setCoverImage = (file: File): boolean => {
+    const inputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="file"]'));
+    // 只认「accept 含 image 且不含 video」的封面输入;**不做通用 fileInput 兜底**——
+    // 那可能误抓正文媒体输入(含 video/gif),把封面图当正文媒体插入(错误副作用)。
+    // 找不到确证的封面输入宁可返回 false(不设封面),也不误伤正文。
+    const coverInput =
+      inputs.find((inp) => {
+        const accept = (inp.getAttribute('accept') || '').toLowerCase();
+        return accept.includes('image') && !accept.includes('video');
+      }) ?? null;
+    if (!coverInput) return false;
+    try {
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      coverInput.files = dt.files;
+      coverInput.dispatchEvent(new Event('input', { bubbles: true }));
+      coverInput.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    } catch (err) {
+      console.warn('[MarkFlow] 设置封面失败', err);
+      return false;
+    }
+  };
+
+  /**
    * 核心写入:借页面构造器逐块构造 blockMap 并经 X 自己的 onChange 提交。
    * 全程 try/catch,异常带「失败环节前缀」(stage)返回,便于诊断定位。
    */
@@ -541,6 +570,8 @@ export default defineUnlistedScript(() => {
     // 默认 []:防御旧版 content(未带 images 字段,如页面未刷新仍跑旧 content script)——
     // 缺失时图片一律降级为原文,绝不能因 `images[i]` 读 undefined 而崩(正文已提交却报失败)。
     images: PreparedImage[] = [],
+    // 封面 File(可选);默认 null 防御旧 content。
+    cover: File | null = null,
   ): Promise<ImportResult> => {
     if (importInFlight) return { ok: false, error: 'import already in progress' };
     importInFlight = true;
@@ -763,8 +794,16 @@ export default defineUnlistedScript(() => {
       // 兜底清扫:任何残留 marker(中断/异常时)一并清掉,正文不留脏占位符。
       if (imageMarkers.length) sweepMarkers(markerPrefix);
 
-      console.info('[MarkFlow] 写入成功', { blockCount: blocks.length, effectiveMode, imageOk, imageFail });
-      return { ok: true, blockCount: blocks.length, effectiveMode, imageOk, imageFail };
+      // --- 封面(如有):把 File 塞进封面 fileInput,X 自行上传;失败不影响正文成功结论 ---
+      let coverSet = false;
+      if (cover) {
+        stage = 'cover';
+        coverSet = setCoverImage(cover);
+        console.info('[MarkFlow] 封面设置', { coverSet });
+      }
+
+      console.info('[MarkFlow] 写入成功', { blockCount: blocks.length, effectiveMode, imageOk, imageFail, coverSet });
+      return { ok: true, blockCount: blocks.length, effectiveMode, imageOk, imageFail, coverSet };
     } catch (err) {
       // 打完整 err 对象(含堆栈),便于定位崩在 Draft 内部的哪一步
       console.error(`[MarkFlow] 写入异常 @${stage}`, err);
@@ -907,7 +946,7 @@ export default defineUnlistedScript(() => {
       post({ source: MAIN_SOURCE, kind: 'probe-result', nonce: msg.nonce, id: msg.id, result });
     } else if (msg.kind === 'import') {
       // 执行写入(async:取样轮询 / 图片上传都要 await),回显 nonce/id
-      const result = await runImport(msg.blocks, msg.mode, msg.images);
+      const result = await runImport(msg.blocks, msg.mode, msg.images, msg.cover);
       post({ source: MAIN_SOURCE, kind: 'import-result', nonce: msg.nonce, id: msg.id, result });
     } else if (msg.kind === 'set-title') {
       // 设置标题(仅 UI 通道),回显 nonce/id

@@ -13,9 +13,9 @@ import { useConnection } from '@/lib/bridge/useConnection';
 import { useProbe } from '@/lib/bridge/useProbe';
 import { importToXTab, setTitleOnXTab } from '@/lib/bridge/importArticle';
 import { requestRemoteImagePermissions } from '@/lib/bridge/imagePermissions';
-import type { ImportMode, SetTitleResponse, TitleConflict } from '@/lib/bridge/protocol';
+import type { ImageBlock, ImportMode, SetTitleResponse, TitleConflict } from '@/lib/bridge/protocol';
 import { capability, firstTitle } from '@/lib/markdown/capability';
-import { extractTitle, stripFirstH1 } from '@/lib/markdown/frontmatter';
+import { extractCover, extractTitle, stripFirstH1 } from '@/lib/markdown/frontmatter';
 import { parseMarkdown } from '@/lib/markdown/parser';
 import { sampleEn, sampleZh } from '@/lib/markdown/sample';
 import { saveDraft } from '@/lib/storage/draftStore';
@@ -289,25 +289,42 @@ export function WorkspaceProvider({
       setReportVisible(false);
       setStageIdx(0);
       try {
-        // 远程图片 host 权限:必须在用户手势(写入点击链)内、任何其它 await 之前发起,
-        // 否则 Chrome 会以「非用户手势」拒绝弹窗。用户拒绝 → 那些图降级为原文,不阻断正文。
-        await requestRemoteImagePermissions(md);
-        // 解析中(同步、瞬时)
         setStageLabel(t.stParse);
         setStagePct(40);
+        // 以下全同步(无 await),放在权限申请(首个 await)之前不破坏用户手势。
+
         // 标题抽取放在解析前:既决定后续是否设置标题,也决定要不要移除正文首个 H1。
-        // 关闭「设置文章标题」时完全跳过,连抽取都不做。
+        // h1Handle=remove:在 md 文本层删那行 H1(不在 blocks 层按 type 删——parser 把 H1/H2
+        // 都映射成 header-one,blocks 层无法区分,见 stripFirstH1 注释)。
         const extracted = opts.setTitle ? extractTitle(md) : null;
-        // h1Handle:标题来自 H1 且设为 remove → 在 **md 文本层**删除那一行 H1 再解析,
-        // 避免标题在正文重复。**不**在 blocks 层按 type 删——parser 把 H1/H2 都映射成
-        // header-one,blocks 层无法区分,「H2 在 H1 之前」时会删错块(见 stripFirstH1 注释)。
-        const bodyMd =
-          extracted?.source === 'h1' && opts.h1Handle === 'remove' ? stripFirstH1(md) : md;
-        const blocks = parseMarkdown(bodyMd);
+        const bodyMd = extracted?.source === 'h1' && opts.h1Handle === 'remove' ? stripFirstH1(md) : md;
+        let blocks = parseMarkdown(bodyMd);
+
+        // 封面来源:frontmatter cover > 正文首图。首图取自**已解析 blocks 的首个 ImageBlock**——
+        // 与实际上传/移除同源,避免用 images() 全文正则误选到内联图 / 代码块内的图(review #1)。
+        let coverSource: string | null = null;
+        if (opts.setCover) {
+          const fmCover = extractCover(md);
+          if (fmCover) {
+            coverSource = fmCover;
+          } else {
+            const firstImgIdx = blocks.findIndex((b) => b.kind === 'image');
+            if (firstImgIdx >= 0) {
+              coverSource = (blocks[firstImgIdx] as ImageBlock).source;
+              // coverKeep=remove:直接删掉这个作封面的图片块,避免封面在正文重复(删的正是
+              // 拿去当封面的同一块,不再有「选 A 删 B」的错位)。
+              if (opts.coverKeep === 'remove') blocks = blocks.filter((_, i) => i !== firstImgIdx);
+            }
+          }
+        }
+
+        // 远程图 / 封面 host 权限:必须在用户手势内、任何其它 await 之前(上面全同步)。
+        await requestRemoteImagePermissions(md, coverSource ? [coverSource] : []);
+
         // 写入中(等待 content → injector 直写)
         setStageLabel(t.stBody);
         setStagePct(75);
-        const res = await importToXTab(blocks, mode);
+        const res = await importToXTab(blocks, mode, coverSource);
         if (res.ok) {
           setStagePct(100);
           // #7:所选 append 但引擎实际降级为 replace(编辑器为空)→ 明确提示,不静默。
@@ -317,6 +334,7 @@ export function WorkspaceProvider({
           if (totalImg > 0) {
             toastMsg = `${toastMsg} · ${en ? 'images' : '图片'} ${res.imageOk}/${totalImg}`;
           }
+          if (res.coverSet) toastMsg = `${toastMsg} · ${en ? 'cover' : '封面'}`;
           // 标题流程:正文已成功,再设置标题。标题失败不推翻正文成功结论(部分成功)。
           if (extracted) {
             // conflict 映射:'overwrite'→overwrite;'keep'/'ask' 一律 keep(保守)。
@@ -341,7 +359,7 @@ export function WorkspaceProvider({
         setImporting(false);
       }
     },
-    [md, en, t, opts.setTitle, opts.h1Handle, opts.titleConflict, finishImport, showToast],
+    [md, en, t, opts.setTitle, opts.h1Handle, opts.titleConflict, opts.setCover, opts.coverKeep, finishImport, showToast],
   );
 
   const writeX = useCallback(() => {

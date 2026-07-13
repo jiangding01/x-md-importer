@@ -7,7 +7,12 @@
 
 ## [Unreleased]
 
-### 新增 · M2 Phase 2 — 图片上传：远程 + dataURI（feat/m2-media-cover，待合并）
+### 新增 · M2 Phase 2b — 文章封面（feat/m2-cover，待合并）
+- **封面设置**：来源 frontmatter `cover:`（支持 `![[x]]` / `![](x)` 包裹剥壳）> 正文首图，gated by 设置「设置文章封面」（默认关）。content 准备封面 File → injector 在 MAIN world 把 File 塞进 X 的封面 `fileInput`（`input.files = DataTransfer.files` + dispatch change，触发 X 自身上传）。
+- **首图去重**：`coverKeep=remove` 且封面取自正文首图时，从正文移除首个独占图片行（`stripFirstImageLine`，裸图/带链接图皆可，跳过代码块）。
+- 远程封面 host 权限连同正文远程图在写入手势内一并申请；封面结果计入 toast（`· 封面`）。封面失败不影响正文成功结论。
+
+### 新增 · M2 Phase 2 — 图片上传：远程 + dataURI（已合并 PR #4）
 - **图片上传引擎**：独占一行的 `![alt](src)` 及**带链接图片** `[![alt](img)](link)`（推文转 md 常见，取内层图片 URL 上传、丢外层链接）→ `ImageBlock`；injector 走「marker 占位 → `onFilesAdded` 交 File → 轮询新增 MEDIA entity + 递归挖 mediaId → 归位到 marker 处 → 清 marker」异步事务；上传失败降级写回原文，不静默丢内容。遵守 M1 三条 Draft 直写硬约束。
 - **远程图片**：background service worker 代理下载，含 SSRF 防护（私网/回环/链路本地 + IPv4-mapped IPv6 黑名单 + 跟随重定向后复检最终落点）、流式读取 + 16MB 体积上限、magic-byte 真实类型嗅探（响应头/扩展名不可信）；`optional_host_permissions` 在写入手势内按图片 origin 运行时申请。
 - **dataURI**：content 就地解析（白名单图片 MIME，容忍 charset 等参数）。

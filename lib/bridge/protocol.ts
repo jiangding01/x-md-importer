@@ -134,7 +134,15 @@ export type ImportMode = 'replace' | 'append';
  * 降级为 replace,UI 依此感知「用户所选」与「实际执行」的偏差,不再静默。
  */
 export type ImportResult =
-  | { ok: true; blockCount: number; effectiveMode: ImportMode; imageOk: number; imageFail: number }
+  | {
+      ok: true;
+      blockCount: number;
+      effectiveMode: ImportMode;
+      imageOk: number;
+      imageFail: number;
+      /** 封面是否已设置(未请求封面时 undefined)。 */
+      coverSet?: boolean;
+    }
   | { ok: false; error: string };
 
 /**
@@ -164,6 +172,8 @@ export type IsoMessage =
       mode: ImportMode;
       /** 与 blocks 中 ImageBlock 按文档顺序对齐的已准备图片字节(File 经结构化克隆传递)。 */
       images: PreparedImage[];
+      /** 封面图 File(已在 content 准备好);null=不设封面。injector 设到 X 封面 fileInput。 */
+      cover: File | null;
     }
   | { source: IsoSource; kind: 'set-title'; nonce: string; id: string; title: string; conflict: TitleConflict };
 
@@ -189,7 +199,13 @@ export const SET_TITLE_REQUEST_TYPE = 'markflow:set-title' as const;
 /** sidepanel → content 的请求。 */
 export type RuntimeRequest =
   | { type: typeof PROBE_REQUEST_TYPE }
-  | { type: typeof IMPORT_REQUEST_TYPE; blocks: ImportBlock[]; mode: ImportMode }
+  | {
+      type: typeof IMPORT_REQUEST_TYPE;
+      blocks: ImportBlock[];
+      mode: ImportMode;
+      /** 封面图来源(frontmatter cover / 正文首图);null=不设封面。content 准备后设到 X 封面 fileInput。 */
+      coverSource?: string | null;
+    }
   | { type: typeof SET_TITLE_REQUEST_TYPE; title: string; conflict: TitleConflict };
 
 /** content → sidepanel 的探针应答:成功回结果,失败回明确的错误码。 */
@@ -202,7 +218,15 @@ export type ProbeResponse =
  * 通道层错误(未握手/超时)与引擎错误共用 ok:false 形状,error 短语区分。
  */
 export type ImportResponse =
-  | { ok: true; blockCount: number; effectiveMode: ImportMode; imageOk: number; imageFail: number }
+  | {
+      ok: true;
+      blockCount: number;
+      effectiveMode: ImportMode;
+      imageOk: number;
+      imageFail: number;
+      /** 封面是否已设置(未请求封面时为 undefined)。 */
+      coverSet?: boolean;
+    }
   | { ok: false; error: 'no-injector' | 'timeout' | string };
 
 /** content → sidepanel 的标题设置应答:透传 SetTitleResult,叠加通道层错误。 */
@@ -220,9 +244,12 @@ export function isProbeRequest(msg: unknown): msg is { type: typeof PROBE_REQUES
 }
 
 /** 运行时守卫:窄化「写入请求」。blocks/mode 的字段校验由 TS 端到端类型保证,这里只判别 type。 */
-export function isImportRequest(
-  msg: unknown,
-): msg is { type: typeof IMPORT_REQUEST_TYPE; blocks: ImportBlock[]; mode: ImportMode } {
+export function isImportRequest(msg: unknown): msg is {
+  type: typeof IMPORT_REQUEST_TYPE;
+  blocks: ImportBlock[];
+  mode: ImportMode;
+  coverSource?: string | null;
+} {
   return (
     typeof msg === 'object' &&
     msg !== null &&

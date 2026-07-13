@@ -52,6 +52,37 @@ const RE_PUNCT = /[!-/:-@[-`{-~]/;
 // 主入口
 // ---------------------------------------------------------------------------
 
+/** 是否为独占一行的图片(裸 `![](x)` 或带链接 `[![](x)](y)`)。 */
+export function isImageLine(line: string): boolean {
+  const t = line.trim();
+  return RE_IMAGE_LINE.test(t) || RE_LINKED_IMAGE_LINE.test(t);
+}
+
+/**
+ * 删除正文中「第一张独占行图片」(裸 / 带链接皆可)——供封面取自正文首图且设为
+ * 「从正文移除」时使用,避免封面图在正文重复。跳过围栏代码块(与解析一致)。
+ */
+export function stripFirstImageLine(md: string): string {
+  const lines = md.split(/\r?\n/);
+  let fence: string | null = null;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? '';
+    const fenceMatch = /^(`{3,}|~{3,})/.exec(line);
+    if (fenceMatch) {
+      const marker = (fenceMatch[1] ?? '')[0] ?? '`';
+      if (fence === null) fence = marker;
+      else if (marker === fence) fence = null;
+      continue;
+    }
+    if (fence !== null) continue;
+    if (isImageLine(line)) {
+      lines.splice(i, 1);
+      return lines.join('\n');
+    }
+  }
+  return md;
+}
+
 /** 解析 Markdown 文本为按文档顺序排列的写入块序列。 */
 export function parseMarkdown(md: string): ImportBlock[] {
   const lines = md.split(/\r?\n/);
