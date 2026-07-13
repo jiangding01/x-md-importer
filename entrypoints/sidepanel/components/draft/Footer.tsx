@@ -15,7 +15,7 @@ const barTrack: CSSProperties = {
 
 export function Footer() {
   const { t } = useI18n();
-  const { md, importing, stageLabel, stagePct, cancelImport, runCheck, writeX, celebrating } = useWorkspace();
+  const { md, importing, stageLabel, stagePct, runCheck, writeX, celebrating } = useWorkspace();
   const { connected } = useConnection();
   const { refresh: refreshProbe, loading: probing } = useProbe();
 
@@ -61,13 +61,6 @@ export function Footer() {
             <span style={{ font: '500 10px var(--fMono)', color: 'var(--accInk)', animation: 'pulse 1.2s ease infinite' }}>{stageLabel}</span>
             <span style={{ flex: 1 }} />
             <span style={{ font: '500 9.5px var(--fMono)', color: 'var(--ink3)' }}>{stagePct}%</span>
-            <button
-              className="mf-btn mf-hover-danger"
-              onClick={cancelImport}
-              style={{ border: '1px solid var(--line)', padding: '4px 11px', borderRadius: 'var(--btnR)', font: '500 10.5px var(--fUI)', color: 'var(--dgr)' }}
-            >
-              {t.cancel}
-            </button>
           </div>
           <div style={barTrack}>
             <div style={barFill} />

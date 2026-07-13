@@ -54,7 +54,6 @@ interface WorkspaceValue {
   stagePct: number;
   stageLabel: string;
   writeX: () => void;
-  cancelImport: () => void;
   askOverwrite: boolean;
   overwriteAppend: () => void;
   overwriteConfirm: () => void;
@@ -268,22 +267,29 @@ export function WorkspaceProvider({
       setImporting(true);
       setReportVisible(false);
       setStageIdx(0);
-      // 解析中(同步、瞬时)
-      setStageLabel(t.stParse);
-      setStagePct(40);
-      const blocks = parseMarkdown(md);
-      // 写入中(等待 content → injector 直写)
-      setStageLabel(t.stBody);
-      setStagePct(75);
-      const res = await importToXTab(blocks, mode);
-      if (res.ok) {
-        setStagePct(100);
-        finishImport();
-      } else {
-        // 失败:不写成功记录,复位进度,以可读中文/英文提示错误。
+      try {
+        // 解析中(同步、瞬时)
+        setStageLabel(t.stParse);
+        setStagePct(40);
+        const blocks = parseMarkdown(md);
+        // 写入中(等待 content → injector 直写)
+        setStageLabel(t.stBody);
+        setStagePct(75);
+        const res = await importToXTab(blocks, mode);
+        if (res.ok) {
+          setStagePct(100);
+          finishImport();
+        } else {
+          // 失败:不写成功记录,以可读中文/英文提示错误(复位在 finally 统一处理)。
+          showToast(importErrorText(res.error, t));
+        }
+      } catch (err) {
+        // 解析异常(如超深嵌套导致栈溢出)等意外:兜底提示,不留残局。
+        showToast(`${t.errWriteFail}: ${String(err)}`);
+      } finally {
+        // 无论成功/失败/抛错,importing 一定复位——否则写入按钮会被永久禁用。
+        // finishImport 已在成功路径把 importing 置 false,此处再置一次是幂等的。
         setImporting(false);
-        setStagePct(0);
-        showToast(importErrorText(res.error, t));
       }
     },
     [md, t, finishImport, showToast],
@@ -299,12 +305,6 @@ export function WorkspaceProvider({
     const mode: ImportMode = opts.onExisting === 'append' ? 'append' : 'replace';
     void startImport(mode);
   }, [md, importing, connected, opts.onExisting, editorHasContent, startImport]);
-
-  // 真实写入是单次 await、无法中途取消已派发的 DOM 操作,因此不假装能取消——
-  // 写入窗口近乎瞬时,此处仅保留供 Footer 调用的空实现,不再弹「零残留」提示。
-  const cancelImport = useCallback(() => {
-    /* no-op:真实写入不可中断 */
-  }, []);
 
   const overwriteAppend = useCallback(() => {
     setAskOverwrite(false);
@@ -384,7 +384,6 @@ export function WorkspaceProvider({
       stagePct,
       stageLabel,
       writeX,
-      cancelImport,
       askOverwrite,
       overwriteAppend,
       overwriteConfirm,
@@ -406,7 +405,7 @@ export function WorkspaceProvider({
     [
       tab, toast, showToast, md, setMd, mode, dragging, save, clear, clearArm, loadSample, readFile,
       capOpen, checkVisible, checkStep, runCheck, closeCheck, importing, stageIdx, stagePct, stageLabel,
-      writeX, cancelImport, askOverwrite, overwriteAppend, overwriteConfirm, overwriteCancel,
+      writeX, askOverwrite, overwriteAppend, overwriteConfirm, overwriteCancel,
       editorHasContent, reportVisible, celebrating, history, histQ, loadHistoryItem, copyHistoryItem,
       deleteHistoryItem, clearHistory, histClearArm, wipeAll,
     ],

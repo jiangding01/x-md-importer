@@ -41,10 +41,10 @@ export function capability(md: string, en: boolean): CapItem[] {
   add(en ? 'Lists' : '列表', c(/^(\s*)([-*]|\d+\.)\s/gm), 'native', en ? 'list items' : '原生 list-item');
   add(en ? 'Blockquotes' : '引用', c(/^>\s?/gm), 'native', en ? 'blockquote' : '原生 blockquote');
   add(
-    en ? 'Tables → native' : '表格 → 原生表格',
+    en ? 'Tables → text' : '表格 → 文本',
     c(/^\s*\|?[\s:|-]+\|?\s*$/gm),
-    'special',
-    en ? 'atomic entity · native table' : 'atomic entity·原生渲染',
+    'warn',
+    en ? 'written as text for now · native in M2' : '当前按文本写入·原生表格 M2 支持',
   );
   add(
     en ? 'Code blocks → native' : '代码块 → 原生代码块',
