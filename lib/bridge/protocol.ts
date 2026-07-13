@@ -1,0 +1,171 @@
+/**
+ * 跨 world 消息协议(类型化)——三方通信的单一事实来源:
+ *   sidepanel ↔ content(ISOLATED world)↔ injector(MAIN world)
+ *
+ * 相对 xposter「12 种消息 kind 全靠约定」的工程化改进:所有消息用 discriminated
+ * union 描述,收发两端共享同一份类型 + 运行时守卫(source 判别 + event.source 守卫,
+ * nonce 由业务层校验)。
+ *
+ * 本阶段(M1 地基)只落地 content ↔ injector 的握手与探针骨架;sidepanel ↔ content
+ * 的 chrome.runtime 消息在后续步骤补充。
+ */
+
+/** 消息来源标识:在同一个 window 上用于区分两个 world 的 postMessage 通道。 */
+export const ISO_SOURCE = 'markflow-iso' as const; //  content(ISOLATED)→ injector
+export const MAIN_SOURCE = 'markflow-main' as const; // injector(MAIN)→ content
+
+export type IsoSource = typeof ISO_SOURCE;
+export type MainSource = typeof MAIN_SOURCE;
+
+/**
+ * 编辑器探针结果(骨架)。后续 fiber/Draft 探针会填充真实判定;
+ * 字段对齐技术方案 §5.2.1 的「编辑器 / Draft 实例 / 上传通道」三灯。
+ */
+export interface ProbeResult {
+  /** 找到正文 contenteditable 编辑器元素 */
+  hasEditor: boolean;
+  /** fiber 上定位到 Draft 实例(props.editorState + onChange) */
+  hasDraftNode: boolean;
+  /** fiber 上定位到 X 的 onFilesAdded 上传回调 */
+  hasOnFilesAdded: boolean;
+  /** 从 URL 提取到的文章草稿 id(未在编辑页则为 null) */
+  articleId: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// 写入(Import)数据结构 —— 解析器(lib/markdown/parser)产出、注入引擎消费。
+// 形状对齐 Draft.js RawBlock,块映射遵循《技术方案设计.md》§4.2 矩阵。
+// ---------------------------------------------------------------------------
+
+/** 行内样式区间。style 为 Draft.js 标准 inline style 名(X 原生支持这四种)。 */
+export interface InlineStyleRange {
+  offset: number;
+  length: number;
+  style: 'BOLD' | 'ITALIC' | 'STRIKETHROUGH' | 'CODE';
+}
+
+/** 链接区间:按字符区间挂 LINK entity(MUTABLE)。 */
+export interface LinkRange {
+  offset: number;
+  length: number;
+  url: string;
+}
+
+/**
+ * 文本类块的 Draft block type(M1 范围)。映射:H1/H2→header-one、H3→header-two、
+ * H4+→unstyled+全段 BOLD(X 仅两级标题);列表不嵌套(depth 恒 0)。
+ */
+export type TextBlockType =
+  | 'unstyled'
+  | 'header-one'
+  | 'header-two'
+  | 'blockquote'
+  | 'unordered-list-item'
+  | 'ordered-list-item';
+
+/** 文本类块。 */
+export interface TextBlock {
+  kind: 'text';
+  type: TextBlockType;
+  text: string;
+  inlineStyleRanges: InlineStyleRange[];
+  links: LinkRange[];
+}
+
+/**
+ * 特殊块:atomic block + X 编辑器内部 entity(类型名/数据形状为 xposter 源码实证)。
+ * M1 仅这三种(无需上传通道);图片/表格 MEDIA 在 M2 加入。
+ */
+export type AtomicBlock =
+  | { kind: 'atomic'; entityType: 'DIVIDER'; data: Record<string, never> }
+  | { kind: 'atomic'; entityType: 'MARKDOWN'; data: { markdown: string } }
+  | { kind: 'atomic'; entityType: 'TWEET'; data: { url: string; tweetId: string } };
+
+/** 写入块 = 文本块 | 特殊块,按文档顺序排列。 */
+export type ImportBlock = TextBlock | AtomicBlock;
+
+/** 写入模式:replace 整体替换编辑器内容;append 在现有内容之后追加。 */
+export type ImportMode = 'replace' | 'append';
+
+/** 注入引擎的写入结果。error 为面向诊断的英文短语(UI 层负责本地化归类)。 */
+export type ImportResult =
+  | { ok: true; blockCount: number }
+  | { ok: false; error: string };
+
+/** ISOLATED → MAIN 的消息。 */
+export type IsoMessage =
+  | { source: IsoSource; kind: 'hello'; nonce: string }
+  | { source: IsoSource; kind: 'probe'; nonce: string; id: string }
+  | { source: IsoSource; kind: 'import'; nonce: string; id: string; blocks: ImportBlock[]; mode: ImportMode };
+
+/** MAIN → ISOLATED 的消息。 */
+export type MainMessage =
+  | { source: MainSource; kind: 'ready' }
+  | { source: MainSource; kind: 'hello-ack'; nonce: string }
+  | { source: MainSource; kind: 'probe-result'; nonce: string; id: string; result: ProbeResult }
+  | { source: MainSource; kind: 'import-result'; nonce: string; id: string; result: ImportResult };
+
+/**
+ * sidepanel ↔ content 的 chrome.runtime 消息(第二条通道,区别于上面 window.postMessage
+ * 的 content ↔ injector 通道)。用 discriminated union(判别字段 `type`)描述请求,便于
+ * 以后扩展更多 type(如 'markflow:import'、'markflow:page-status');应答复用 ProbeResult。
+ */
+
+/** 判别常量(收发两端共享,避免裸字符串散落)。 */
+export const PROBE_REQUEST_TYPE = 'markflow:probe' as const;
+export const IMPORT_REQUEST_TYPE = 'markflow:import' as const;
+
+/** sidepanel → content 的请求。 */
+export type RuntimeRequest =
+  | { type: typeof PROBE_REQUEST_TYPE }
+  | { type: typeof IMPORT_REQUEST_TYPE; blocks: ImportBlock[]; mode: ImportMode };
+
+/** content → sidepanel 的探针应答:成功回结果,失败回明确的错误码。 */
+export type ProbeResponse =
+  | { ok: true; result: ProbeResult }
+  | { ok: false; error: 'no-injector' | 'timeout' };
+
+/**
+ * content → sidepanel 的写入应答:透传注入引擎的 ImportResult;
+ * 通道层错误(未握手/超时)与引擎错误共用 ok:false 形状,error 短语区分。
+ */
+export type ImportResponse =
+  | { ok: true; blockCount: number }
+  | { ok: false; error: 'no-injector' | 'timeout' | string };
+
+/** 运行时守卫:窄化「探针请求」——只认判别字段 `type` 匹配的对象。 */
+export function isProbeRequest(msg: unknown): msg is { type: typeof PROBE_REQUEST_TYPE } {
+  return (
+    typeof msg === 'object' &&
+    msg !== null &&
+    (msg as { type?: unknown }).type === PROBE_REQUEST_TYPE
+  );
+}
+
+/** 运行时守卫:窄化「写入请求」。blocks/mode 的字段校验由 TS 端到端类型保证,这里只判别 type。 */
+export function isImportRequest(
+  msg: unknown,
+): msg is { type: typeof IMPORT_REQUEST_TYPE; blocks: ImportBlock[]; mode: ImportMode } {
+  return (
+    typeof msg === 'object' &&
+    msg !== null &&
+    (msg as { type?: unknown }).type === IMPORT_REQUEST_TYPE
+  );
+}
+
+/** 生成一次会话的 nonce:每次注入独立,防止与历史残留 / 其他扩展的消息串扰。 */
+export function createNonce(): string {
+  return crypto.randomUUID();
+}
+
+/** 窄化「来自 MAIN world 的消息」:必须同 window(event.source===window)且 source 匹配。 */
+export function isMainMessage(e: MessageEvent): e is MessageEvent<MainMessage> {
+  const data = e.data as { source?: unknown } | null;
+  return e.source === window && typeof data === 'object' && data !== null && data.source === MAIN_SOURCE;
+}
+
+/** 窄化「来自 ISOLATED world 的消息」:必须同 window 且 source 匹配。 */
+export function isIsoMessage(e: MessageEvent): e is MessageEvent<IsoMessage> {
+  const data = e.data as { source?: unknown } | null;
+  return e.source === window && typeof data === 'object' && data !== null && data.source === ISO_SOURCE;
+}

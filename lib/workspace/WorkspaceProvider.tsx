@@ -10,16 +10,15 @@ import {
 import { useI18n } from '@/lib/i18n/useI18n';
 import { useSettings } from '@/lib/settings/SettingsProvider';
 import { useConnection } from '@/lib/bridge/useConnection';
-import { capability, firstTitle, images } from '@/lib/markdown/capability';
+import { importToXTab } from '@/lib/bridge/importArticle';
+import type { ImportMode } from '@/lib/bridge/protocol';
+import { capability, firstTitle } from '@/lib/markdown/capability';
+import { parseMarkdown } from '@/lib/markdown/parser';
 import { sampleEn, sampleZh } from '@/lib/markdown/sample';
 import { saveDraft } from '@/lib/storage/draftStore';
 import { saveHistory, type HistoryItem } from '@/lib/storage/historyStore';
-import {
-  buildStages,
-  runImport,
-  type ImportController,
-} from './importService';
 import type { Tab } from '@/entrypoints/sidepanel/types';
+import type { Dict } from '@/lib/i18n/dict';
 
 type Mode = 'edit' | 'preview';
 
@@ -55,7 +54,6 @@ interface WorkspaceValue {
   stagePct: number;
   stageLabel: string;
   writeX: () => void;
-  cancelImport: () => void;
   askOverwrite: boolean;
   overwriteAppend: () => void;
   overwriteConfirm: () => void;
@@ -85,7 +83,15 @@ interface Timers {
   celebrate?: ReturnType<typeof setTimeout>;
   clearArm?: ReturnType<typeof setTimeout>;
   histArm?: ReturnType<typeof setTimeout>;
-  import?: ImportController;
+}
+
+/** 把注入引擎的英文错误短语归类为可读中文/英文文案。 */
+function importErrorText(error: string, t: Dict): string {
+  if (error === 'disconnected') return t.errDisconnected;
+  if (error === 'no-injector') return t.errNoInjector;
+  if (error === 'timeout') return t.errTimeout;
+  // 其他 injector 层错误:统一「写入失败」并附上原始短语,便于诊断。
+  return `${t.errWriteFail}: ${error}`;
 }
 
 interface WorkspaceProviderProps {
@@ -253,32 +259,41 @@ export function WorkspaceProvider({
     playSound();
   }, [md, en, opts.autoReport, opts.histLimit, opts.confetti, history, commitHistory, showToast, t.writtenToast, playSound]);
 
-  const startImport = useCallback(() => {
-    const stages = buildStages(
-      {
-        parse: t.stParse,
-        preflight: t.stPreflight,
-        body: t.stBody,
-        blocks: t.stBlocks,
-        images: t.stImages,
-        final: t.stFinal,
-      },
-      images(md).length,
-      opts.pace === 'fast',
-    );
-    setImporting(true);
-    setStageIdx(0);
-    setStagePct(0);
-    setReportVisible(false);
-    timers.current.import = runImport(stages, {
-      onProgress: (idx, pct, label) => {
-        setStageIdx(idx);
-        setStagePct(pct);
-        setStageLabel(label);
-      },
-      onDone: finishImport,
-    });
-  }, [md, opts.pace, t, finishImport]);
+  // 真实写入:解析 → 送达 X tab → 按结果收尾。纯文本写入近乎瞬时,
+  // 进度条只走「解析中 → 写入中 → 完成」三段真实阶段(不再用定时器编造百分比,
+  // 条纹动画在 await 期间提供 indeterminate 观感)。
+  const startImport = useCallback(
+    async (mode: ImportMode) => {
+      setImporting(true);
+      setReportVisible(false);
+      setStageIdx(0);
+      try {
+        // 解析中(同步、瞬时)
+        setStageLabel(t.stParse);
+        setStagePct(40);
+        const blocks = parseMarkdown(md);
+        // 写入中(等待 content → injector 直写)
+        setStageLabel(t.stBody);
+        setStagePct(75);
+        const res = await importToXTab(blocks, mode);
+        if (res.ok) {
+          setStagePct(100);
+          finishImport();
+        } else {
+          // 失败:不写成功记录,以可读中文/英文提示错误(复位在 finally 统一处理)。
+          showToast(importErrorText(res.error, t));
+        }
+      } catch (err) {
+        // 解析异常(如超深嵌套导致栈溢出)等意外:兜底提示,不留残局。
+        showToast(`${t.errWriteFail}: ${String(err)}`);
+      } finally {
+        // 无论成功/失败/抛错,importing 一定复位——否则写入按钮会被永久禁用。
+        // finishImport 已在成功路径把 importing 置 false,此处再置一次是幂等的。
+        setImporting(false);
+      }
+    },
+    [md, t, finishImport, showToast],
+  );
 
   const writeX = useCallback(() => {
     if (!md.trim() || importing || !connected) return;
@@ -286,22 +301,18 @@ export function WorkspaceProvider({
       setAskOverwrite(true);
       return;
     }
-    startImport();
+    // 非询问模式:按设置直接决定模式(总是追加 / 总是覆盖)。
+    const mode: ImportMode = opts.onExisting === 'append' ? 'append' : 'replace';
+    void startImport(mode);
   }, [md, importing, connected, opts.onExisting, editorHasContent, startImport]);
-
-  const cancelImport = useCallback(() => {
-    timers.current.import?.cancel();
-    setImporting(false);
-    showToast(t.canceledToast);
-  }, [showToast, t.canceledToast]);
 
   const overwriteAppend = useCallback(() => {
     setAskOverwrite(false);
-    startImport();
+    void startImport('append');
   }, [startImport]);
   const overwriteConfirm = useCallback(() => {
     setAskOverwrite(false);
-    startImport();
+    void startImport('replace');
   }, [startImport]);
   const overwriteCancel = useCallback(() => setAskOverwrite(false), []);
 
@@ -373,7 +384,6 @@ export function WorkspaceProvider({
       stagePct,
       stageLabel,
       writeX,
-      cancelImport,
       askOverwrite,
       overwriteAppend,
       overwriteConfirm,
@@ -395,7 +405,7 @@ export function WorkspaceProvider({
     [
       tab, toast, showToast, md, setMd, mode, dragging, save, clear, clearArm, loadSample, readFile,
       capOpen, checkVisible, checkStep, runCheck, closeCheck, importing, stageIdx, stagePct, stageLabel,
-      writeX, cancelImport, askOverwrite, overwriteAppend, overwriteConfirm, overwriteCancel,
+      writeX, askOverwrite, overwriteAppend, overwriteConfirm, overwriteCancel,
       editorHasContent, reportVisible, celebrating, history, histQ, loadHistoryItem, copyHistoryItem,
       deleteHistoryItem, clearHistory, histClearArm, wipeAll,
     ],

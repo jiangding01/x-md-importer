@@ -2,6 +2,7 @@ import { createRoot } from 'react-dom/client';
 import { PrefsProvider } from '@/lib/prefs/PrefsProvider';
 import { SettingsProvider } from '@/lib/settings/SettingsProvider';
 import { WorkspaceProvider } from '@/lib/workspace/WorkspaceProvider';
+import { ProbeProvider } from '@/lib/bridge/useProbe';
 import { loadPrefs } from '@/lib/storage/prefs';
 import { loadOptions } from '@/lib/storage/optionsStore';
 import { loadDraft } from '@/lib/storage/draftStore';
@@ -34,9 +35,12 @@ async function bootstrap() {
   createRoot(container).render(
     <PrefsProvider initial={prefs}>
       <SettingsProvider initial={opts}>
-        <WorkspaceProvider initialMd={md} initialHistory={history}>
-          <App />
-        </WorkspaceProvider>
+        {/* ProbeProvider 必须在 WorkspaceProvider 外层:后者内部 useConnection 依赖 probe context。 */}
+        <ProbeProvider>
+          <WorkspaceProvider initialMd={md} initialHistory={history}>
+            <App />
+          </WorkspaceProvider>
+        </ProbeProvider>
       </SettingsProvider>
     </PrefsProvider>,
   );
