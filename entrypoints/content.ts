@@ -4,6 +4,7 @@ import {
   isImportRequest,
   isMainMessage,
   isProbeRequest,
+  isSetTitleRequest,
   type ImportBlock,
   type ImportMode,
   type ImportResponse,
@@ -11,14 +12,16 @@ import {
   type IsoMessage,
   type ProbeResponse,
   type ProbeResult,
+  type SetTitleResponse,
+  type SetTitleResult,
+  type TitleConflict,
 } from '@/lib/bridge/protocol';
 
 /**
  * ISOLATED world content script:x.com 文章编辑页的编排器。
  *
  * 职责:按需注入 MAIN world 注入引擎(injectScript)、与其做 nonce 握手、
- * (后续)在 sidepanel 与 injector 之间中转消息。本阶段(M1 地基)只做
- * 「注入 + 握手 + 日志」,fiber/Draft 直写在 injector 的后续步骤实现。
+ * 在 sidepanel 与 injector 之间中转消息(探针 / 写入 / 标题设置)。
  *
  * 采用 WXT 推荐的 injectScript(而非声明式 world:'MAIN'):由本 ISOLATED 侧
  * 持有扩展 API 并控制注入时机,更稳、更可控。
@@ -43,18 +46,71 @@ export default defineContentScript({
       }
     };
 
-    // 进行中的探针请求表:按 id 索引(而非单一全局变量),以支持同一时刻多个 probe 并发。
-    // 每项持有 resolve 回调与超时定时器,收到匹配的 probe-result 或超时后从表中删除。
-    const pendingProbes = new Map<
-      string,
-      { resolve: (r: ProbeResult) => void; timer: ReturnType<typeof setTimeout> }
-    >();
+    /**
+     * 通用「挂起请求」桥:统一 probe / import / set-title 三类中转的公共骨架
+     * (生成 id → 登记 resolve+timer → 发消息 → 收到匹配 result 后兑现 → 超时兜底 → 失效清理)。
+     *
+     * 单一 Map 承载异构请求:各类请求的 id 均为 crypto.randomUUID,全局唯一、无碰撞,
+     * 故无需按类型分表。nonce 匹配仍由调用方在 onMessage 里前置校验(拦截历史残留 / 串扰)。
+     */
+    const createBridge = () => {
+      // 每项持有:期望的应答 kind、resolve 回调、超时定时器。
+      // 存 kind 是为了让 resolve 校验「回来的 result 类型」与「该 id 登记时的请求类型」一致——
+      // 单 Map 承载 probe/import/set-title 三类,虽 id 是 UUID 全局唯一,但页面 JS 能读到
+      // postMessage('*') 广播的 nonce/id,加 kind 校验可挡住构造跨类型 result 的通道混淆。
+      const pending = new Map<
+        string,
+        { kind: string; resolve: (raw: unknown) => void; timer: ReturnType<typeof setTimeout> }
+      >();
 
-    // 进行中的写入请求表:结构同 pendingProbes,按 id 索引以支持并发/精确匹配。
-    const pendingImports = new Map<
-      string,
-      { resolve: (r: ImportResult) => void; timer: ReturnType<typeof setTimeout> }
-    >();
+      /**
+       * 发起一次请求并等待应答:
+       * - 生成唯一 id → 登记 kind+resolve+timer → 调用 send(id) 发消息;
+       * - 收到匹配(id + kind)的 result → onResult(raw) 映射为最终应答;
+       * - timeoutMs 超时 → onTimeout() 兜底(并把 id 出表)。
+       * @param kind 期望的应答消息 kind(如 'probe-result'),resolve 时据此校验类型一致。
+       */
+      const request = <TRaw, TResponse>(
+        kind: string,
+        send: (id: string) => void,
+        timeoutMs: number,
+        onResult: (raw: TRaw) => TResponse,
+        onTimeout: () => TResponse,
+      ): Promise<TResponse> => {
+        const id = crypto.randomUUID();
+        return new Promise<TResponse>((resolve) => {
+          const timer = setTimeout(() => {
+            pending.delete(id);
+            resolve(onTimeout());
+          }, timeoutMs);
+          pending.set(id, {
+            kind,
+            resolve: (raw) => resolve(onResult(raw as TRaw)),
+            timer,
+          });
+          send(id);
+        });
+      };
+
+      // 收到匹配的 result:id 命中且 kind 一致才兑现(否则忽略——跨类型/伪造的 result 不放行)。
+      const resolve = (id: string, kind: string, raw: unknown) => {
+        const entry = pending.get(id);
+        if (!entry || entry.kind !== kind) return;
+        clearTimeout(entry.timer);
+        pending.delete(id);
+        entry.resolve(raw);
+      };
+
+      // 一次性清理所有挂起项(content script 失效时):清定时器并清表,避免失效后回调仍触发。
+      const clearAll = () => {
+        for (const entry of pending.values()) clearTimeout(entry.timer);
+        pending.clear();
+      };
+
+      return { request, resolve, clearAll };
+    };
+
+    const bridge = createBridge();
 
     const onMessage = (e: MessageEvent) => {
       if (!isMainMessage(e)) return;
@@ -67,21 +123,12 @@ export default defineContentScript({
         stopRetry();
         console.info('[MarkFlow] content↔injector 握手成功', { nonce });
       } else if (msg.kind === 'probe-result' && msg.nonce === nonce) {
-        // 用 id 精确匹配并发探针;nonce 校验拦截历史残留 / 其他会话的串扰
-        const p = pendingProbes.get(msg.id);
-        if (p) {
-          clearTimeout(p.timer);
-          pendingProbes.delete(msg.id);
-          p.resolve(msg.result);
-        }
+        // 用 id + kind 精确匹配并发请求;nonce 校验拦截历史残留 / 其他会话的串扰
+        bridge.resolve(msg.id, msg.kind, msg.result);
       } else if (msg.kind === 'import-result' && msg.nonce === nonce) {
-        // nonce+id 双匹配:拦截历史残留 / 其他会话,并精确对应到发起的写入请求
-        const p = pendingImports.get(msg.id);
-        if (p) {
-          clearTimeout(p.timer);
-          pendingImports.delete(msg.id);
-          p.resolve(msg.result);
-        }
+        bridge.resolve(msg.id, msg.kind, msg.result);
+      } else if (msg.kind === 'set-title-result' && msg.nonce === nonce) {
+        bridge.resolve(msg.id, msg.kind, msg.result);
       }
     };
     window.addEventListener('message', onMessage);
@@ -89,54 +136,61 @@ export default defineContentScript({
     /**
      * 向 injector 发起一次探针并等待应答:
      * - 未握手 → 立即回 no-injector;
-     * - 已握手 → 生成唯一 id,postMessage probe,等匹配(nonce+id)的 probe-result;
-     *   2500ms 超时回 timeout。
+     * - 已握手 → 经桥发 probe,等匹配(nonce+id)的 probe-result;2500ms 超时回 timeout。
      */
     const probeInjector = (): Promise<ProbeResponse> => {
       if (!handshaked) return Promise.resolve({ ok: false, error: 'no-injector' });
-      const id = crypto.randomUUID();
-      return new Promise<ProbeResponse>((resolve) => {
-        const timer = setTimeout(() => {
-          pendingProbes.delete(id);
-          resolve({ ok: false, error: 'timeout' });
-        }, 2500);
-        pendingProbes.set(id, {
-          resolve: (result) => resolve({ ok: true, result }),
-          timer,
-        });
-        post({ source: ISO_SOURCE, kind: 'probe', nonce, id });
-      });
+      return bridge.request<ProbeResult, ProbeResponse>(
+        'probe-result',
+        (id) => post({ source: ISO_SOURCE, kind: 'probe', nonce, id }),
+        2500,
+        (result) => ({ ok: true, result }),
+        () => ({ ok: false, error: 'timeout' }),
+      );
     };
 
     /**
-     * 向 injector 发起一次写入并等待应答(结构同 probeInjector):
+     * 向 injector 发起一次写入并等待应答:
      * - 未握手 → 立即回 no-injector;
-     * - 已握手 → 生成唯一 id,postMessage import(携带 blocks/mode),等匹配的 import-result;
-     *   30s 超时回 timeout(写入含取样轮询 / DOM 落盘,给足冗余)。
+     * - 已握手 → 经桥发 import(携带 blocks/mode),等匹配的 import-result;30s 超时回 timeout
+     *   (写入含取样轮询 / DOM 落盘,给足冗余)。ImportResult 成功分支含 effectiveMode,透传即可。
      */
     const importInjector = (blocks: ImportBlock[], mode: ImportMode): Promise<ImportResponse> => {
       if (!handshaked) return Promise.resolve({ ok: false, error: 'no-injector' });
-      const id = crypto.randomUUID();
-      return new Promise<ImportResponse>((resolve) => {
-        const timer = setTimeout(() => {
-          pendingImports.delete(id);
-          resolve({ ok: false, error: 'timeout' });
-        }, 30_000);
-        pendingImports.set(id, {
-          resolve: (result) => resolve(result),
-          timer,
-        });
-        post({ source: ISO_SOURCE, kind: 'import', nonce, id, blocks, mode });
-      });
+      return bridge.request<ImportResult, ImportResponse>(
+        'import-result',
+        (id) => post({ source: ISO_SOURCE, kind: 'import', nonce, id, blocks, mode }),
+        30_000,
+        (result) => result,
+        () => ({ ok: false, error: 'timeout' }),
+      );
     };
 
-    // sidepanel ↔ content 的 chrome.runtime 通道:markflow:probe → 转探针;markflow:import → 转写入。
+    /**
+     * 向 injector 发起一次标题设置并等待应答:
+     * - 未握手 → 立即回 no-injector;
+     * - 已握手 → 经桥发 set-title(携带 title/conflict),等匹配的 set-title-result;
+     *   8s 超时回 timeout。透传 injector 的 SetTitleResult(含 applied 语义)。
+     */
+    const setTitleInjector = (title: string, conflict: TitleConflict): Promise<SetTitleResponse> => {
+      if (!handshaked) return Promise.resolve({ ok: false, error: 'no-injector' });
+      return bridge.request<SetTitleResult, SetTitleResponse>(
+        'set-title-result',
+        (id) => post({ source: ISO_SOURCE, kind: 'set-title', nonce, id, title, conflict }),
+        8000,
+        (result) => result,
+        () => ({ ok: false, error: 'timeout' }),
+      );
+    };
+
+    // sidepanel ↔ content 的 chrome.runtime 通道:probe → 转探针;import → 转写入;set-title → 转标题。
     // 返回 Promise 即异步应答(WXT/webextension-polyfill 约定:回 Promise 或 return true)。
     const onRuntimeMessage = (
       message: unknown,
-    ): Promise<ProbeResponse | ImportResponse> | undefined => {
+    ): Promise<ProbeResponse | ImportResponse | SetTitleResponse> | undefined => {
       if (isProbeRequest(message)) return probeInjector();
       if (isImportRequest(message)) return importInjector(message.blocks, message.mode);
+      if (isSetTitleRequest(message)) return setTitleInjector(message.title, message.conflict);
       return undefined; // 非本扩展关心的消息:不应答,交给其他监听器
     };
     browser.runtime.onMessage.addListener(onRuntimeMessage);
@@ -171,11 +225,8 @@ export default defineContentScript({
       stopRetry();
       window.removeEventListener('message', onMessage);
       browser.runtime.onMessage.removeListener(onRuntimeMessage);
-      // 清掉悬挂的探针 / 写入定时器,避免失效后回调仍触发
-      for (const p of pendingProbes.values()) clearTimeout(p.timer);
-      pendingProbes.clear();
-      for (const p of pendingImports.values()) clearTimeout(p.timer);
-      pendingImports.clear();
+      // 一次性清掉所有悬挂请求(探针 / 写入 / 标题)的定时器,避免失效后回调仍触发。
+      bridge.clearAll();
     });
   },
 });

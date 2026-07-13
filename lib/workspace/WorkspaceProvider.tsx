@@ -10,9 +10,11 @@ import {
 import { useI18n } from '@/lib/i18n/useI18n';
 import { useSettings } from '@/lib/settings/SettingsProvider';
 import { useConnection } from '@/lib/bridge/useConnection';
-import { importToXTab } from '@/lib/bridge/importArticle';
-import type { ImportMode } from '@/lib/bridge/protocol';
+import { useProbe } from '@/lib/bridge/useProbe';
+import { importToXTab, setTitleOnXTab } from '@/lib/bridge/importArticle';
+import type { ImportMode, SetTitleResponse, TitleConflict } from '@/lib/bridge/protocol';
 import { capability, firstTitle } from '@/lib/markdown/capability';
+import { extractTitle, stripFirstH1 } from '@/lib/markdown/frontmatter';
 import { parseMarkdown } from '@/lib/markdown/parser';
 import { sampleEn, sampleZh } from '@/lib/markdown/sample';
 import { saveDraft } from '@/lib/storage/draftStore';
@@ -94,6 +96,18 @@ function importErrorText(error: string, t: Dict): string {
   return `${t.errWriteFail}: ${error}`;
 }
 
+/** 把标题设置结果归类为可读文案。applied:false 属正常(keep 命中已有标题)。 */
+function titleResultText(res: SetTitleResponse, t: Dict): string {
+  if (res.ok) return res.applied ? t.titleSet : t.titleKept;
+  // 标题框未找到单列一类。
+  if (res.error.includes('not found')) return t.titleFieldMissing;
+  // 通道层错误(未连接/未就绪/超时)复用与正文一致的本地化,不把英文诊断码泄漏给用户。
+  if (res.error === 'disconnected') return `${t.titleFail}: ${t.errDisconnected}`;
+  if (res.error === 'no-injector') return `${t.titleFail}: ${t.errNoInjector}`;
+  if (res.error === 'timeout') return `${t.titleFail}: ${t.errTimeout}`;
+  return `${t.titleFail}: ${res.error}`;
+}
+
 interface WorkspaceProviderProps {
   initialMd?: string;
   initialHistory?: HistoryItem[];
@@ -107,7 +121,10 @@ export function WorkspaceProvider({
 }: WorkspaceProviderProps) {
   const { t, lang } = useI18n();
   const { opts } = useSettings();
-  const { connected } = useConnection();
+  // review #6:editorHasContent 改为真实探针派生值(hasContent),不再是写死的 mock。
+  const { connected, hasContent: editorHasContent } = useConnection();
+  // 写入成功后需重探,让 hasContent 反映「编辑器现在有内容了」(探针默认只挂载探一次)。
+  const { refresh: refreshProbe } = useProbe();
   const en = lang === 'en';
 
   const [tab, setTab] = useState<Tab>('draft');
@@ -128,7 +145,6 @@ export function WorkspaceProvider({
   const [celebrating, setCelebrating] = useState(false);
   const [histQ, setHistQ] = useState('');
   const [history, setHistory] = useState<HistoryItem[]>(initialHistory);
-  const [editorHasContent, setEditorHasContent] = useState(true);
   const [histClearArm, setHistClearArm] = useState(false);
 
   const timers = useRef<Timers>({});
@@ -228,7 +244,8 @@ export function WorkspaceProvider({
   }, []);
 
   // ── 导入 ──
-  const finishImport = useCallback(() => {
+  // toastMsg:成功收尾提示,默认「已写入」;标题/空替换场景由 startImport 组合后传入。
+  const finishImport = useCallback((toastMsg: string = t.writtenToast) => {
     const cap = capability(md, en);
     const ok = cap.filter((c) => c.badge !== 'warn').reduce((a, c) => a + c.count, 0);
     const deg = cap.filter((c) => c.badge === 'warn').reduce((a, c) => a + c.count, 0);
@@ -244,7 +261,6 @@ export function WorkspaceProvider({
     };
 
     setImporting(false);
-    setEditorHasContent(true);
     setReportVisible(opts.autoReport !== 'never');
 
     const limit = opts.histLimit === 'inf' ? Infinity : Number(opts.histLimit);
@@ -255,9 +271,12 @@ export function WorkspaceProvider({
       setCelebrating(true);
       timers.current.celebrate = setTimeout(() => setCelebrating(false), 950);
     }
-    showToast(t.writtenToast);
+    showToast(toastMsg);
     playSound();
-  }, [md, en, opts.autoReport, opts.histLimit, opts.confetti, history, commitHistory, showToast, t.writtenToast, playSound]);
+    // 写入成功后重探编辑器状态,更新 hasContent——否则「只探一次」的探针会让下次
+    // ask 模式误判编辑器仍为空,直接静默 replace 覆盖刚写入的正文(review #3)。
+    void refreshProbe();
+  }, [md, en, opts.autoReport, opts.histLimit, opts.confetti, history, commitHistory, showToast, t.writtenToast, playSound, refreshProbe]);
 
   // 真实写入:解析 → 送达 X tab → 按结果收尾。纯文本写入近乎瞬时,
   // 进度条只走「解析中 → 写入中 → 完成」三段真实阶段(不再用定时器编造百分比,
@@ -271,14 +290,34 @@ export function WorkspaceProvider({
         // 解析中(同步、瞬时)
         setStageLabel(t.stParse);
         setStagePct(40);
-        const blocks = parseMarkdown(md);
+        // 标题抽取放在解析前:既决定后续是否设置标题,也决定要不要移除正文首个 H1。
+        // 关闭「设置文章标题」时完全跳过,连抽取都不做。
+        const extracted = opts.setTitle ? extractTitle(md) : null;
+        // h1Handle:标题来自 H1 且设为 remove → 在 **md 文本层**删除那一行 H1 再解析,
+        // 避免标题在正文重复。**不**在 blocks 层按 type 删——parser 把 H1/H2 都映射成
+        // header-one,blocks 层无法区分,「H2 在 H1 之前」时会删错块(见 stripFirstH1 注释)。
+        const bodyMd =
+          extracted?.source === 'h1' && opts.h1Handle === 'remove' ? stripFirstH1(md) : md;
+        const blocks = parseMarkdown(bodyMd);
         // 写入中(等待 content → injector 直写)
         setStageLabel(t.stBody);
         setStagePct(75);
         const res = await importToXTab(blocks, mode);
         if (res.ok) {
           setStagePct(100);
-          finishImport();
+          // #7:所选 append 但引擎实际降级为 replace(编辑器为空)→ 明确提示,不静默。
+          let toastMsg = mode === 'append' && res.effectiveMode === 'replace' ? t.emptyReplaced : t.writtenToast;
+          // 标题流程:正文已成功,再设置标题。标题失败不推翻正文成功结论(部分成功)。
+          if (extracted) {
+            // conflict 映射:'overwrite'→overwrite;'keep'/'ask' 一律 keep(保守)。
+            // 'ask' 尚无独立询问 UI,取「保守不覆盖」而非 overwrite——遇到编辑器已有标题时
+            // 宁可保留原标题也不静默覆盖(叠加打分误命中时更不能贸然覆盖)。
+            // TODO(M2+): 标题 ask 独立询问弹窗,再区分 ask 与 keep。
+            const conflict: TitleConflict = opts.titleConflict === 'overwrite' ? 'overwrite' : 'keep';
+            const titleRes = await setTitleOnXTab(extracted.title, conflict);
+            toastMsg = `${toastMsg} · ${titleResultText(titleRes, t)}`;
+          }
+          finishImport(toastMsg);
         } else {
           // 失败:不写成功记录,以可读中文/英文提示错误(复位在 finally 统一处理)。
           showToast(importErrorText(res.error, t));
@@ -292,7 +331,7 @@ export function WorkspaceProvider({
         setImporting(false);
       }
     },
-    [md, t, finishImport, showToast],
+    [md, t, opts.setTitle, opts.h1Handle, opts.titleConflict, finishImport, showToast],
   );
 
   const writeX = useCallback(() => {

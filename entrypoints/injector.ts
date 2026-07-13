@@ -6,6 +6,8 @@ import {
   type ImportResult,
   type MainMessage,
   type ProbeResult,
+  type SetTitleResult,
+  type TitleConflict,
 } from '@/lib/bridge/protocol';
 
 /**
@@ -224,9 +226,20 @@ export default defineUnlistedScript(() => {
   /** 执行三灯探针 + 文章 id,组装 ProbeResult。 */
   const runProbe = (): ProbeResult => {
     const hasEditor = findEditorElement() !== null;
-    const hasDraftNode = findDraftStateNode() !== null;
+    const draftNode = findDraftStateNode();
+    const hasDraftNode = draftNode !== null;
     const hasOnFilesAdded = findOnFilesAdded() !== null;
-    return { hasEditor, hasDraftNode, hasOnFilesAdded, articleId: getArticleId() };
+    // hasContent:遍历 blockMap 任一块 text 非空即为 true;拿不到 draftNode 时恒 false。
+    let hasContent = false;
+    if (draftNode) {
+      readEditorState(draftNode)
+        .getCurrentContent()
+        .getBlockMap()
+        .forEach((block) => {
+          if (block.getText().length > 0) hasContent = true;
+        });
+    }
+    return { hasEditor, hasDraftNode, hasOnFilesAdded, articleId: getArticleId(), hasContent };
   };
 
   // -------------------------------------------------------------------------
@@ -433,12 +446,127 @@ export default defineUnlistedScript(() => {
         }
       }
 
-      console.info('[MarkFlow] 写入成功', { blockCount: blocks.length });
-      return { ok: true, blockCount: blocks.length };
+      console.info('[MarkFlow] 写入成功', { blockCount: blocks.length, effectiveMode });
+      return { ok: true, blockCount: blocks.length, effectiveMode };
     } catch (err) {
       // 打完整 err 对象(含堆栈),便于定位崩在 Draft 内部的哪一步
       console.error(`[MarkFlow] 写入异常 @${stage}`, err);
       return { ok: false, error: `${stage}: ${String(err)}` };
+    }
+  };
+
+  // -------------------------------------------------------------------------
+  // 标题设置(setTitle)—— 仅 UI 通道:打分定位标题输入框 + 原生 value setter 绕过
+  // React 受控组件。蓝本见 docs/research/xposter-analysis.md §3.5(setTitleViaUi 打分法)。
+  // TODO(M2+): GraphQL 补充通道(ArticleEntityUpdateTitle)——queryId 硬编码易随 X 发版
+  // 失效,本阶段不落地,仅保留 UI 单通道。
+  // -------------------------------------------------------------------------
+
+  /**
+   * 标题候选元素:三类字段目标(input/textarea/contenteditable)统一为 HTMLElement,
+   * 具体读写时用 instanceof 收窄到 HTMLInputElement/HTMLTextAreaElement,无需额外鸭子字段。
+   */
+  type TitleFieldLike = HTMLElement;
+
+  /**
+   * 对单个候选元素打分:aria-label/placeholder/data-testid 含 title/标题/add title +10;
+   * 位于页面上部(rect.top 较小)+3;宽 > 240 +2。返回 0 表示明显不是标题框。
+   */
+  const scoreTitleField = (el: HTMLElement): number => {
+    const rect = el.getBoundingClientRect();
+    // 不可见元素(零尺寸)直接淘汰。
+    if (rect.width <= 0 || rect.height <= 0) return 0;
+    const hints = [
+      el.getAttribute('aria-label'),
+      el.getAttribute('placeholder'),
+      el.getAttribute('data-testid'),
+    ]
+      .filter((v): v is string => typeof v === 'string')
+      .join(' ')
+      .toLowerCase();
+    // 关键词是**硬门槛**:未命中 title/标题 一律 0 分——否则正文大 contenteditable 会因
+    // 「页面上部 + 够宽」的几何分被误选为标题框,setTitle 的 overwrite 会全选替换、
+    // 把刚写入的正文清空成一行标题(数据破坏)。找不到带关键词的框宁可不设标题也不误伤正文。
+    if (!/title|标题/.test(hints)) return 0;
+    let score = 10;
+    if (rect.top < 240) score += 3;
+    if (rect.width > 240) score += 2;
+    return score;
+  };
+
+  /** 遍历所有可见 input/textarea/[contenteditable],取打分最高且 > 0 者(排除正文编辑器)。 */
+  const findTitleField = (): TitleFieldLike | null => {
+    const editor = findEditorElement(); // 正文编辑器绝不能当标题框,双保险显式排除
+    const nodes = document.querySelectorAll<HTMLElement>(
+      "input, textarea, [contenteditable='true'], [contenteditable='']",
+    );
+    let best: TitleFieldLike | null = null;
+    let bestScore = 0;
+    for (const el of nodes) {
+      if (el === editor) continue;
+      const score = scoreTitleField(el);
+      if (score > bestScore) {
+        bestScore = score;
+        best = el as TitleFieldLike;
+      }
+    }
+    return bestScore > 0 ? best : null;
+  };
+
+  /** 读取候选元素的现有标题值:input/textarea 用 .value;contenteditable 用 textContent。 */
+  const readTitleValue = (el: TitleFieldLike): string => {
+    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return el.value;
+    return el.textContent ?? '';
+  };
+
+  /**
+   * 设置标题(仅 UI 通道):打分定位输入框 → 冲突策略判断 → 原生 setter 写入并派发事件。
+   * applied=false 表示因 keep 策略遇到已有非空标题而跳过(非错误)。
+   */
+  const setTitle = (title: string, conflict: TitleConflict): SetTitleResult => {
+    const field = findTitleField();
+    if (!field) return { ok: false, error: 'title field not found' };
+
+    // keep 策略:已有非空标题则跳过,不视为错误。
+    const existing = readTitleValue(field);
+    if (existing.trim().length > 0 && conflict === 'keep') {
+      return { ok: true, applied: false };
+    }
+
+    try {
+      if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) {
+        // 原生 value setter 绕过 React 受控组件(直接赋 .value 不会触发 React 的 change 追踪)。
+        const proto =
+          field instanceof HTMLInputElement
+            ? HTMLInputElement.prototype
+            : HTMLTextAreaElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+        if (setter) setter.call(field, title);
+        else field.value = title;
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+        field.dispatchEvent(new Event('change', { bubbles: true }));
+      } else {
+        // contenteditable:focus + 全选 + execCommand insertText 覆盖。
+        // 关键:只有**成功全选**后才用 insertText——无选区时 insertText 会在光标处
+        // 追加而非替换,得到「旧标题+新标题」;故无选区/失败一律走 textContent 覆盖。
+        field.focus();
+        const selection = window.getSelection();
+        let replaced = false;
+        if (selection) {
+          const range = document.createRange();
+          range.selectNodeContents(field);
+          selection.removeAllRanges();
+          selection.addRange(range);
+          replaced = document.execCommand('insertText', false, title);
+        }
+        if (!replaced) {
+          field.textContent = title;
+          field.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      }
+      return { ok: true, applied: true };
+    } catch (err) {
+      return { ok: false, error: String(err) };
     }
   };
 
@@ -456,6 +584,12 @@ export default defineUnlistedScript(() => {
       // 执行写入(async:取样轮询 / 提交后验证都要 await),回显 nonce/id
       const result = await runImport(msg.blocks, msg.mode);
       post({ source: MAIN_SOURCE, kind: 'import-result', nonce: msg.nonce, id: msg.id, result });
+    } else if (msg.kind === 'set-title') {
+      // 设置标题(仅 UI 通道),回显 nonce/id
+      console.info('[MarkFlow] 设置标题开始', { conflict: msg.conflict });
+      const result = setTitle(msg.title, msg.conflict);
+      console.info('[MarkFlow] 设置标题结果', result);
+      post({ source: MAIN_SOURCE, kind: 'set-title-result', nonce: msg.nonce, id: msg.id, result });
     }
   });
 
