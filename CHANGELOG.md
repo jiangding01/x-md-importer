@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### 修复 · 图片 marker 残留清理不彻底（多图 fallbackIndex + 异步 commit）
+- **正文残留 `__MARKFLOW_IMG_xxx_N__`**：多图导入时某张图走 `relocateMediaByFallbackIndex` 兜底路径（精确 relocate 失败 → 只确认 MEDIA 存在、不删 marker 块，留给 `sweepMarkers` 收尾）后，`sweepMarkers` **单次**清扫因 X 的 `onChange` 异步 commit、读到 fiber 中间态而漏删 → 正文留下 marker 脏 token（真机见最后一张图 `_4_` 残留）。改 `sweepMarkers` 为**多轮重试**（每轮留时间让 X commit、读最新 state 删残留，直到某轮无残留或达 4 轮上限）。
+
 ### 新增 · 「打开 X Articles」按钮 · 修复 · 图片 `<>` 路径 / 封面弹窗未关 / 清空状态残留 · 记录 · postMessage 私有化回退
 - **修复 · 图片路径 `<>` 包裹（含空格）解析失败**：CommonMark 规定 destination 含空格时须用尖括号包裹（`![](<images/a b.png>)`）——原 parser 未剥尖括号，`source` 带字面 `<>` 导致**本地图读取全失败**（真机 `imageFail` 13/13）。修复：`matchImageLine` 感知 `<>`（尖括号内的 `)` 不再误判为 destination 闭合）+ 新增 `normalizeImageSrc` 剥括号并**保留路径空格**（不像行内链接那样截到第一个空白）；裸图 `![](<x>)` 与带链接图 `[![](<x>)](y)` 均适用。8 条用例实跑覆盖（含空格/含 `)`/尾随 title/多图/空 src/回归）。
 - **修复 · 封面裁剪弹窗点 Apply 后未关闭**：`setCoverImage` 原用裸 `.click()` 点弹窗内 Apply，对 X 的 React 裁剪按钮偶发不触发（点了、`coverSet` 谎报 `true`、弹窗却残留）。改用 `realClick` 派发**完整鼠标事件序列**（pointer/mouse down→up→click）+ 用稳定 `data-testid="applyButton"` 定位 + **轮询确认弹窗真的关闭才算成功**（没关就重点，最多 5 轮）；`coverSet` 不再谎报。
