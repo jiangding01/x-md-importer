@@ -9,9 +9,19 @@
  * (扩展 origin)读不到,故本模块只在 content 侧使用;UI 侧仅通过 runtime 消息触发/查询。
  */
 
+import type { VaultScope } from './protocol';
+
 const DB_NAME = 'markflow_local_assets';
 const STORE = 'handles';
-const KEY = 'vault_root';
+/**
+ * 两级文件夹的 IndexedDB key(作用域定义见 protocol 的 VaultScope):
+ *  - persistent 复用旧 key 'vault_root',兼容此前已连接的设置文件夹(升级不丢);
+ *  - active 用新 key 'vault_active'。
+ */
+const KEYS: Record<VaultScope, string> = {
+  persistent: 'vault_root', // 复用旧 key,兼容此前已连接的设置文件夹(不丢)
+  active: 'vault_active',
+};
 
 /** FileSystemHandle 的权限 API(TS DOM lib 尚未覆盖,按需最小声明,不用 any)。 */
 interface FsPermissionHandle {
@@ -41,24 +51,31 @@ function idbRun<T>(mode: IDBTransactionMode, fn: (store: IDBObjectStore) => IDBR
   });
 }
 
-/** 持久化文件夹 handle(连接成功后调用)。 */
-export function saveVaultHandle(handle: FileSystemDirectoryHandle): Promise<IDBValidKey> {
-  return idbRun('readwrite', (s) => s.put(handle, KEY));
+/** 持久化文件夹 handle(连接成功后调用)。scope 决定存到 active(素材板)还是 persistent(设置)。 */
+export function saveVaultHandle(
+  handle: FileSystemDirectoryHandle,
+  scope: VaultScope,
+): Promise<IDBValidKey> {
+  return idbRun('readwrite', (s) => s.put(handle, KEYS[scope]));
 }
 
-/** 取回已存的文件夹 handle;未连接返回 null。 */
-export async function getVaultHandle(): Promise<FileSystemDirectoryHandle | null> {
+/** 取回指定 scope 已存的文件夹 handle;未连接返回 null。 */
+export async function getVaultHandle(
+  scope: VaultScope,
+): Promise<FileSystemDirectoryHandle | null> {
   try {
-    const h = await idbRun<FileSystemDirectoryHandle | undefined>('readonly', (s) => s.get(KEY));
+    const h = await idbRun<FileSystemDirectoryHandle | undefined>('readonly', (s) =>
+      s.get(KEYS[scope]),
+    );
     return h ?? null;
   } catch {
     return null;
   }
 }
 
-/** 清除已存的文件夹 handle(「清除」按钮 / 连接失效)。 */
-export function clearVaultHandle(): Promise<undefined> {
-  return idbRun('readwrite', (s) => s.delete(KEY));
+/** 清除指定 scope 已存的文件夹 handle(「清除」按钮 / 连接失效)。 */
+export function clearVaultHandle(scope: VaultScope): Promise<undefined> {
+  return idbRun('readwrite', (s) => s.delete(KEYS[scope]));
 }
 
 /** 已授予读权限即返回 true;prompt/denied 返回 false(requestPermission 需手势,由授权流程调用)。 */
@@ -132,6 +149,23 @@ export async function resolveLocalFile(
   if (direct) return direct;
   if (folderName && segs.length > 1 && segs[0] === folderName) {
     return readBySegments(root, segs.slice(1));
+  }
+  return null;
+}
+
+/**
+ * 按作用域优先级 active(素材板「本篇」)> persistent(设置默认)**逐文件兜底**解析本地图:
+ * 依次对每个「已连接且读权限有效」的文件夹尝试 resolveLocalFile,首个命中即返回 File。
+ * 与「handle 级优先」的区别:active 里找不到该文件时会继续到 persistent 里找——active 只是
+ * 优先来源,不会一旦连上就把 persistent 整体架空(避免「素材卡显示就绪、导入却降级」的落差)。
+ * 两级都读不到返回 null(调用方降级 fallbackText)。
+ */
+export async function resolveLocalImageAcrossScopes(rawPath: string): Promise<File | null> {
+  for (const scope of ['active', 'persistent'] as const) {
+    const h = await getVaultHandle(scope);
+    if (!h || !(await hasReadPermission(h))) continue;
+    const file = await resolveLocalFile(h, rawPath, h.name);
+    if (file) return file;
   }
   return null;
 }

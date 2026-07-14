@@ -10,6 +10,7 @@ import {
   isMainMessage,
   isProbeRequest,
   isSetTitleRequest,
+  messageScope,
   type FetchImageResponse,
   type FolderResponse,
   type ImageBlock,
@@ -30,9 +31,10 @@ import {
   getVaultHandle,
   hasReadPermission,
   requestReadPermission,
-  resolveLocalFile,
+  resolveLocalImageAcrossScopes,
   saveVaultHandle,
 } from '@/lib/bridge/localVault';
+import type { VaultScope } from '@/lib/bridge/protocol';
 
 /** 允许的图片 MIME(与 background 一致):dataURI 解析、本地图读取都据此校验。 */
 const ALLOWED_IMAGE_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
@@ -91,11 +93,10 @@ async function prepareOneImage(block: ImageBlock): Promise<PreparedImage> {
       }
       return { file: null };
     }
-    // local(本地相对路径):从已连接的文件夹 handle(File System Access)读取。
-    // 未连接 / 权限失效 / 未找到 → file:null,injector 降级为 fallbackText 写回原文。
-    const handle = await getVaultHandle();
-    if (!handle || !(await hasReadPermission(handle))) return { file: null };
-    const file = await resolveLocalFile(handle, block.source, handle.name);
+    // local(本地相对路径):从已连接的文件夹读取,逐文件兜底优先级 active(素材板「本篇」)>
+    // persistent(设置默认)——active 里没有该文件时继续到 persistent 找;两级都读不到 → file:null,
+    // injector 降级为 fallbackText 写回原文。
+    const file = await resolveLocalImageAcrossScopes(block.source);
     // 与远程/dataURI 对齐:大小上限 + MIME 白名单(本地文件可能是非图或超大文件)。
     if (!file || file.size > MAX_LOCAL_IMAGE_BYTES || !ALLOWED_IMAGE_MIME.has(file.type)) {
       return { file: null };
@@ -333,8 +334,15 @@ export default defineContentScript({
     // 当前活动授权浮层的「外部取消」句柄:onInvalidated 时清屏 + resolve,防卡屏 / 悬挂 Promise。
     let dismissActiveVaultOverlay: (() => void) | null = null;
 
-    const connectFolder = (): Promise<FolderResponse> =>
-      new Promise((resolve) => {
+    const connectFolder = async (
+      scope: VaultScope,
+      forcePick: boolean,
+    ): Promise<FolderResponse> => {
+      // 「恢复优先」:非强制重选时,若已有存量 handle(浏览器重启后权限回落 prompt,handle 仍在),
+      // 浮层走「恢复访问」分支——点一次只弹「允许读取 <文件夹名>」授权,免去重新翻找并重选文件夹。
+      // forcePick(「更换」)或无存量 handle 时走完整的 showDirectoryPicker 选择流程。
+      const existing = forcePick ? null : await getVaultHandle(scope);
+      return new Promise((resolve) => {
         // 若上一次连接浮层仍在(用户快速再点「连接」),先取消它——否则旧浮层会成为
         // 没人能清的孤儿(dismissActiveVaultOverlay 只存最新句柄),且可能弹出第二个 picker。
         dismissActiveVaultOverlay?.();
@@ -347,15 +355,23 @@ export default defineContentScript({
           'background:#fff;color:#0f1419;max-width:340px;padding:20px 22px;border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.25);';
         const title = document.createElement('div');
         title.style.cssText = 'font-weight:700;font-size:15px;margin-bottom:8px;';
-        title.textContent = 'MarkFlow · 连接本地图片文件夹';
+        // 三类文案:恢复(有存量 handle)/ 连接当前文章 / 连接默认——便于用户理解当前动作。
+        title.textContent = existing
+          ? `MarkFlow · 恢复访问「${existing.name}」`
+          : scope === 'active'
+            ? 'MarkFlow · 连接当前文章图片文件夹'
+            : 'MarkFlow · 连接默认图片文件夹';
         const desc = document.createElement('div');
         desc.style.cssText = 'font-size:13px;line-height:1.5;color:#536471;margin-bottom:16px;';
-        desc.textContent =
-          '选择存放本地图片的文件夹后,导入时将从中读取相对路径图片(仅读取,不修改)。重开浏览器后可能需要重新连接。';
+        desc.textContent = existing
+          ? '浏览器重启后读权限已回落。点击下方按钮重新授予对上次文件夹的读取(仅读取,不修改),无需重选。'
+          : scope === 'active'
+            ? '选择本篇文章图片所在的文件夹,导入时优先从中读取相对路径图片(仅读取,不修改)。可随时更换为其他文章的文件夹。'
+            : '选择存放本地图片的默认文件夹,当前文章未单独连接时从中读取相对路径图片(仅读取,不修改)。重开浏览器后可能需要重新连接。';
         const row = document.createElement('div');
         row.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;';
         const pick = document.createElement('button');
-        pick.textContent = '选择文件夹';
+        pick.textContent = existing ? '恢复访问' : '选择文件夹';
         pick.style.cssText =
           'background:#0f1419;color:#fff;border:0;border-radius:9999px;padding:8px 18px;font-size:14px;font-weight:600;cursor:pointer;';
         const cancel = document.createElement('button');
@@ -386,13 +402,20 @@ export default defineContentScript({
         });
         pick.addEventListener('click', async () => {
           try {
+            // 恢复分支:直接对存量 handle 申请读权限,授予即复用(不重开选择器)。
+            if (existing) {
+              const granted = await requestReadPermission(existing);
+              if (!granted) return finish({ ok: false, error: 'permission-denied' });
+              await saveVaultHandle(existing, scope);
+              return finish({ ok: true, connected: true, folderName: existing.name });
+            }
             const handle = await (window as unknown as WindowFsPicker).showDirectoryPicker({
               id: 'markflow_vault',
               mode: 'read',
             });
             const granted = await requestReadPermission(handle);
             if (!granted) return finish({ ok: false, error: 'permission-denied' });
-            await saveVaultHandle(handle);
+            await saveVaultHandle(handle, scope);
             finish({ ok: true, connected: true, folderName: handle.name });
           } catch {
             // 用户在系统弹窗取消 showDirectoryPicker,或该环境不支持 → 取消处理
@@ -400,14 +423,15 @@ export default defineContentScript({
           }
         });
       });
+    };
 
-    const clearFolder = async (): Promise<FolderResponse> => {
-      await clearVaultHandle();
+    const clearFolder = async (scope: VaultScope): Promise<FolderResponse> => {
+      await clearVaultHandle(scope);
       return { ok: true, connected: false, folderName: null };
     };
 
-    const folderStatus = async (): Promise<FolderResponse> => {
-      const handle = await getVaultHandle();
+    const folderStatus = async (scope: VaultScope): Promise<FolderResponse> => {
+      const handle = await getVaultHandle(scope);
       if (!handle) return { ok: true, connected: false, folderName: null };
       // 有 handle 但读权限失效(浏览器重启后 FS Access 权限常回落 prompt)→ connected:false,
       // 让 UI 显示「未连接」引导重连,避免「显示已连接却读不到本地图」的撒谎态。folderName 仍回传。
@@ -424,9 +448,11 @@ export default defineContentScript({
       if (isProbeRequest(message)) return probeInjector();
       if (isImportRequest(message)) return importInjector(message.blocks, message.mode, message.coverSource ?? null);
       if (isSetTitleRequest(message)) return setTitleInjector(message.title, message.conflict);
-      if (isConnectFolderRequest(message)) return connectFolder();
-      if (isClearFolderRequest(message)) return clearFolder();
-      if (isFolderStatusRequest(message)) return folderStatus();
+      // scope 用 messageScope 归一(旧消息缺字段时回落 persistent),不裸信任 message.scope。
+      if (isConnectFolderRequest(message))
+        return connectFolder(messageScope(message), message.forcePick === true);
+      if (isClearFolderRequest(message)) return clearFolder(messageScope(message));
+      if (isFolderStatusRequest(message)) return folderStatus(messageScope(message));
       return undefined; // 非本扩展关心的消息:不应答,交给其他监听器
     };
     browser.runtime.onMessage.addListener(onRuntimeMessage);

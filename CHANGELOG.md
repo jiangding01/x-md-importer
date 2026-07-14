@@ -7,6 +7,12 @@
 
 ## [Unreleased]
 
+### 新增 · 本地图按需授权（两级文件夹 + 一键恢复）
+- **两级文件夹**：本地图读取新增 `active`（素材板「本篇图片文件夹」）与 `persistent`（设置默认文件夹）两个作用域，各存独立 IndexedDB key（persistent 复用旧 `vault_root`，升级不丢已连接的设置文件夹）。导入读取优先级 **active > persistent > 降级**（`getReadableVault`），一处统一。
+- **素材板入口**：含本地图时，素材卡片出现「本篇图片文件夹」行，可就地连接/更换/清除本篇专用文件夹——素材与文章对应，换文章即换文件夹，免去每次进设置。就绪判定认 active∥persistent 任一已连。
+- **一键恢复**：浏览器重启后 FS Access 读权限回落（安全策略),但 handle 仍在 IndexedDB。此时素材板/设置显示「需重新授权」+「恢复」按钮，点击直接对存量 handle `requestPermission`（只弹一次「允许读取 <文件夹名>」），**免去重新翻找并重选文件夹**；「更换」（`forcePick`）才走完整 `showDirectoryPicker`。
+- **协议**：`VaultScope` 作为共享契约类型；`connect/clear/folder-status` 请求带 `scope`，connect 带 `forcePick`；content 侧 `messageScope` 归一（旧消息缺字段回落 persistent，不裸信任）。
+
 ### 新增 · 探针自动重探 + tab 定位跟随当前标签
 - **自动重探**：ProbeProvider 监听 `browser.tabs.onActivated`（切换标签）+ `onUpdated`（当前活动 X 标签内 SPA 导航，如切换文章），400ms 防抖后自动 refresh——打开/切到/离开 X 编辑页时连接状态自动更新，免手动点刷新。手动刷新按钮保留。
 - **tab 定位改为跟随当前活动标签**：`resolveTargetXTab` 从「找任意打开的 X 标签」改为「只认当前活动标签，是 X 才连、否则未连接」。探针 + 写入 + 标题 + 封面 + 文件夹共用此定位，始终一致（不会探 A 写 B）；切到非 X 标签即显示未连接、写入禁用。

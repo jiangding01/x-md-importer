@@ -195,6 +195,14 @@ export type MainMessage =
  * 以后扩展更多 type(如 'markflow:import'、'markflow:page-status');应答复用 ProbeResult。
  */
 
+/**
+ * 本地图片文件夹的两级作用域(单一事实来源,localVault 与 UI 共用):
+ *  - 'active'     = 素材板「当前文章」文件夹(优先级高、随时更换,记住最近连接);
+ *  - 'persistent' = 设置里的默认文件夹(兜底)。
+ * 读本地图时 active 优先、persistent 兜底(见 content 的 getReadableVault)。
+ */
+export type VaultScope = 'active' | 'persistent';
+
 /** 判别常量(收发两端共享,避免裸字符串散落)。 */
 export const PROBE_REQUEST_TYPE = 'markflow:probe' as const;
 export const IMPORT_REQUEST_TYPE = 'markflow:import' as const;
@@ -214,9 +222,11 @@ export type RuntimeRequest =
       coverSource?: string | null;
     }
   | { type: typeof SET_TITLE_REQUEST_TYPE; title: string; conflict: TitleConflict }
-  | { type: typeof CONNECT_FOLDER_TYPE }
-  | { type: typeof CLEAR_FOLDER_TYPE }
-  | { type: typeof FOLDER_STATUS_TYPE };
+  // forcePick=true 强制重新 showDirectoryPicker 选文件夹(「更换」);缺省/false 时若存量 handle
+  // 仅权限回落(浏览器重启)则一键 requestPermission 复用,免重选(「连接 / 恢复」)。
+  | { type: typeof CONNECT_FOLDER_TYPE; scope: VaultScope; forcePick?: boolean }
+  | { type: typeof CLEAR_FOLDER_TYPE; scope: VaultScope }
+  | { type: typeof FOLDER_STATUS_TYPE; scope: VaultScope };
 
 /**
  * content → sidepanel 的本地文件夹应答(连接 / 清除 / 状态查询共用)。
@@ -294,8 +304,25 @@ function messageType(msg: unknown): string | undefined {
   return typeof t === 'string' ? t : undefined;
 }
 
-/** 运行时守卫:本地文件夹连接 / 清除 / 状态查询(应答均为 FolderResponse)。 */
-export const isConnectFolderRequest = (msg: unknown): msg is { type: typeof CONNECT_FOLDER_TYPE } =>
+/**
+ * 读取消息的 scope 字段并归一:仅 'active'/'persistent' 合法,缺省/非法一律回落
+ * 'persistent'(兼容旧消息 + 防串扰)。三类文件夹守卫据此保证 scope 始终有值。
+ */
+export function messageScope(msg: unknown): VaultScope {
+  const s = (msg as { scope?: unknown } | null)?.scope;
+  return s === 'active' ? 'active' : 'persistent';
+}
+
+/**
+ * 运行时守卫:本地文件夹连接 / 清除 / 状态查询(应答均为 FolderResponse)。
+ * **有意不把 scope 收窄进类型**——守卫只校验 `type`,scope 的存在性/合法性由消费方用
+ * `messageScope(msg)` 归一(旧消息缺字段、非法值一律回落 persistent)。避免「类型断言了 scope、
+ * 运行时却没校验」的撒谎,逼后人走 messageScope 而非裸读 `msg.scope`。forcePick 同理由 content
+ * 侧安全比较(`=== true`)。
+ */
+export const isConnectFolderRequest = (
+  msg: unknown,
+): msg is { type: typeof CONNECT_FOLDER_TYPE; forcePick?: boolean } =>
   messageType(msg) === CONNECT_FOLDER_TYPE;
 export const isClearFolderRequest = (msg: unknown): msg is { type: typeof CLEAR_FOLDER_TYPE } =>
   messageType(msg) === CLEAR_FOLDER_TYPE;
