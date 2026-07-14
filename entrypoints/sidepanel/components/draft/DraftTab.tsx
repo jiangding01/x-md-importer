@@ -11,13 +11,26 @@ import { ReportCard } from './ReportCard';
 import { OverwriteDialog } from './OverwriteDialog';
 import { Footer } from './Footer';
 
+/** X Articles 编辑器入口(新建/继续文章)。点「打开 X Articles」在新标签打开。 */
+const X_ARTICLES_URL = 'https://x.com/compose/articles';
+
 export function DraftTab() {
   const { t } = useI18n();
-  const { readFile, showToast } = useWorkspace();
+  const { readFile } = useWorkspace();
   const { connected } = useConnection();
   const fileRef = useRef<HTMLInputElement>(null);
 
   const openFilePicker = () => fileRef.current?.click();
+
+  // 打开 X Articles:扩展环境走 chrome.tabs.create(当前窗口新开并激活);
+  // 纯 UI 预览(无 chrome.tabs)降级为 window.open,不崩(与 store.ts 的环境守卫同思路)。
+  const openXArticles = () => {
+    if (typeof chrome !== 'undefined' && chrome.tabs?.create) {
+      void chrome.tabs.create({ url: X_ARTICLES_URL });
+    } else {
+      window.open(X_ARTICLES_URL, '_blank', 'noopener');
+    }
+  };
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, animation: 'fadeUp .3s ease' }}>
@@ -50,7 +63,7 @@ export function DraftTab() {
             <span style={{ flex: 1, font: '400 11px/1.5 var(--fUI)', color: 'var(--ink2)' }}>{t.noPageDesc}</span>
             <button
               className="mf-btn"
-              onClick={() => showToast(t.demoToast)}
+              onClick={openXArticles}
               style={{ flex: 'none', background: 'var(--btnBg)', color: 'var(--btnFg)', padding: '6px 13px', borderRadius: 'var(--btnR)', font: '500 11px var(--fUI)' }}
             >
               {t.openX}

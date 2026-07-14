@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**：2026-07-14 · 分支 `feat/session-vault-folder` · **本地图按需授权(两级文件夹 + 一键恢复)已实现并真机验证**(探针自动重探 PR #10 已合并)。素材板新增「本篇图片文件夹」(active 作用域)可就地连接/更换/清除,读取优先级 active > persistent(设置默认) > 降级;浏览器重启权限回落后,素材板/设置显示「恢复」按钮,一键 `requestPermission` 复用存量 handle 免重选。下一步:alt→图注、行内代码验证、postMessage MessageChannel 私有化。
+**最后更新**：2026-07-14 · 分支 `feat/open-x-inline-caption` · **「打开 X Articles」按钮接真实 `chrome.tabs.create` 跳转**；**`postMessage`→MessageChannel「私有通道」经实测验证在 MAIN world 架构下不可达成、已回退**(复盘见 §8 + §11)。下一步:alt→图注(caption,`sheetDialog` 已探清);行内代码 X 渲染待真机确认。
 
 ---
 
@@ -25,8 +25,10 @@
   - ✅ **本地图片 FS Access**（PR #9，真机验证）：`![](assets/x.png)` / Obsidian `![[y.png]]` → 从授权文件夹读取上传；handle 存 x.com IndexedDB、权限失效时 UI 校准不撒谎、size/MIME 上限对齐、授权浮层防卡屏/并发。
   - ✅ **本地图按需授权**（分支 `feat/session-vault-folder`，真机验证）：两级文件夹 `active`（素材板「本篇图片文件夹」）+ `persistent`（设置默认），读取优先级 active > persistent > 降级；素材板就地连接/更换/清除本篇专用文件夹；浏览器重启权限回落后「一键恢复」复用存量 handle（`requestPermission`，免重选文件夹）。
   - ✅ **探针自动重探**（分支 `feat/probe-auto-refresh`，真机验证）：监听标签页事件自动更新连接状态,免手动刷新;tab 定位改为跟随当前活动标签。
-- **还没做**：alt → 图注（`sheetDialog` 已探清）；行内代码 X 渲染验证；`postMessage` 隐私（A2，MessageChannel）；「打开 X Articles」跳转、备份/诊断/快捷键等演示项。（本地图**按需授权**已落地:素材板本篇文件夹 + 一键恢复;「导入时自动弹选文件夹」为可选进一步优化,暂不做。）
-- **下一步**：alt→图注 / 行内代码验证 / postMessage 私有化,任选。
+- **本次刚做**：「打开 X Articles」按钮接真实 `chrome.tabs.create` 跳转（待真机验证 URL）。
+- **还没做**：alt → 图注（`sheetDialog` 已探清）；行内代码 X 渲染验证（CODE style 已写入，待真机看渲染）；备份/诊断/快捷键等演示项。（本地图**按需授权**已落地:素材板本篇文件夹 + 一键恢复;「导入时自动弹选文件夹」为可选进一步优化,暂不做。）
+- **已排除（固有限制）**：`postMessage`→MessageChannel「私有通道」——MAIN world 下 File 对页面脚本不可隐藏，已验证不可达成并回退（见 §8）。
+- **下一步**：alt→图注（caption，下一 PR）。
 - **怎么跑**：`pnpm install && pnpm build` → Chrome 加载 `.output/chrome-mv3`。详见 §7。
 
 ---
@@ -130,9 +132,9 @@ background（开侧栏）                          injector.ts（MAIN world，�
 | 位置 | 现状 | 目标里程碑 |
 |---|---|---|
 | **alt → 图注（caption）** | 未做；caption 是弹窗（`data-testid="sheetDialog"` + contenteditable + Save），需逐图 UI 自动化、跳过空/垃圾 alt | 下一个 |
-| ⚠️ 本地图 File 字节经 `postMessage` 到 MAIN world | x.com 页面脚本理论上可读(A2,与远程/dataURI 同面) | MessageChannel 点对点(单独 PR) |
+| ~~本地图 File 字节经 `postMessage` 到 MAIN world~~ | 本地图/远程/封面 File 在 MAIN world 对页面脚本可读(与远程/dataURI 同面) | **固有限制,不可修**(见 §8;MessageChannel 已验证无效并回退) |
 | 行内代码 X 渲染 | CODE inline style 已写入，但 X 实际渲染效果未真机确认 | 顺手验证 |
-| 「打开 X Articles」按钮 | 仅文案，无 `tabs.create` 跳转 | 顺手补 |
+| ~~「打开 X Articles」按钮~~ | ✅ 已接 `chrome.tabs.create`（待真机验证 URL 落点） | 本次(第九次会话) |
 | 标题冲突 `titleConflict='ask'` | 暂按保守 `keep` 处理 | 补独立询问弹窗 |
 | 备份/导出、诊断快照、快捷键跳转 | toast 演示 | M4 |
 
@@ -174,6 +176,7 @@ pnpm build              # → .output/chrome-mv3
 - **标题打分（setTitle）**：关键词（title/标题）是**硬门槛**，否则会误命中正文大 contenteditable，overwrite 时清空正文。别放宽。
 - **frontmatter**：parser 跳过与 `extractTitle` 抽取的边界判定必须一致（都用**顶格 `^---`**）；H1 抽取/移除都要**跳过代码块**。
 - **content script 更新不自动生效**：改 content/injector 后必须刷新 X 页面；症状①「三灯绿但写入报未连接」= 页面跑旧 content；症状②「正文写入了却报 `images undefined` 崩溃 / 图片不上传」= 新 injector + 旧 content（旧 content 注入新 injector 但自己不带 images 字段）。injector 已对 images 默认 `[]` 防御（崩溃→降级），但**真正上传图片必须刷新页面**加载新 content。
+- **MAIN world 下 File 对页面脚本「不可隐藏」——固有限制，勿再尝试「私有通道」**：injector 在 MAIN world，与 x.com 页面 JS 共享同一个 window 与 JS 堆。图片上传靠**借页面的 `onFilesAdded` 回调**（只存在于 MAIN world），File 必须序列化进 MAIN world 才能喂给它——一旦进入，同 world 的页面脚本就能 hook `onFilesAdded` / `FileReader` 读到，**换任何传输通道都藏不住**。曾试图用 MessageChannel 把 content↔injector 通信私有化（分支 `feat/messagechannel-private`），**已验证不可达成并回退**：`window.postMessage(hello, origin, [port2])` 派发的是**单个**事件，MAIN world 里所有监听器（injector + 页面脚本）拿到的是**同一个** `e.ports[0]`；页面脚本 `addEventListener('message', e => e.ports[0].onmessage = leak)` 即可在握手期抓到 port、读走后续所有 File（已实测确认）。MessageChannel 仅能挡「被动 `window.onmessage` 监听」，挡不住任何主动页面脚本，收益不足以支撑「私有」表述。**结论**：这是「借 `onFilesAdded` 上传」架构的固有代价，除非改上传路径（如 GraphQL 上传 API——技术方案明确避开的脆弱/付费路径）。**教训**：动隔离/安全边界前，先写清威胁模型（对手是谁、能力边界）+ 查证 API 确切语义（文档/实测），确认目标**理论可达**再动手，别凭「感觉更私密」下手。
 - **pnpm 11 构建脚本**：esbuild 需在 `pnpm-workspace.yaml` `allowBuilds` 放行。
 - **CJK 字体**：只打包拉丁字体，中文用系统栈。
 - **`.output`/`.wxt`/`node_modules` 不提交**（已 gitignore）。
@@ -190,7 +193,8 @@ pnpm build              # → .output/chrome-mv3
 **下一步：M2 Phase 2b · 本地文件夹 + 封面**
 - [ ] 本地图片：File System Access 文件夹授权 UI + IndexedDB 存 handle，`prepareOneImage` 的 local 分支接真实读取。
 - [ ] 封面：frontmatter cover / 正文首图 → 上传得 mediaId → 走 X 封面 fileInput（非 GraphQL，技术方案 §11 定 GraphQL 默认关）。
-- [ ] 顺手：「打开 X Articles」按钮 `tabs.create`；标题 `ask` 独立询问弹窗。
+- [x] 顺手：「打开 X Articles」按钮 `tabs.create`（第九次会话已做，待真机验证 URL）。
+- [ ] 顺手：标题 `ask` 独立询问弹窗。
 
 **M2 小遗留**（可在 Phase 2 顺带）：标题 `ask` 独立询问弹窗；tab 彻底锁定（Check→写入同一 tab，参考 xposter target-lock）。
 
@@ -250,4 +254,9 @@ pnpm build              # → .output/chrome-mv3
 - **自动重探**（`feat/probe-auto-refresh`）：ProbeProvider 监听 `tabs.onActivated`（切标签）+ `onUpdated`（当前活动 X 标签内 SPA 导航），400ms 防抖后 refresh，免手动点刷新。
 - **tab 定位语义改变**：`resolveTargetXTab` 从「找任意打开的 X 标签(优先 active)」改为「**只认当前活动标签**，它是 X 才连、否则未连接」——用户选择「侧边栏跟随当前标签」(切到非 X 立即未连接、写入禁用)。探针 + 写入 + 标题 + 封面 + 文件夹全部共用此定位，一致。真机 1-5 全过（切标签自动更新 + 写入等回归无损）。
 
-> 下一步接续：**alt→图注**(`sheetDialog` 已探清，逐图 UI 自动化)/ **本地图按需授权**(导入时自动弹选文件夹、同文件夹不重复问——每篇独立文件夹场景的体验优化)/ **行内代码 X 渲染验证** / **postMessage 隐私 A2**(MessageChannel)。`docs/research/xposter-analysis.md` §3.5 标题/封面 GraphQL、§7 FS Access 实证。
+**2026-07-14 · 第九次会话（本次）· 「打开 X」按钮 + postMessage 私有化复盘（回退）· 分支 `feat/open-x-inline-caption`**：
+- **验证并回退 PR-A（MessageChannel 私有化）**：目标是让图片/封面 File 不被 x.com 页面脚本读取。已实现 content↔injector 全通信改走 MessageChannel port（tsc/build 绿），两轮并行 code review 结论分歧（可合并 vs 不可合并），但对**事实**一致、且第二方**实测确认**：`window.postMessage(hello, origin, [port2])` 的 port 对同 window 所有监听器（含页面脚本）可见，页面能在握手期抓 port 读走后续 File；更根本的是**借 `onFilesAdded` 上传 → File 必进 MAIN world → 与页面同堆无法隐藏**。判定隐私目标在此架构**不可达成 → 回退**，写入 §8 已知陷阱。**设计疏漏复盘**：① 误解 transfer port 经 window 广播对所有监听器可见的语义；② 未先定威胁模型，把「架构固有、不可解」当「可修 bug」，还在方案/注释里用了「读不到」的绝对表述。教训：动隔离/安全边界前先定威胁模型 + 查证 API 语义、确认理论可达再动手。
+- **C · 「打开 X Articles」按钮**：`DraftTab` 未连接提示里的按钮从演示 toast 改为 `chrome.tabs.create`（预览环境降级 `window.open`）。
+- **待你真机确认**：① 打开的 URL `x.com/compose/articles` 是否正确落到文章编辑器入口；② 行内代码（inline `code`）在 X 的实际渲染（等宽/底色是否生效）——CODE inline style 早已写入，仅缺真机确认。
+
+> 下一步接续：**alt→图注**(`sheetDialog` 已探清，逐图 UI 自动化，下一 PR)/ **本地图按需授权**(导入时自动弹选文件夹、同文件夹不重复问——体验优化)。`docs/research/xposter-analysis.md` §3.5 标题/封面 GraphQL、§7 FS Access 实证。~~postMessage 隐私 A2(MessageChannel)~~ 已验证不可达成并放弃(见 §8)。
