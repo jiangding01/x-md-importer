@@ -104,6 +104,13 @@ const zh = {
   skinConsole: '控制台',
   skinPaper: '纸感',
   skinGlass: '玻璃',
+  folderConnectedToast: '已连接文件夹:',
+  folderClearedToast: '已断开文件夹连接',
+  folderGuideToast: '请在 X 文章页完成文件夹选择',
+  folderNeedXToast: '请先打开 X 文章编辑页',
+  folderDeniedToast: '读取权限被拒绝,未连接文件夹',
+  folderTimeoutToast: '操作超时,请重试',
+  folderFailToast: '文件夹操作失败',
 } as const;
 
 type Dict = Record<keyof typeof zh, string>;
@@ -206,6 +213,13 @@ const en: Dict = {
   skinConsole: 'Console',
   skinPaper: 'Paper',
   skinGlass: 'Glass',
+  folderConnectedToast: 'Connected: ',
+  folderClearedToast: 'Folder disconnected',
+  folderGuideToast: 'Please finish picking the folder on the X article page',
+  folderNeedXToast: 'Please open the X article editor first',
+  folderDeniedToast: 'Read permission denied — folder not connected',
+  folderTimeoutToast: 'Timed out — please retry',
+  folderFailToast: 'Folder action failed',
 };
 
 export const dictionaries: Record<Lang, Dict> = { zh, en };

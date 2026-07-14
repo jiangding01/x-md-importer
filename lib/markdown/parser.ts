@@ -40,6 +40,12 @@ const RE_IMAGE_LINE_HEAD = /^!\[([^\]]*)\]\(/;
  * 组1=alt、组2=图片URL、组3=链接URL(仅用于剥离)。
  */
 const RE_LINKED_IMAGE_LINE = /^\[!\[([^\]]*)\]\((.+)\)\]\((.+)\)$/;
+/**
+ * 独占一行的 Obsidian 内嵌图片 `![[path]]` 或 `![[path|alt]]`(wiki 风格)。
+ * path 是相对文件夹的本地路径,由 content 侧 File System Access 读取(见 lib/bridge/localVault)。
+ * 组1 = `path` 或 `path|alt`——由 matchObsidianImageLine 再切分 `|`。
+ */
+const RE_OBSIDIAN_IMAGE_LINE = /^!\[\[([^\]]+)\]\]$/;
 const RE_HEADING = /^(#{1,6})\s+(.*)$/;
 const RE_BLOCKQUOTE = /^>/;
 const RE_UL = /^[-*+]\s+(.*)$/;
@@ -59,10 +65,10 @@ const RE_PUNCT = /[!-/:-@[-`{-~]/;
 // 主入口
 // ---------------------------------------------------------------------------
 
-/** 是否为独占一行的图片(裸 `![](x)` 或带链接 `[![](x)](y)`)。 */
+/** 是否为独占一行的图片(裸 `![](x)` / 带链接 `[![](x)](y)` / Obsidian `![[x]]`)。 */
 export function isImageLine(line: string): boolean {
   const t = line.trim();
-  return matchImageLine(t) !== null || RE_LINKED_IMAGE_LINE.test(t);
+  return matchImageLine(t) !== null || RE_LINKED_IMAGE_LINE.test(t) || RE_OBSIDIAN_IMAGE_LINE.test(t);
 }
 
 /**
@@ -171,6 +177,17 @@ export function parseMarkdown(md: string): ImportBlock[] {
     const imageLine = matchImageLine(trimmed);
     if (imageLine) {
       blocks.push({ kind: 'image', source: imageLine.src, alt: imageLine.alt, fallbackText: trimmed });
+      i += 1;
+      continue;
+    }
+    // Obsidian 内嵌图片 `![[path]]` / `![[path|alt]]` → ImageBlock(本地路径,content 侧 FS Access 读取)。
+    const obsidianImage = trimmed.match(RE_OBSIDIAN_IMAGE_LINE);
+    if (obsidianImage) {
+      const inner = obsidianImage[1] ?? '';
+      const pipe = inner.indexOf('|'); // `path|alt`:| 前为路径,| 后为图注/尺寸
+      const source = (pipe >= 0 ? inner.slice(0, pipe) : inner).trim();
+      const alt = pipe >= 0 ? inner.slice(pipe + 1).trim() : '';
+      blocks.push({ kind: 'image', source, alt, fallbackText: trimmed });
       i += 1;
       continue;
     }
@@ -286,6 +303,7 @@ function isBlockBoundary(line: string): boolean {
   if (RE_TWEET.test(line)) return true;
   if (matchImageLine(line.trim()) !== null) return true;
   if (RE_LINKED_IMAGE_LINE.test(line.trim())) return true;
+  if (RE_OBSIDIAN_IMAGE_LINE.test(line.trim())) return true;
   if (RE_HEADING.test(line)) return true;
   if (RE_BLOCKQUOTE.test(line)) return true;
   if (RE_UL.test(line)) return true;

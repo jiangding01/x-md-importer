@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { useI18n } from '@/lib/i18n/useI18n';
 import { useTheme } from '@/lib/theme/useTheme';
 import { useSettings } from '@/lib/settings/SettingsProvider';
@@ -7,6 +7,7 @@ import { settingsConfig, type SettingRow } from '@/lib/settings/config';
 import { skinSwatch, SKINS, type Skin, type ThemeMode } from '@/lib/theme/themes';
 import type { LangPref } from '@/lib/i18n/dict';
 import type { Options } from '@/lib/settings/options';
+import { clearFolder, connectFolder, getFolderStatus } from '@/lib/bridge/importArticle';
 
 function pill(on: boolean): CSSProperties {
   return {
@@ -61,13 +62,60 @@ export function SettingsTab() {
 
   const en = lang === 'en';
   const setOptRaw = setOpt as (k: string, v: unknown) => void;
-  const sections = settingsConfig({ en, folderConnected: opts.folder, wipeArm });
+  const sections = settingsConfig({ en, folderConnected: opts.folder, folderName: opts.folderName, wipeArm });
 
   const swatchLabel: Record<Skin, string> = {
     minimal: t.skinMinimal,
     console: t.skinConsole,
     paper: t.skinPaper,
     glass: t.skinGlass,
+  };
+
+  // 挂载时与真相校准:真实连接状态在 content 侧的 x.com IndexedDB(handle + 读权限),
+  // opts.folder 只是 sidepanel 缓存。修「旧版演示遗留 folder:true」「浏览器重启后权限失效但仍显示已连接」
+  // 这类撒谎态。需已打开 X 页才能查(getFolderStatus 走 content);查不到则保持现状,不误清。
+  useEffect(() => {
+    void getFolderStatus().then((res) => {
+      if (!res.ok) return;
+      if (res.connected !== opts.folder) setOpt('folder', res.connected);
+      if (res.folderName !== opts.folderName) setOpt('folderName', res.folderName);
+    });
+    // 仅挂载校准一次;有意不依赖 opts,避免回填触发的重复校准。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** 文件夹操作错误码 → 可读文案(不把英文诊断码直接弹给用户)。 */
+  const folderErrText = (error: string): string => {
+    if (error === 'disconnected') return t.folderNeedXToast;
+    if (error === 'permission-denied') return t.folderDeniedToast;
+    if (error === 'timeout') return t.folderTimeoutToast;
+    return t.folderFailToast;
+  };
+
+  // 本地图片文件夹「连接 / 清除」——浮层出现在 X 页面(需页面手势触发 showDirectoryPicker),
+  // sidepanel 侧只负责发消息、透传结果、更新 opts.folder(连接状态)+ opts.folderName(显示名)。
+  const handleFolderAction = async () => {
+    if (opts.folder) {
+      const res = await clearFolder();
+      if (res.ok) {
+        setOpt('folder', false);
+        setOpt('folderName', null);
+        showToast(t.folderClearedToast);
+      } else {
+        showToast(folderErrText(res.error));
+      }
+      return;
+    }
+
+    showToast(t.folderGuideToast);
+    const res = await connectFolder();
+    if (res.ok && res.connected) {
+      setOpt('folder', true);
+      setOpt('folderName', res.folderName);
+      showToast(`${t.folderConnectedToast}${res.folderName ?? ''}`);
+      return;
+    }
+    if (!res.ok && res.error !== 'cancelled') showToast(folderErrText(res.error));
   };
 
   const renderControl = (row: SettingRow) => {
@@ -122,8 +170,7 @@ export function SettingsTab() {
     const danger = Boolean(row.danger);
     const onAct = () => {
       if (row.k === 'folder') {
-        setOptRaw('folder', !opts.folder);
-        showToast(opts.folder ? (en ? 'Folder cleared' : '已清除文件夹') : en ? 'Folder connected (demo)' : '已连接文件夹(演示)');
+        void handleFolderAction();
         return;
       }
       if (row.k === 'wipe') {

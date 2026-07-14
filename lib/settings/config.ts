@@ -20,10 +20,12 @@ export interface SettingSection {
 interface ConfigCtx {
   en: boolean;
   folderConnected: boolean;
+  /** 已连接文件夹的显示名(未连接为 null)。 */
+  folderName: string | null;
   wipeArm: boolean;
 }
 
-export function settingsConfig({ en, folderConnected, wipeArm }: ConfigCtx): SettingSection[] {
+export function settingsConfig({ en, folderConnected, folderName, wipeArm }: ConfigCtx): SettingSection[] {
   const T = (zh: string, e: string) => (en ? e : zh);
   const o = (v: string, zh: string, e: string): SelectOption => ({ v, label: en ? e : zh });
 
@@ -90,7 +92,15 @@ export function settingsConfig({ en, folderConnected, wipeArm }: ConfigCtx): Set
       num: '05',
       title: T('图片与媒体', 'Images & media'),
       rows: [
-        { k: 'folder', t: 'action', label: T('本地图片文件夹', 'Local image folder'), desc: folderConnected ? T('已连接:~/Pictures/blog(权限可复活)', 'Connected: ~/Pictures/blog') : T('尚未连接。草稿需要本地图片时会再提示。', 'Not connected. You will be prompted when needed.'), actLabel: folderConnected ? T('清除', 'Clear') : T('连接', 'Connect') },
+        {
+          k: 'folder',
+          t: 'action',
+          label: T('本地图片文件夹', 'Local image folder'),
+          desc: folderConnected
+            ? T(`已连接:${folderName ?? ''}`, `Connected: ${folderName ?? ''}`)
+            : T('尚未连接。连接后可在 X 文章页写入本地图片。', 'Not connected. Connect to write local images on the X article page.'),
+          actLabel: folderConnected ? T('清除', 'Clear') : T('连接', 'Connect'),
+        },
         { k: 'compress', t: 'toggle', label: T('图片压缩', 'Image compression'), desc: T('>150KB 才压;上传更快、更抗限流。', 'Only if >150KB; faster & safer uploads.') },
         { k: 'maxEdge', t: 'select', label: T('最大长边', 'Max long edge'), desc: T('压缩时的尺寸上限。', 'Size cap when compressing.'), opts: [o('960', '960px', '960px'), o('1280', '1280px', '1280px'), o('1600', '1600px', '1600px'), o('orig', '原图', 'Original')] },
         { k: 'quality', t: 'select', label: T('压缩质量', 'Quality'), desc: T('JPEG 质量(60-95)。', 'JPEG quality (60-95).'), opts: [o('60', '60', '60'), o('70', '70', '70'), o('82', '82(推荐)', '82 (rec.)'), o('90', '90', '90'), o('95', '95', '95')] },

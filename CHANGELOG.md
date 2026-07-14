@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+### 新增 · 本地图片（File System Access）
+- **本地图上传**：`![](assets/x.png)` 相对路径、Obsidian `![[y.png]]` 内链 → 从用户授权的文件夹读取上传。parser 新增 `![[x]]` 图片块识别。
+- **授权与持久**：content 在 X 页弹一次性浮层（页面手势）调 `showDirectoryPicker` → `FileSystemDirectoryHandle` 存 x.com origin 的 IndexedDB（`lib/bridge/localVault.ts`），跨会话 `queryPermission` 复活。
+- **路径安全器** `parseLocalImagePath`：拒绝 `..` 逃逸/绝对路径/盘符，`%20` 解码，子目录逐级 `getDirectoryHandle`；「路径首段 == 文件夹名」时剥离首段（先原路径、失败再剥）。
+- **健壮性**（本地 review + Codex 修）：folder 状态门控读权限（浏览器重启权限失效时 UI 显示未连接、不撒谎）+ 设置挂载校准；本地图 16MB + MIME 白名单（与远程/dataURI 对齐）；授权浮层 `onInvalidated` 清理 + 180s 超时 + 防并发浮层；错误码本地化。
+- **已知项**：本地图 File 字节经 `postMessage` 到 MAIN world，x.com 页面脚本理论可读（与远程/dataURI 同面）；根治 MessageChannel 留单独 PR。
+
 ### 新增 · 原生表格 + 修复 · 图片 marker 残留（PR #7）
 - **原生表格**：GFM 表格（表头行 + 紧跟分隔行 `| --- |`）→ `MARKDOWN` atomic block。console 勘察**实证 X 的表格与代码块共用 `MARKDOWN` entity**（`data.markdown` 存 GFM 原文），故 parser 一处识别即可、injector/协议**零改动**，X 原生渲染成表格。段落紧跟表格正确分离；纯 `---` 分割线、含 `|` 普通文本不误判（分隔行须含 `|` 与 `-`）。能力映射「原生表格」名副其实。
 - **修复 · 图片 marker 残留**：`sweepMarkers` 改用通用前缀 `__MARKFLOW_IMG_`（原只清本次随机 prefix），清掉走 fallbackIndex 未删的本次残留 + 同一草稿反复导入的历史遗留 marker（如 `__MARKFLOW_IMG_ngvm6j_2__`）。

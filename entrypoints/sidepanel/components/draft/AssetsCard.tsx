@@ -81,10 +81,10 @@ export function AssetsCard() {
 
       {imgs.map((im, i) => {
         const kind = classifyImageSource(im.source);
-        // 本 PR 本地图片(相对路径)不支持上传——content 的 prepareOneImage 对 local 恒返回
-        // file:null,与 opts.folder 无关,故这里不能再用 opts.folder 判定「就绪」。
-        const ready = kind !== 'local';
-        const status = ready ? t.stReady : t.stUnsupported;
+        // 本地图片(相对路径)现已支持:content 的 prepareOneImage local 分支从已连接文件夹读取。
+        // 「就绪」与否取决于是否已连接文件夹(opts.folder);实际能否读到该文件仍在写入时校验。
+        const ready = kind !== 'local' || opts.folder;
+        const status = ready ? t.stReady : t.stNeedFolder;
         return (
           <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 13px', borderTop: '1px solid var(--lsoft)' }}>
             <span style={{ width: 5, height: 5, flex: 'none', borderRadius: '50%', background: 'var(--ink3)' }} />

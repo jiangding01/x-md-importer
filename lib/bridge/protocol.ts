@@ -199,6 +199,9 @@ export type MainMessage =
 export const PROBE_REQUEST_TYPE = 'markflow:probe' as const;
 export const IMPORT_REQUEST_TYPE = 'markflow:import' as const;
 export const SET_TITLE_REQUEST_TYPE = 'markflow:set-title' as const;
+export const CONNECT_FOLDER_TYPE = 'markflow:connect-folder' as const; // 触发 FS Access 授权
+export const CLEAR_FOLDER_TYPE = 'markflow:clear-folder' as const; // 清除已连接文件夹
+export const FOLDER_STATUS_TYPE = 'markflow:folder-status' as const; // 查询当前连接状态
 
 /** sidepanel → content 的请求。 */
 export type RuntimeRequest =
@@ -210,7 +213,19 @@ export type RuntimeRequest =
       /** 封面图来源(frontmatter cover / 正文首图);null=不设封面。content 准备后设到 X 封面 fileInput。 */
       coverSource?: string | null;
     }
-  | { type: typeof SET_TITLE_REQUEST_TYPE; title: string; conflict: TitleConflict };
+  | { type: typeof SET_TITLE_REQUEST_TYPE; title: string; conflict: TitleConflict }
+  | { type: typeof CONNECT_FOLDER_TYPE }
+  | { type: typeof CLEAR_FOLDER_TYPE }
+  | { type: typeof FOLDER_STATUS_TYPE };
+
+/**
+ * content → sidepanel 的本地文件夹应答(连接 / 清除 / 状态查询共用)。
+ * connected=true 时 folderName 为已连接文件夹名(供 UI 显示 + vault 首段剥离参考)。
+ * connect 失败(用户取消 / 无手势 / 权限拒绝)→ ok:false + error。
+ */
+export type FolderResponse =
+  | { ok: true; connected: boolean; folderName: string | null }
+  | { ok: false; error: 'cancelled' | 'no-content' | 'timeout' | string };
 
 /** content → sidepanel 的探针应答:成功回结果,失败回明确的错误码。 */
 export type ProbeResponse =
@@ -271,6 +286,21 @@ export function isSetTitleRequest(
     (msg as { type?: unknown }).type === SET_TITLE_REQUEST_TYPE
   );
 }
+
+/** 读取消息的 type 字段(用于本地文件夹三类请求的判别)。 */
+function messageType(msg: unknown): string | undefined {
+  if (typeof msg !== 'object' || msg === null) return undefined;
+  const t = (msg as { type?: unknown }).type;
+  return typeof t === 'string' ? t : undefined;
+}
+
+/** 运行时守卫:本地文件夹连接 / 清除 / 状态查询(应答均为 FolderResponse)。 */
+export const isConnectFolderRequest = (msg: unknown): msg is { type: typeof CONNECT_FOLDER_TYPE } =>
+  messageType(msg) === CONNECT_FOLDER_TYPE;
+export const isClearFolderRequest = (msg: unknown): msg is { type: typeof CLEAR_FOLDER_TYPE } =>
+  messageType(msg) === CLEAR_FOLDER_TYPE;
+export const isFolderStatusRequest = (msg: unknown): msg is { type: typeof FOLDER_STATUS_TYPE } =>
+  messageType(msg) === FOLDER_STATUS_TYPE;
 
 // ---------------------------------------------------------------------------
 // 远程图片抓取(content → background)。content script 受页面 CORS 约束不能跨域取图,
