@@ -146,7 +146,9 @@ interface DraftEditorStateStatic {
 }
 
 export default defineUnlistedScript(() => {
-  const post = (msg: MainMessage) => window.postMessage(msg, '*');
+  // targetOrigin 收敛为本页 origin(而非 '*'):MAIN world 与页面同 JS 上下文,此为**纵深收敛**
+  // ——挡住把消息投递到跨 origin 的 iframe/嵌入上下文,缩小误发面;并非完全隔离(同源脚本仍可监听)。
+  const post = (msg: MainMessage) => window.postMessage(msg, window.location.origin);
 
   // 并发导入护栏:一次写入正在进行时拒绝第二次(防止 content 误判超时后用户重试,
   // 两个 runImport 交错直改同一 Draft blockMap 造成重复/错位/按旧 key 找块崩溃)。
@@ -364,19 +366,45 @@ export default defineUnlistedScript(() => {
     return null;
   };
 
+  /** MEDIA entity data 的 JSON 签名——pending 稳定性判定用(签名不变 = data 已停止变动)。 */
+  const mediaEntityDataSignature = (data: unknown): string => {
+    try {
+      return JSON.stringify(data) ?? 'null';
+    } catch {
+      // 循环引用等无法序列化:退化为类型串,至少能区分「有无」
+      return String(data);
+    }
+  };
+
+  // pending 稳定性判定参数(照搬 xposter §3.2 实证,不做等价简化):
+  // 签名连续 5s 无变化 且 该块已出现 ≥20s → 放行;或出现满 32s 封顶放行(仅正文图,封面不放行 pending)。
+  const PENDING_STABLE_MS = 5_000;
+  const PENDING_MIN_AGE_MS = 20_000;
+  const PENDING_CAP_MS = 32_000;
+
   /**
-   * 轮询等待「快照外新增的 MEDIA atomic 块」。有 mediaId 即视为完成;budget 内始终 pending
-   * (有块但无 mediaId)则返回该块 key(正文图不强依赖 mediaId,封面才需——留待下一里程碑)。
+   * 轮询等待「快照外新增的 MEDIA atomic 块」。
+   * - 出现 mediaId → confirmed:true(上传确认完成);
+   * - 只有 entity、无 mediaId(pending)→ 按 §3.2「数据签名稳定性」判定:签名 5s 不变 + 出现 ≥20s,
+   *   或出现满 32s 封顶 → confirmed:true(正文图放行);未达标而 budget 到点 → confirmed:false(未确认);
+   * - 全程未出现新 MEDIA 块 → null。
+   * 返回 confirmed 交由调用方决定成功/降级——**「有块但未确认」绝不谎报成功**。
    */
-  const waitForNewMedia = async (before: Set<string>, budgetMs: number): Promise<string | null> => {
+  const waitForNewMedia = async (
+    before: Set<string>,
+    budgetMs: number,
+  ): Promise<{ key: string; confirmed: boolean } | null> => {
     const deadline = Date.now() + budgetMs;
-    let lastPending: string | null = null;
+    // 当前 pending 块的跟踪:firstSeen=首次出现时刻;signature/signatureSince=最近签名及其保持起始时刻。
+    let pending: { key: string; firstSeen: number; signature: string; signatureSince: number } | null = null;
     while (Date.now() < deadline) {
       await delay(350);
       const node = findDraftStateNode();
       if (!node) continue;
       const content = readEditorState(node).getCurrentContent();
       let readyKey: string | null = null;
+      let pendingKey: string | null = null;
+      let pendingData: unknown = null;
       content.getBlockMap().forEach((block, key) => {
         if (readyKey) return;
         if (block.getType() !== 'atomic' || before.has(key)) return;
@@ -385,15 +413,39 @@ export default defineUnlistedScript(() => {
         try {
           const ent = content.getEntity(ek);
           if (ent.getType() !== 'MEDIA') return;
-          if (extractMediaId(ent.getData()) !== null) readyKey = key;
-          else lastPending = key;
+          const data = ent.getData();
+          if (extractMediaId(data) !== null) {
+            readyKey = key;
+          } else if (!pendingKey) {
+            pendingKey = key;
+            pendingData = data;
+          }
         } catch {
           /* ignore */
         }
       });
-      if (readyKey) return readyKey;
+      if (readyKey) return { key: readyKey, confirmed: true };
+
+      if (pendingKey) {
+        const now = Date.now();
+        const sig = mediaEntityDataSignature(pendingData);
+        if (!pending || pending.key !== pendingKey) {
+          pending = { key: pendingKey, firstSeen: now, signature: sig, signatureSince: now };
+        } else if (pending.signature !== sig) {
+          pending.signature = sig;
+          pending.signatureSince = now; // 签名变动:重置稳定计时
+        }
+        const stableFor = now - pending.signatureSince;
+        const age = now - pending.firstSeen;
+        if ((stableFor >= PENDING_STABLE_MS && age >= PENDING_MIN_AGE_MS) || age >= PENDING_CAP_MS) {
+          return { key: pending.key, confirmed: true };
+        }
+      } else {
+        pending = null; // pending 块消失(可能被 X 换成带 mediaId 的块,下轮会命中 readyKey)
+      }
     }
-    return lastPending;
+    // budget 到点仍未确认:有 pending 块则如实标 confirmed:false(交调用方降级),无块则 null。
+    return pending ? { key: pending.key, confirmed: false } : null;
   };
 
   /** 重排 blockMap:删除 marker 块,把 MEDIA 块移到 marker 原位置。 */
@@ -428,6 +480,15 @@ export default defineUnlistedScript(() => {
     (node.props?.onChange as (s: DraftEditorState) => void)(ns);
     return true;
   };
+
+  /**
+   * §3.3 fallbackIndex 兜底配对:relocateMediaToMarker 归位失败(通常 marker 块已被 X 消费/找不到,
+   * 无法精确顶替其位置)时的降级——只要目标 MEDIA 块确实存在于正文(X 已按我们钉的光标位置插入),
+   * 即视为「已配对成功」:媒体已在文中,精确位置退让,残留 marker 交 sweepMarkers 收尾。
+   * 仅当 MEDIA 块本身也不在 blockMap(真丢失)时才返回 false → 交调用方计 imageFail + 写回 fallbackText。
+   */
+  const relocateMediaByFallbackIndex = (node: FiberStateNode, mediaKey: string): boolean =>
+    readEditorState(node).getCurrentContent().getBlockMap().has(mediaKey);
 
   /** 把 marker 块整体替换为一段普通文本(上传失败时写回 fallbackText 原文,不静默丢内容)。 */
   const replaceMarkerWithText = (node: FiberStateNode, marker: string, text: string): void => {
@@ -522,26 +583,34 @@ export default defineUnlistedScript(() => {
       return false;
     }
 
-    const mediaKey = await waitForNewMedia(before, budgetMs);
-    if (!mediaKey) return false;
+    const media = await waitForNewMedia(before, budgetMs);
+    // 无新 MEDIA 块,或有块但未确认(无 mediaId 且稳定性未达标)→ 未确认成功,交调用方降级。
+    if (!media || !media.confirmed) return false;
 
     await delay(120);
     node = findDraftStateNode();
-    if (node) relocateMediaToMarker(node, marker, mediaKey);
-    return true;
+    if (!node) return false;
+    // 归位:优先精确顶替 marker 位置;失败则走 §3.3 fallbackIndex 兜底;仍失败(MEDIA 块丢失)才算失败。
+    if (relocateMediaToMarker(node, marker, media.key)) return true;
+    node = findDraftStateNode();
+    if (node && relocateMediaByFallbackIndex(node, media.key)) return true;
+    return false;
   };
 
   /**
-   * 在「Edit media」裁剪弹窗里找可见的 Apply/应用/完成 按钮(优先弹窗容器内,避免误点正文的按钮)。
-   * X 设封面后会弹此裁剪弹窗,必须点 Apply 才真正落地。
+   * 只在**真实裁剪弹窗**(`[role="dialog"]` / `[aria-modal="true"]`)内找「应用/裁剪确认」类按钮。
+   * **绝不退回整个 document**——否则无弹窗时会全文搜按钮,可能误点编辑器工具栏的不可逆动作
+   * (发布/保存草稿等)。宁可设不上封面,也绝不误点页面级按钮。
+   * 文案收窄到明确的「应用/裁剪确认」类,去掉过于泛化的「保存/save/done/确定」以免命中弹窗内其它按钮。
    */
   const findApplyButton = (): HTMLElement | null => {
-    const labels = ['apply', 'save', 'done', '应用', '完成', '保存', '确定'];
+    // 明确的「应用/裁剪确认」文案(精确匹配);不含泛化单词,避免命中弹窗内取消/删除/其它动作。
+    const labels = ['apply', '应用', 'save changes', '完成裁剪', '应用裁剪', '确认裁剪'];
     const modals = Array.from(
       document.querySelectorAll<HTMLElement>('[aria-modal="true"], [role="dialog"]'),
     );
-    const roots: Array<Document | HTMLElement> = modals.length ? modals : [document];
-    for (const root of roots) {
+    if (!modals.length) return null; // 无弹窗:放弃,绝不退回 document 全文搜索。
+    for (const root of modals) {
       for (const b of Array.from(root.querySelectorAll<HTMLElement>('[role="button"], button'))) {
         const rect = b.getBoundingClientRect();
         if (rect.width < 4 || rect.height < 4) continue;
@@ -572,7 +641,8 @@ export default defineUnlistedScript(() => {
       coverInput.files = dt.files;
       coverInput.dispatchEvent(new Event('input', { bubbles: true }));
       coverInput.dispatchEvent(new Event('change', { bubbles: true }));
-      // X 会弹出「Edit media」裁剪弹窗,必须点 Apply 才真正设为封面。轮询等 Apply 出现并点击。
+      // X 会弹出「Edit media」裁剪弹窗,必须点弹窗内的 Apply 才真正设为封面。轮询等其出现并点击。
+      // findApplyButton 仅在真实弹窗内查找、绝不退回 document——8s 内无弹窗/弹窗内无按钮即放弃。
       const deadline = Date.now() + 8000;
       while (Date.now() < deadline) {
         await delay(200);
@@ -583,7 +653,7 @@ export default defineUnlistedScript(() => {
           return true;
         }
       }
-      // 8s 内没等到 Apply 弹窗:未能落地,如实返回 false(不谎报成功)。
+      // 8s 内没等到裁剪弹窗内的 Apply:未能落地,如实返回 false(不谎报成功,也不点任何页面级按钮)。
       return false;
     } catch (err) {
       console.warn('[MarkFlow] 设置封面失败', err);
@@ -810,7 +880,8 @@ export default defineUnlistedScript(() => {
         }
         let uploaded = false;
         try {
-          uploaded = await uploadOneImage(marker, file, 30_000);
+          // budget 需 ≥ PENDING_CAP_MS(32s),否则 pending 封顶放行分支永不触发。留足余量取 40s。
+          uploaded = await uploadOneImage(marker, file, 40_000);
         } catch (e) {
           console.warn('[MarkFlow] 图片上传异常', e);
         }
@@ -826,7 +897,9 @@ export default defineUnlistedScript(() => {
       if (imageMarkers.length) sweepMarkers(markerPrefix);
 
       // --- 封面(如有):把 File 塞进封面 fileInput,X 自行上传;失败不影响正文成功结论 ---
-      let coverSet = false;
+      // 契约(D4,见 protocol.ts):未请求封面时 coverSet 为 undefined(而非 false);
+      // 仅在真正请求了封面时才返回 true/false 表示是否落地。
+      let coverSet: boolean | undefined;
       if (cover) {
         stage = 'cover';
         coverSet = await setCoverImage(cover);

@@ -32,8 +32,8 @@ interface Fence {
 
 const RE_DIVIDER = /^(-{3,}|\*{3,})$/;
 const RE_TWEET = /^https?:\/\/(?:www\.)?(?:x|twitter)\.com\/[^/]+\/status\/(\d+)\/?$/;
-/** 独占一行的图片 `![alt](src)`。src 用贪婪 `.+` 取到最后一个 `)`,容忍 URL 内含括号。 */
-const RE_IMAGE_LINE = /^!\[([^\]]*)\]\((.+)\)$/;
+/** 独占一行单张裸图片的**前缀** `![alt](`(alt 不含 `]`);其后 src 由 matchImageLine 括号配对扫描。 */
+const RE_IMAGE_LINE_HEAD = /^!\[([^\]]*)\]\(/;
 /**
  * 独占一行的「带链接图片」`[![alt](imgUrl)](linkUrl)`(推文转 md 常见:图片外套一层
  * 指向媒体页的链接)。取内层图片 URL 上传,外层链接丢弃(X 图片不能再套超链)。
@@ -55,7 +55,7 @@ const RE_PUNCT = /[!-/:-@[-`{-~]/;
 /** 是否为独占一行的图片(裸 `![](x)` 或带链接 `[![](x)](y)`)。 */
 export function isImageLine(line: string): boolean {
   const t = line.trim();
-  return RE_IMAGE_LINE.test(t) || RE_LINKED_IMAGE_LINE.test(t);
+  return matchImageLine(t) !== null || RE_LINKED_IMAGE_LINE.test(t);
 }
 
 /**
@@ -161,11 +161,9 @@ export function parseMarkdown(md: string): ImportBlock[] {
       i += 1;
       continue;
     }
-    const imageLine = trimmed.match(RE_IMAGE_LINE);
+    const imageLine = matchImageLine(trimmed);
     if (imageLine) {
-      const alt = imageLine[1] ?? '';
-      const src = (imageLine[2] ?? '').trim();
-      blocks.push({ kind: 'image', source: src, alt, fallbackText: trimmed });
+      blocks.push({ kind: 'image', source: imageLine.src, alt: imageLine.alt, fallbackText: trimmed });
       i += 1;
       continue;
     }
@@ -259,13 +257,47 @@ function isBlockBoundary(line: string): boolean {
   if (matchFenceOpen(line)) return true;
   if (RE_DIVIDER.test(line)) return true;
   if (RE_TWEET.test(line)) return true;
-  if (RE_IMAGE_LINE.test(line.trim())) return true;
+  if (matchImageLine(line.trim()) !== null) return true;
   if (RE_LINKED_IMAGE_LINE.test(line.trim())) return true;
   if (RE_HEADING.test(line)) return true;
   if (RE_BLOCKQUOTE.test(line)) return true;
   if (RE_UL.test(line)) return true;
   if (RE_OL.test(line)) return true;
   return false;
+}
+
+/**
+ * 解析「独占一行的单张裸图片」`![alt](src)`。src 用括号配对扫描(容忍 URL 内含括号,
+ * 如 `![a](http://h/f(1).png)`),并要求闭合 `)` 之后到行尾无其他字符——因此一行多图
+ * `![a](x) ![b](y)` **不**匹配(返回 null,交由上层按普通文本保留),杜绝旧版贪婪 `.+`
+ * 把整行吞成 source 畸形(`x) ![b](y`)的单张图。入参需为**已 trim** 的行。
+ */
+function matchImageLine(line: string): { alt: string; src: string } | null {
+  const head = RE_IMAGE_LINE_HEAD.exec(line);
+  if (!head) return null;
+  const alt = head[1] ?? '';
+  const urlStart = head[0].length; // src 起点:紧跟开括号 `(` 之后
+  let depth = 1;
+  let i = urlStart;
+  while (i < line.length) {
+    const ch = line[i];
+    if (ch === '\\') {
+      i += 2; // 转义:连同下一字符跳过,不参与括号计数
+      continue;
+    }
+    if (ch === '(') {
+      depth += 1;
+    } else if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) break; // 找到与开括号配对的闭括号
+    }
+    i += 1;
+  }
+  if (depth !== 0) return null; // 括号未闭合
+  if (i !== line.length - 1) return null; // 闭合 `)` 之后仍有字符 → 一行多图 / 尾随文本,不认作图片行
+  const src = line.slice(urlStart, i).trim();
+  if (src === '') return null; // 空 src 不产出 ImageBlock
+  return { alt, src };
 }
 
 /** 识别开栏:3+ 个 ` 或 ~;反引号围栏的信息串不得含反引号(否则非合法开栏)。 */
