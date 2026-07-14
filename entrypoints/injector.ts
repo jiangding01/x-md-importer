@@ -681,6 +681,9 @@ export default defineUnlistedScript(() => {
     console.info('[MarkFlow] 写入开始', { blocks: blocks.length, mode, images: imageCount });
     // 每次运行独立的 marker 前缀,避免与历史残留 / 并发写入串扰。
     const markerPrefix = `__MARKFLOW_IMG_${Math.random().toString(36).slice(2, 8)}_`;
+    // 清扫用**通用**前缀:不仅清本次,也清掉「历史遗留」——同一草稿反复导入时,之前某次
+    // 走 fallbackIndex 未删、又因随机 prefix 不匹配而漏清的残留 marker(否则永远赖在正文里)。
+    const MARKER_SWEEP_PREFIX = '__MARKFLOW_IMG_';
     // 记录每个图片 marker、其在 images[] 中的下标(按文档顺序 = 第几个 ImageBlock)、及失败兜底原文。
     const imageMarkers: Array<{ marker: string; imageIndex: number; fallbackText: string }> = [];
     try {
@@ -893,8 +896,9 @@ export default defineUnlistedScript(() => {
           if (node) replaceMarkerWithText(node, marker, fallbackText);
         }
       }
-      // 兜底清扫:任何残留 marker(中断/异常时)一并清掉,正文不留脏占位符。
-      if (imageMarkers.length) sweepMarkers(markerPrefix);
+      // 兜底清扫:任何残留 marker(本次走 fallbackIndex 未删的 + 历史遗留的)一并清掉。
+      // 用通用前缀而非本次随机 prefix——否则清不掉之前导入残留的其它 prefix 的 marker。
+      if (imageMarkers.length) sweepMarkers(MARKER_SWEEP_PREFIX);
 
       // --- 封面(如有):把 File 塞进封面 fileInput,X 自行上传;失败不影响正文成功结论 ---
       // 契约(D4,见 protocol.ts):未请求封面时 coverSet 为 undefined(而非 false);
@@ -911,9 +915,9 @@ export default defineUnlistedScript(() => {
     } catch (err) {
       // 打完整 err 对象(含堆栈),便于定位崩在 Draft 内部的哪一步
       console.error(`[MarkFlow] 写入异常 @${stage}`, err);
-      // 出错也尽力清掉已写入的 marker 占位,避免正文残留脏 token。
+      // 出错也尽力清掉已写入的 marker 占位(通用前缀,连历史遗留一并清),避免正文残留脏 token。
       try {
-        sweepMarkers(markerPrefix);
+        sweepMarkers(MARKER_SWEEP_PREFIX);
       } catch {
         /* 兜底清扫本身失败则放弃 */
       }
