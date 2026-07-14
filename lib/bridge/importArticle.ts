@@ -1,6 +1,10 @@
 import {
+  CLEAR_FOLDER_TYPE,
+  CONNECT_FOLDER_TYPE,
+  FOLDER_STATUS_TYPE,
   IMPORT_REQUEST_TYPE,
   SET_TITLE_REQUEST_TYPE,
+  type FolderResponse,
   type ImportBlock,
   type ImportMode,
   type ImportResponse,
@@ -86,4 +90,45 @@ export async function setTitleOnXTab(
   } catch {
     return { ok: false, error: 'disconnected' };
   }
+}
+
+/**
+ * 向目标 X 标签页发起本地文件夹请求(连接 / 清除 / 状态查询三类共用)。
+ * 定位不到 X tab 或 sendMessage 抛错/无应答 → 统一归为 `{ ok: false, error: 'disconnected' }`,
+ * 与 importToXTab / setTitleOnXTab 的通道层错误处理保持一致。
+ */
+async function sendFolderRequest(request: RuntimeRequest): Promise<FolderResponse> {
+  const tabId = await resolveTargetXTab();
+  if (tabId === null) {
+    return { ok: false, error: 'disconnected' };
+  }
+
+  try {
+    const response = (await browser.tabs.sendMessage(tabId, request)) as FolderResponse | undefined;
+    if (!response) return { ok: false, error: 'disconnected' };
+    return response;
+  } catch {
+    return { ok: false, error: 'disconnected' };
+  }
+}
+
+/**
+ * 触发本地图片文件夹连接:content 在 X 页面弹出一次性浮层,由用户手势触发
+ * `showDirectoryPicker` 完成授权。
+ *
+ * @returns 连接成功回 `{ok:true, connected:true, folderName}`;用户取消回
+ *          `{ok:false, error:'cancelled'}`;定位不到 X tab 时回 `{ok:false, error:'disconnected'}`。
+ */
+export async function connectFolder(): Promise<FolderResponse> {
+  return sendFolderRequest({ type: CONNECT_FOLDER_TYPE });
+}
+
+/** 清除已连接的本地图片文件夹。 */
+export async function clearFolder(): Promise<FolderResponse> {
+  return sendFolderRequest({ type: CLEAR_FOLDER_TYPE });
+}
+
+/** 查询当前本地图片文件夹的连接状态。 */
+export async function getFolderStatus(): Promise<FolderResponse> {
+  return sendFolderRequest({ type: FOLDER_STATUS_TYPE });
 }

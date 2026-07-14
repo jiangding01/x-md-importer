@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**：2026-07-14 · 分支 `main` · **M2 全部完成并真机验证合并** —— 图片上传(PR #4)+ 封面(PR #5)+ 16 条 code review 修复(PR #6)+ **原生表格 & 图片 marker 残留修复**(PR #7)。表格已实证走 X 的 `MARKDOWN` entity 原生渲染。下一步：alt→图注、本地图片 FS Access、行内代码渲染验证。
+**最后更新**：2026-07-14 · 分支 `feat/m2-local-images` · **本地图片 FS Access 已实现并真机验证**(远程/dataURI/封面/表格此前已合并 PR #4-7)。本地图走 File System Access:content 在 X 页弹浮层调 `showDirectoryPicker` → handle 存 x.com IndexedDB → `prepareOneImage` local 分支读取,路径安全器防逃逸 + vault 首段剥离。下一步:探针**自动重探**(监听 tabs URL 变化,免手动刷新)、alt→图注、行内代码验证。
 
 ---
 
@@ -22,8 +22,9 @@
   - ✅ **M2 Phase 2 图片上传 + 封面**（PR #4/#5，真机验证）：独占行 `![alt](src)` → 上传（远程走 background 代理 + dataURI 就地解析），marker 占位事务 + onFilesAdded + MEDIA 轮询 + 归位 + 失败降级；封面 `setCoverImage`（frontmatter cover / 正文首图）。
   - ✅ **M2 code review 16 条修复**（PR #6）：封面误点按钮、SSRF via DNS、上传失败误报成功、postMessage 收敛、AssetsCard 预览一致性等。
   - ✅ **原生表格 + marker 修复**（PR #7）：GFM 表格 → `MARKDOWN` atomic（与代码块同通道，X 原生渲染）；marker 清扫改通用前缀（清历史遗留残留）。
-- **还没做**：alt → 图注（caption 弹窗自动化，已探清 `sheetDialog`）；本地图片 FS Access 文件夹授权；行内代码 X 渲染验证；「打开 X Articles」跳转、备份/诊断/快捷键等演示项。
-- **下一步**：alt→图注 / 本地图片 FS Access / 行内代码验证，任选。
+  - ✅ **本地图片 FS Access**（分支 `feat/m2-local-images`，真机验证）：`![](assets/x.png)` / Obsidian `![[y.png]]` → 从授权文件夹读取上传；handle 存 x.com IndexedDB、权限失效时 UI 校准不撒谎、size/MIME 上限对齐、授权浮层防卡屏/并发。
+- **还没做**：探针**自动重探**（监听页面 URL 变化免手动刷新，下一个）；alt → 图注（`sheetDialog` 已探清）；行内代码 X 渲染验证；「打开 X Articles」跳转、备份/诊断/快捷键等演示项。
+- **下一步**：探针自动重探 / alt→图注 / 行内代码验证，任选。
 - **怎么跑**：`pnpm install && pnpm build` → Chrome 加载 `.output/chrome-mv3`。详见 §7。
 
 ---
@@ -127,7 +128,7 @@ background（开侧栏）                          injector.ts（MAIN world，�
 | 位置 | 现状 | 目标里程碑 |
 |---|---|---|
 | **alt → 图注（caption）** | 未做；caption 是弹窗（`data-testid="sheetDialog"` + contenteditable + Save），需逐图 UI 自动化、跳过空/垃圾 alt | 下一个 |
-| **图片·本地相对路径** | 降级为原文（`prepareOneImage` local 返回 null；AssetsCard 显示「暂不支持」） | FS Access 文件夹授权 |
+| ⚠️ 本地图 File 字节经 `postMessage` 到 MAIN world | x.com 页面脚本理论上可读(A2,与远程/dataURI 同面) | MessageChannel 点对点(单独 PR) |
 | 行内代码 X 渲染 | CODE inline style 已写入，但 X 实际渲染效果未真机确认 | 顺手验证 |
 | 「打开 X Articles」按钮 | 仅文案，无 `tabs.create` 跳转 | 顺手补 |
 | 标题冲突 `titleConflict='ask'` | 暂按保守 `keep` 处理 | 补独立询问弹窗 |
@@ -237,4 +238,10 @@ pnpm build              # → .output/chrome-mv3
 - **原生表格 + marker 修复**（PR #7）：console 勘察实证 **X 表格 = `MARKDOWN` entity**（data.markdown 存 GFM 原文，与代码块同一通道）→ parser 一处识别即可，injector/协议**零改动**；顺带修图片 marker 历史残留（sweep 改用通用前缀 `__MARKFLOW_IMG_`，清掉反复导入的旧 prefix 残留）。均真机验证通过。
 - **文档同步 + 文案订正**（本 PR）：HANDOFF/CHANGELOG 更新到 M2 全完成 + 表格；`capability.ts` 表格文案由「按文本写入」订正为「原生表格·MARKDOWN entity」。
 
-> 下一步接续：**alt→图注**（caption 弹窗 UI 自动化，`sheetDialog` 已探清）/ **本地图片 FS Access** / **行内代码 X 渲染验证**，任选。`docs/research/xposter-analysis.md` §3.5 有标题/封面 GraphQL、§3.6 有表格转图（现已改用原生 entity，不需要）。
+**2026-07-14 · 第七次会话（本次）· 本地图片 FS Access**：
+- **实现本地图片上传**（`feat/m2-local-images`）：parser 补 Obsidian `![[x]]` 识别;新建 `lib/bridge/localVault.ts`(IndexedDB 存 handle + `parseLocalImagePath` 路径安全器 + vault 首段剥离);content 授权流程(X 页临时浮层产生手势 → `showDirectoryPicker` → 存 x.com IndexedDB)+ `prepareOneImage` local 分支读取;协议 `connect-folder`/`clear-folder`;设置 UI「连接/清除」+ AssetsCard 状态。
+- **走完整流程**（本地 review → 真机 → 文档 → PR):2 角度 review + 我自审 + Codex 共修 5 条——folder 状态校准(权限失效不撒谎)、本地图 size/MIME 上限、授权浮层清理/超时/防并发、错误码 i18n。真机 1-7 全过(连接/上传/双手势/vault 剥离/权限校准/降级)。**A2 隐私(postMessage 广播本地图字节)记 TODO,单独 PR 做 MessageChannel**。
+- 决策:**每篇独立文件夹**的场景要每次选文件夹(浏览器拿不到 md 绝对路径,无法自动),已和用户对齐——后续做「导入时按需授权(同文件夹不重复问)」优化。
+- 草稿丢失是误报(用户自己清空的,chrome.storage 持久正常)。
+
+> 下一步接续：**探针自动重探**(ProbeProvider 监听 `browser.tabs.onActivated`/`onUpdated`,防抖后 refresh,免手动刷新——已和用户约定紧接着做)/ **alt→图注**(`sheetDialog` 已探清)/ **行内代码 X 渲染验证** / **本地图按需授权优化**。`docs/research/xposter-analysis.md` §3.5 标题/封面 GraphQL、§7 FS Access 实证。

@@ -3,11 +3,15 @@ import {
   ISO_SOURCE,
   classifyImageSource,
   createNonce,
+  isClearFolderRequest,
+  isConnectFolderRequest,
+  isFolderStatusRequest,
   isImportRequest,
   isMainMessage,
   isProbeRequest,
   isSetTitleRequest,
   type FetchImageResponse,
+  type FolderResponse,
   type ImageBlock,
   type ImportBlock,
   type ImportMode,
@@ -21,9 +25,19 @@ import {
   type SetTitleResult,
   type TitleConflict,
 } from '@/lib/bridge/protocol';
+import {
+  clearVaultHandle,
+  getVaultHandle,
+  hasReadPermission,
+  requestReadPermission,
+  resolveLocalFile,
+  saveVaultHandle,
+} from '@/lib/bridge/localVault';
 
-/** 允许的图片 MIME(与 background 一致):dataURI 解析时也据此校验。 */
+/** 允许的图片 MIME(与 background 一致):dataURI 解析、本地图读取都据此校验。 */
 const ALLOWED_IMAGE_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+/** 本地图片大小上限,与远程 background 的 16MB 对齐——防超大/非图文件塞进 X 上传。 */
+const MAX_LOCAL_IMAGE_BYTES = 16 * 1024 * 1024;
 
 /**
  * base64 → Uint8Array(atob 逐字符;非法 base64 抛错由调用方兜底)。
@@ -77,8 +91,16 @@ async function prepareOneImage(block: ImageBlock): Promise<PreparedImage> {
       }
       return { file: null };
     }
-    // local(本地相对路径):本 PR 不支持,留待 FS Access 里程碑;降级为 fallbackText。
-    return { file: null };
+    // local(本地相对路径):从已连接的文件夹 handle(File System Access)读取。
+    // 未连接 / 权限失效 / 未找到 → file:null,injector 降级为 fallbackText 写回原文。
+    const handle = await getVaultHandle();
+    if (!handle || !(await hasReadPermission(handle))) return { file: null };
+    const file = await resolveLocalFile(handle, block.source, handle.name);
+    // 与远程/dataURI 对齐:大小上限 + MIME 白名单(本地文件可能是非图或超大文件)。
+    if (!file || file.size > MAX_LOCAL_IMAGE_BYTES || !ALLOWED_IMAGE_MIME.has(file.type)) {
+      return { file: null };
+    }
+    return { file };
   } catch {
     return { file: null };
   }
@@ -301,14 +323,110 @@ export default defineContentScript({
       );
     };
 
-    // sidepanel ↔ content 的 chrome.runtime 通道:probe → 转探针;import → 转写入;set-title → 转标题。
+    // --- 本地图片文件夹(File System Access)------------------------------------
+    // showDirectoryPicker 必须在**用户手势**内调用;sidepanel 的手势跨 runtime 消息会丢失,
+    // 故在 X 页面注入一次性最小浮层,用户点「选择文件夹」(页面手势)时同步调 picker。
+    interface WindowFsPicker {
+      showDirectoryPicker(opts?: { id?: string; mode?: 'read' | 'readwrite' }): Promise<FileSystemDirectoryHandle>;
+    }
+
+    // 当前活动授权浮层的「外部取消」句柄:onInvalidated 时清屏 + resolve,防卡屏 / 悬挂 Promise。
+    let dismissActiveVaultOverlay: (() => void) | null = null;
+
+    const connectFolder = (): Promise<FolderResponse> =>
+      new Promise((resolve) => {
+        // 若上一次连接浮层仍在(用户快速再点「连接」),先取消它——否则旧浮层会成为
+        // 没人能清的孤儿(dismissActiveVaultOverlay 只存最新句柄),且可能弹出第二个 picker。
+        dismissActiveVaultOverlay?.();
+        const overlay = document.createElement('div');
+        overlay.setAttribute('data-markflow-vault', '');
+        overlay.style.cssText =
+          'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.45);display:grid;place-items:center;font-family:system-ui,-apple-system,sans-serif;';
+        const card = document.createElement('div');
+        card.style.cssText =
+          'background:#fff;color:#0f1419;max-width:340px;padding:20px 22px;border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.25);';
+        const title = document.createElement('div');
+        title.style.cssText = 'font-weight:700;font-size:15px;margin-bottom:8px;';
+        title.textContent = 'MarkFlow · 连接本地图片文件夹';
+        const desc = document.createElement('div');
+        desc.style.cssText = 'font-size:13px;line-height:1.5;color:#536471;margin-bottom:16px;';
+        desc.textContent =
+          '选择存放本地图片的文件夹后,导入时将从中读取相对路径图片(仅读取,不修改)。重开浏览器后可能需要重新连接。';
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;';
+        const pick = document.createElement('button');
+        pick.textContent = '选择文件夹';
+        pick.style.cssText =
+          'background:#0f1419;color:#fff;border:0;border-radius:9999px;padding:8px 18px;font-size:14px;font-weight:600;cursor:pointer;';
+        const cancel = document.createElement('button');
+        cancel.textContent = '取消';
+        cancel.style.cssText =
+          'background:transparent;color:#536471;border:1px solid #cfd9de;border-radius:9999px;padding:8px 16px;font-size:14px;cursor:pointer;';
+        row.append(cancel, pick);
+        card.append(title, desc, row);
+        overlay.append(card);
+        document.body.append(overlay);
+
+        let settled = false;
+        // 180s 兜底超时:用户长时间不操作也不会让 sidepanel 的 await 永久 pending。
+        const timer = setTimeout(() => finish({ ok: false, error: 'timeout' }), 180_000);
+        const finish = (r: FolderResponse) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          dismissActiveVaultOverlay = null; // 交出「外部取消」句柄
+          overlay.remove();
+          resolve(r);
+        };
+        // 暴露给 onInvalidated:SPA 导航 / 扩展失效时清掉卡屏浮层并 resolve,不留悬挂 Promise。
+        dismissActiveVaultOverlay = () => finish({ ok: false, error: 'cancelled' });
+        cancel.addEventListener('click', () => finish({ ok: false, error: 'cancelled' }));
+        overlay.addEventListener('click', (e) => {
+          if (e.target === overlay) finish({ ok: false, error: 'cancelled' });
+        });
+        pick.addEventListener('click', async () => {
+          try {
+            const handle = await (window as unknown as WindowFsPicker).showDirectoryPicker({
+              id: 'markflow_vault',
+              mode: 'read',
+            });
+            const granted = await requestReadPermission(handle);
+            if (!granted) return finish({ ok: false, error: 'permission-denied' });
+            await saveVaultHandle(handle);
+            finish({ ok: true, connected: true, folderName: handle.name });
+          } catch {
+            // 用户在系统弹窗取消 showDirectoryPicker,或该环境不支持 → 取消处理
+            finish({ ok: false, error: 'cancelled' });
+          }
+        });
+      });
+
+    const clearFolder = async (): Promise<FolderResponse> => {
+      await clearVaultHandle();
+      return { ok: true, connected: false, folderName: null };
+    };
+
+    const folderStatus = async (): Promise<FolderResponse> => {
+      const handle = await getVaultHandle();
+      if (!handle) return { ok: true, connected: false, folderName: null };
+      // 有 handle 但读权限失效(浏览器重启后 FS Access 权限常回落 prompt)→ connected:false,
+      // 让 UI 显示「未连接」引导重连,避免「显示已连接却读不到本地图」的撒谎态。folderName 仍回传。
+      const granted = await hasReadPermission(handle);
+      return { ok: true, connected: granted, folderName: handle.name };
+    };
+
+    // sidepanel ↔ content 的 chrome.runtime 通道:probe/import/set-title → 转 injector;
+    // connect/clear/folder-status → 本地文件夹(FS Access,不经 injector)。
     // 返回 Promise 即异步应答(WXT/webextension-polyfill 约定:回 Promise 或 return true)。
     const onRuntimeMessage = (
       message: unknown,
-    ): Promise<ProbeResponse | ImportResponse | SetTitleResponse> | undefined => {
+    ): Promise<ProbeResponse | ImportResponse | SetTitleResponse | FolderResponse> | undefined => {
       if (isProbeRequest(message)) return probeInjector();
       if (isImportRequest(message)) return importInjector(message.blocks, message.mode, message.coverSource ?? null);
       if (isSetTitleRequest(message)) return setTitleInjector(message.title, message.conflict);
+      if (isConnectFolderRequest(message)) return connectFolder();
+      if (isClearFolderRequest(message)) return clearFolder();
+      if (isFolderStatusRequest(message)) return folderStatus();
       return undefined; // 非本扩展关心的消息:不应答,交给其他监听器
     };
     browser.runtime.onMessage.addListener(onRuntimeMessage);
@@ -345,6 +463,8 @@ export default defineContentScript({
       browser.runtime.onMessage.removeListener(onRuntimeMessage);
       // 一次性清掉所有悬挂请求(探针 / 写入 / 标题)的定时器,避免失效后回调仍触发。
       bridge.clearAll();
+      // 清掉可能卡屏的授权浮层并 resolve 其 Promise(否则失效时 sidepanel 永久 pending)。
+      dismissActiveVaultOverlay?.();
     });
   },
 });

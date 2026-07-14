@@ -37,6 +37,8 @@ export interface Options {
   zhConvert: 'off' | 's2t' | 't2s';
   // 05 图片与媒体
   folder: boolean;
+  /** 已连接文件夹的显示名(未连接为 null);随 folder 语义同步更新。 */
+  folderName: string | null;
   compress: boolean;
   maxEdge: '960' | '1280' | '1600' | 'orig';
   quality: '60' | '70' | '82' | '90' | '95';
@@ -82,6 +84,7 @@ export const defaultOptions: Options = {
   punct: false,
   zhConvert: 'off',
   folder: false,
+  folderName: null,
   compress: true,
   maxEdge: '1280',
   quality: '82',
