@@ -44,6 +44,13 @@ const RE_HEADING = /^(#{1,6})\s+(.*)$/;
 const RE_BLOCKQUOTE = /^>/;
 const RE_UL = /^[-*+]\s+(.*)$/;
 const RE_OL = /^\d+\.\s+(.*)$/;
+/**
+ * GFM 表格分隔行(表头下方那行):每列 `:?-+:?`,列间 `|`。要求本行**含 `|` 且含 `-`**——
+ * 这样纯 `---`/`***` 分割线(不含 `|`)不会被当成表格分隔,与 DIVIDER 不冲突。
+ */
+const RE_TABLE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+const isTableSeparator = (line: string): boolean =>
+  line.includes('|') && line.includes('-') && RE_TABLE_SEP.test(line);
 
 /** ASCII 标点集合:反斜杠转义仅在其后紧跟 ASCII 标点时生效(字母/CJK 前的反斜杠保留原样)。 */
 const RE_PUNCT = /[!-/:-@[-`{-~]/;
@@ -168,6 +175,23 @@ export function parseMarkdown(md: string): ImportBlock[] {
       continue;
     }
 
+    // 4.5 GFM 表格:表头行(含 `|`)+ 紧跟分隔行(`| --- |`)→ 整段原文塞进 MARKDOWN atomic。
+    //     X 的 MARKDOWN entity 渲染器识别表格语法并原生渲染(与代码块同一 entity 通道,实证见
+    //     docs 勘察);不拆结构化 cell、连 `\|` 转义都原样交给 X 解析。
+    if (line.includes('|') && isTableSeparator(lines[i + 1] ?? '')) {
+      const start = i;
+      i += 2; // 表头 + 分隔行已确认,收下
+      // 继续收连续的数据行(含 `|` 的非空行);遇空行 / 不含 `|` 的行即表格结束。
+      while (i < lines.length) {
+        const row = lines[i] ?? '';
+        if (row.trim() === '' || !row.includes('|')) break;
+        i += 1;
+      }
+      const markdown = lines.slice(start, i).join('\n');
+      blocks.push({ kind: 'atomic', entityType: 'MARKDOWN', data: { markdown } });
+      continue;
+    }
+
     // 5. 空行:跳过
     if (line.trim() === '') {
       i += 1;
@@ -226,6 +250,9 @@ export function parseMarkdown(md: string): ImportBlock[] {
     while (k < lines.length) {
       const next = lines[k] ?? '';
       if (isBlockBoundary(next)) break;
+      // 表格开始(当前行含 `|` 且下一行是分隔行):停止段落收集,交主循环的表格分支处理,
+      // 否则紧跟正文段落后、无空行分隔的表格会被段落吞掉。
+      if (next.includes('|') && isTableSeparator(lines[k + 1] ?? '')) break;
       para.push(next);
       k += 1;
     }
