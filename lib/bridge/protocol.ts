@@ -42,7 +42,12 @@ export interface ProbeResult {
 // 形状对齐 Draft.js RawBlock,块映射遵循《技术方案设计.md》§4.2 矩阵。
 // ---------------------------------------------------------------------------
 
-/** 行内样式区间。style 为 Draft.js 标准 inline style 名(X 原生支持这四种)。 */
+/**
+ * 行内样式区间。style 为 Draft.js 标准 inline style 名。
+ * BOLD / ITALIC / STRIKETHROUGH 由 X Articles 正文原生支持。
+ * **CODE(行内代码)X 正文实测不支持**——parser 已降级为「原样保留反引号纯文本」、不再产出 CODE;
+ * 此枚举值仅保留兼容(injector 仍能处理,若 X 日后支持可快速恢复)。
+ */
 export interface InlineStyleRange {
   offset: number;
   length: number;

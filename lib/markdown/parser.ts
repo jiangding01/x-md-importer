@@ -133,8 +133,14 @@ export function parseMarkdown(md: string): ImportBlock[] {
         j += 1;
       }
       if (closed) {
-        // 原文含 ```lang 首行与闭合行,整体塞进 MARKDOWN entity
-        const markdown = lines.slice(i, j + 1).join('\n');
+        // 规范化开栏首行的 info(语言):解码 HTML 实体 + 只取第一词——源 md 里 `plain&#x20;text` /
+        // `plain text` 会被 X 当成含空格/实体的语言名,渲染出难看的 `plain&#x20;text` 标签。
+        // 代码内容(i+1..j)与闭合围栏行原样保留,只重写开栏首行的语言部分。
+        const openLine = lines[i] ?? '';
+        const fm = /^(`{3,}|~{3,})(.*)$/.exec(openLine);
+        const marker = fm?.[1] ?? '```';
+        const lang = normalizeCodeInfo(fm?.[2] ?? '');
+        const markdown = [marker + lang, ...lines.slice(i + 1, j + 1)].join('\n');
         blocks.push({ kind: 'atomic', entityType: 'MARKDOWN', data: { markdown } });
         i = j + 1;
         continue;
@@ -169,7 +175,7 @@ export function parseMarkdown(md: string): ImportBlock[] {
     const linkedImage = trimmed.match(RE_LINKED_IMAGE_LINE);
     if (linkedImage) {
       const alt = linkedImage[1] ?? '';
-      const src = (linkedImage[2] ?? '').trim(); // 内层图片 URL;外层链接(组3)丢弃
+      const src = normalizeImageSrc(linkedImage[2] ?? ''); // 内层图片 URL(剥 `<>`);外层链接(组3)丢弃
       blocks.push({ kind: 'image', source: src, alt, fallbackText: trimmed });
       i += 1;
       continue;
@@ -312,10 +318,27 @@ function isBlockBoundary(line: string): boolean {
 }
 
 /**
+ * 规范化图片 destination(CommonMark 语义):
+ *  - `<...>` 包裹 → 剥尖括号,**尖括号内整体为路径**(保留空格——本地图路径含空格很常见,如
+ *    `<images/a b.png>`;URL 含空格时 CommonMark 要求必须用 `<>` 包裹),忽略 `>` 之后的可选 title;
+ *  - 未包裹 → 去首尾空白后原样返回(保持既有行为)。
+ * 注:与行内链接的 normalizeUrl 有意不同——图片**不做**「截到第一个空白」,否则会切断含空格的本地路径。
+ */
+function normalizeImageSrc(raw: string): string {
+  const s = raw.trim();
+  if (s.startsWith('<')) {
+    const end = s.indexOf('>');
+    if (end >= 0) return s.slice(1, end); // 尖括号内原样(不 trim:空格是路径的一部分)
+  }
+  return s;
+}
+
+/**
  * 解析「独占一行的单张裸图片」`![alt](src)`。src 用括号配对扫描(容忍 URL 内含括号,
  * 如 `![a](http://h/f(1).png)`),并要求闭合 `)` 之后到行尾无其他字符——因此一行多图
  * `![a](x) ![b](y)` **不**匹配(返回 null,交由上层按普通文本保留),杜绝旧版贪婪 `.+`
  * 把整行吞成 source 畸形(`x) ![b](y`)的单张图。入参需为**已 trim** 的行。
+ * `<>` 包裹的 destination(CommonMark,含空格路径必需)由尖括号感知 + normalizeImageSrc 处理。
  */
 function matchImageLine(line: string): { alt: string; src: string } | null {
   const head = RE_IMAGE_LINE_HEAD.exec(line);
@@ -330,6 +353,15 @@ function matchImageLine(line: string): { alt: string; src: string } | null {
       i += 2; // 转义:连同下一字符跳过,不参与括号计数
       continue;
     }
+    // CommonMark:destination 用 `<...>` 包裹时,尖括号内整体是 URL(可含空格 / `)`),内部字符
+    // 不参与括号配对——直接跳到匹配的 `>`,避免路径里的 `)` 被误判为 destination 闭合。
+    if (ch === '<') {
+      const gt = line.indexOf('>', i);
+      if (gt >= 0) {
+        i = gt + 1;
+        continue;
+      }
+    }
     if (ch === '(') {
       depth += 1;
     } else if (ch === ')') {
@@ -340,7 +372,7 @@ function matchImageLine(line: string): { alt: string; src: string } | null {
   }
   if (depth !== 0) return null; // 括号未闭合
   if (i !== line.length - 1) return null; // 闭合 `)` 之后仍有字符 → 一行多图 / 尾随文本,不认作图片行
-  const src = line.slice(urlStart, i).trim();
+  const src = normalizeImageSrc(line.slice(urlStart, i));
   if (src === '') return null; // 空 src 不产出 ImageBlock
   return { alt, src };
 }
@@ -362,6 +394,30 @@ function matchFenceClose(line: string, fence: Fence): boolean {
   if (!m) return false;
   const marker = m[1] ?? '';
   return (marker[0] ?? '') === fence.char && marker.length >= fence.len;
+}
+
+/** 把 HTML 数字实体(&#x20; / &#32; 等)解码回字符;越界/非法码点丢弃。用于代码围栏 info 归一。 */
+function decodeNumericEntities(s: string): string {
+  return s
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => {
+      const cp = parseInt(h, 16);
+      return cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : '';
+    })
+    .replace(/&#(\d+);/g, (_, d) => {
+      const cp = parseInt(d, 10);
+      return cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : '';
+    });
+}
+
+/**
+ * 规范化代码围栏的 info string(语言标识):
+ *  - 先解码 HTML 数字实体(源 md 可能来自 HTML 导出,空格被转义成 `&#x20;` 混进了 info);
+ *  - 再只取第一个 token 作语言(CommonMark:info 首词为语言,其余是元数据)。
+ * 例:`plain&#x20;text` / `plain text` → `plain`;`typescript` → `typescript`;空 info → 空(无语言块保持无语言)。
+ * 否则含空格 / 实体的 info 会被 X 当成语言名整体渲染出 `plain&#x20;text` 这种难看标签。
+ */
+function normalizeCodeInfo(info: string): string {
+  return decodeNumericEntities(info).trim().split(/\s+/)[0] ?? '';
 }
 
 // ---------------------------------------------------------------------------
@@ -403,15 +459,14 @@ function walkInline(src: string): InlineResult {
       continue;
     }
 
-    // 行内代码最高优先:内部 * / _ 等一律不解析
+    // 行内代码:X Articles 正文**不支持**行内代码(无对应 inline style,真机实测确认),
+    // 写 CODE style 也不渲染。降级:原样保留 markdown 反引号(`code`)为纯文本——读者可辨识
+    // 是代码/字面量(尤其 `<占位符>`),不虚报样式。仍走 matchCodeSpan 识别边界(保护内部
+    // * / _ 不被当强调解析),但输出连反引号的原始子串、不产出 CODE range。
     if (ch === '`') {
       const code = matchCodeSpan(src, i);
       if (code) {
-        const base = out.length;
-        out += code.content;
-        if (code.content.length > 0) {
-          ranges.push({ offset: base, length: code.content.length, style: 'CODE' });
-        }
+        out += src.slice(i, code.end); // 连反引号原样保留(含多反引号 ``x`` 的边界)
         i = code.end;
         continue;
       }

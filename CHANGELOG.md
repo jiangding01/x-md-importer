@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+### 新增 · 「打开 X Articles」按钮 · 修复 · 图片 `<>` 路径 / 封面弹窗未关 / 清空状态残留 · 记录 · postMessage 私有化回退
+- **修复 · 图片路径 `<>` 包裹（含空格）解析失败**：CommonMark 规定 destination 含空格时须用尖括号包裹（`![](<images/a b.png>)`）——原 parser 未剥尖括号，`source` 带字面 `<>` 导致**本地图读取全失败**（真机 `imageFail` 13/13）。修复：`matchImageLine` 感知 `<>`（尖括号内的 `)` 不再误判为 destination 闭合）+ 新增 `normalizeImageSrc` 剥括号并**保留路径空格**（不像行内链接那样截到第一个空白）；裸图 `![](<x>)` 与带链接图 `[![](<x>)](y)` 均适用。8 条用例实跑覆盖（含空格/含 `)`/尾随 title/多图/空 src/回归）。
+- **修复 · 封面裁剪弹窗点 Apply 后未关闭**：`setCoverImage` 原用裸 `.click()` 点弹窗内 Apply，对 X 的 React 裁剪按钮偶发不触发（点了、`coverSet` 谎报 `true`、弹窗却残留）。改用 `realClick` 派发**完整鼠标事件序列**（pointer/mouse down→up→click）+ 用稳定 `data-testid="applyButton"` 定位 + **轮询确认弹窗真的关闭才算成功**（没关就重点，最多 5 轮）；`coverSet` 不再谎报。
+- **修复 · 清空 / 换稿后过期状态卡片残留**：清空 markdown（及载入示例 / 读文件 / 载入历史 / 编辑输入）后，旧的「预检结果」「导入报告」卡片仍展示旧内容的结果。改为在 `setMd`（所有「内容替换」的唯一入口）统一收起预检（`checkVisible`/`checkStep`）与报告（`reportVisible`），过期结果不再残留。
+- **修复 · 代码块语言标签 `plain&#x20;text`（HTML 实体 / 含空格 info）**：源 md 的代码围栏 info string 带 HTML 数字实体（`&#x20;`，常见于 HTML 导出的 md）或空格时，X 把它当成含空格的语言名、渲染出 `plain&#x20;text` 难看标签。parser 归一 info：**解码数字实体 + 只取第一词作语言**（CommonMark），`plain&#x20;text` / `plain text` → `plain`，正常语言不变、无语言块保持无语言；代码内容与闭合围栏原样保留。6 用例实跑覆盖。
+- **修复 · 行内代码降级（X 正文不支持）**：真机确认 X Articles 正文**不支持行内代码**（快捷键/工具栏仅 Bold/Italic/Underline/Strikethrough/链接/列表/引用 + 块级 Code，无行内代码），原写 `CODE` inline style 不渲染。改为 parser 降级：**原样保留反引号纯文本**（`` `code` ``）——读者可辨识代码/字面量（尤其 `<占位符>`）、不虚报样式；能力映射文案订正为「X 不支持·保留反引号 `code`」。粗体/斜体/删除线不受影响，`protocol.ts` 的 `CODE` 枚举保留兼容（injector 仍能处理，若 X 日后支持可快速恢复）。
+- **「打开 X Articles」按钮接真实跳转**：待发布页「未连接」提示里的按钮从演示 toast 改为 `chrome.tabs.create` 打开 X Articles 编辑器入口（`x.com/compose/articles`）；纯 UI 预览无 `chrome.tabs` 时降级 `window.open`，不崩。
+- **记录 · `postMessage`→MessageChannel「私有通道」验证不可达成并回退**：曾试图把 content↔injector 通信私有化，以对 x.com 页面脚本隐藏图片/封面 File 字节（分支 `feat/messagechannel-private`）。经两轮并行 code review + 实测确认不可行并**回退**：injector 在 MAIN world 与页面共享 window + JS 堆，借 `onFilesAdded` 上传时 File 必进 MAIN world 即被同 world 页面脚本可读；且 `window.postMessage(hello, origin, [port2])` 的 port 对**所有** window 监听器（含页面脚本）可见，MessageChannel 仅挡被动 `window.onmessage` 监听、挡不住主动脚本。**MAIN world 架构固有限制，不可修**，详见 HANDOFF §8。
+
 ### 新增 · 本地图按需授权（两级文件夹 + 一键恢复）
 - **两级文件夹**：本地图读取新增 `active`（素材板「本篇图片文件夹」）与 `persistent`（设置默认文件夹）两个作用域，各存独立 IndexedDB key（persistent 复用旧 `vault_root`，升级不丢已连接的设置文件夹）。导入读取优先级 **active > persistent > 降级**（`getReadableVault`），一处统一。
 - **素材板入口**：含本地图时，素材卡片出现「本篇图片文件夹」行，可就地连接/更换/清除本篇专用文件夹——素材与文章对应，换文章即换文件夹，免去每次进设置。就绪判定认 active∥persistent 任一已连。

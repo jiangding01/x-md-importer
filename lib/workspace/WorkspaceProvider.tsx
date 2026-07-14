@@ -163,6 +163,12 @@ export function WorkspaceProvider({
   const setMd = useCallback((v: string) => {
     setMdState(v);
     void saveDraft(v);
+    // 内容一变,旧预检 / 导入报告就不对应当前 md 了 → 一并收起,不残留过期结果。
+    // setMd 是所有「内容替换」的唯一入口(清空 / 载入示例 / 读文件 / 载入历史 / 编辑输入),放这一处全覆盖。
+    // 写入流程 startImport 不经 setMd(它自行 setReportVisible(true)),故不会把刚出的报告清掉。
+    setCheckVisible(false);
+    setCheckStep(-1);
+    setReportVisible(false);
   }, []);
 
   const commitHistory = useCallback((next: HistoryItem[]) => {

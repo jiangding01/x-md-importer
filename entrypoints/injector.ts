@@ -598,18 +598,41 @@ export default defineUnlistedScript(() => {
   };
 
   /**
-   * 只在**真实裁剪弹窗**(`[role="dialog"]` / `[aria-modal="true"]`)内找「应用/裁剪确认」类按钮。
+   * 派发**完整鼠标事件序列**(pointer/mouse down→up→click)。裸 `.click()` 对某些 React
+   * 组件(处理器挂在 pointerdown/mousedown、或依赖真实事件序列)偶发不触发——X 裁剪弹窗的
+   * Apply 实测出现「点了、回调却没跑、弹窗残留」,故改用完整序列确保命中。
+   */
+  const realClick = (el: HTMLElement): void => {
+    const init: MouseEventInit = { bubbles: true, cancelable: true, view: window };
+    try {
+      el.dispatchEvent(new PointerEvent('pointerdown', init));
+      el.dispatchEvent(new MouseEvent('mousedown', init));
+      el.dispatchEvent(new PointerEvent('pointerup', init));
+      el.dispatchEvent(new MouseEvent('mouseup', init));
+      el.dispatchEvent(new MouseEvent('click', init));
+    } catch {
+      el.click(); // 环境不支持 PointerEvent 构造时兜底
+    }
+  };
+
+  /**
+   * 只在**真实裁剪弹窗**(`[role="dialog"]` / `[aria-modal="true"]`)内找「应用/裁剪确认」按钮。
    * **绝不退回整个 document**——否则无弹窗时会全文搜按钮,可能误点编辑器工具栏的不可逆动作
    * (发布/保存草稿等)。宁可设不上封面,也绝不误点页面级按钮。
-   * 文案收窄到明确的「应用/裁剪确认」类,去掉过于泛化的「保存/save/done/确定」以免命中弹窗内其它按钮。
+   * 优先用稳定的 `data-testid="applyButton"`(实证,跨语言、抗文案变动);兜底再按收窄文案。
    */
   const findApplyButton = (): HTMLElement | null => {
-    // 明确的「应用/裁剪确认」文案(精确匹配);不含泛化单词,避免命中弹窗内取消/删除/其它动作。
-    const labels = ['apply', '应用', 'save changes', '完成裁剪', '应用裁剪', '确认裁剪'];
     const modals = Array.from(
       document.querySelectorAll<HTMLElement>('[aria-modal="true"], [role="dialog"]'),
     );
     if (!modals.length) return null; // 无弹窗:放弃,绝不退回 document 全文搜索。
+    // 1) 稳定 testid 优先——X 裁剪弹窗应用按钮实证为 data-testid="applyButton"。
+    for (const root of modals) {
+      const byTestId = root.querySelector<HTMLElement>('[data-testid="applyButton"]');
+      if (byTestId) return byTestId;
+    }
+    // 2) 兜底:明确的「应用/裁剪确认」文案(精确匹配);不含泛化单词,避免命中取消/删除/其它动作。
+    const labels = ['apply', '应用', 'save changes', '完成裁剪', '应用裁剪', '确认裁剪'];
     for (const root of modals) {
       for (const b of Array.from(root.querySelectorAll<HTMLElement>('[role="button"], button'))) {
         const rect = b.getBoundingClientRect();
@@ -641,19 +664,31 @@ export default defineUnlistedScript(() => {
       coverInput.files = dt.files;
       coverInput.dispatchEvent(new Event('input', { bubbles: true }));
       coverInput.dispatchEvent(new Event('change', { bubbles: true }));
-      // X 会弹出「Edit media」裁剪弹窗,必须点弹窗内的 Apply 才真正设为封面。轮询等其出现并点击。
+      // X 会弹出「Edit media」裁剪弹窗,必须点弹窗内的 Apply 才真正设为封面。轮询等其出现。
       // findApplyButton 仅在真实弹窗内查找、绝不退回 document——8s 内无弹窗/弹窗内无按钮即放弃。
       const deadline = Date.now() + 8000;
+      let apply: HTMLElement | null = null;
       while (Date.now() < deadline) {
         await delay(200);
-        const apply = findApplyButton();
-        if (apply) {
-          apply.click();
-          await delay(200);
-          return true;
-        }
+        apply = findApplyButton();
+        if (apply) break;
       }
-      // 8s 内没等到裁剪弹窗内的 Apply:未能落地,如实返回 false(不谎报成功,也不点任何页面级按钮)。
+      if (!apply) return false; // 8s 内没等到裁剪弹窗内的 Apply:未能落地,如实返回 false。
+
+      // 点 Apply 并**确认弹窗真的关闭**才算成功——裸 .click() 对 X 裁剪按钮偶发不响应(点了、
+      // coverSet 谎报 true、弹窗却残留)。故用 realClick 派发完整事件序列,并轮询到「弹窗内 Apply
+      // 消失」为准;单次没关就重新定位再点(DOM 可能重渲染),最多 5 轮。
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        realClick(apply);
+        const closeDeadline = Date.now() + 1500;
+        while (Date.now() < closeDeadline) {
+          await delay(150);
+          if (!findApplyButton()) return true; // 弹窗内 Apply 已不在 → 弹窗已关,封面落地
+        }
+        apply = findApplyButton(); // 仍在:重新定位(可能已重渲染)后再试
+        if (!apply) return true; // 期间关掉了
+      }
+      // 多轮点击弹窗仍未关闭:如实返回 false(不谎报),弹窗留给用户手动处理。
       return false;
     } catch (err) {
       console.warn('[MarkFlow] 设置封面失败', err);
