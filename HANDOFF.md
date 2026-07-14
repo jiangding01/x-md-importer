@@ -266,6 +266,13 @@ pnpm build              # → .output/chrome-mv3
 
 **2026-07-15 · 第十次会话（本次）· 图片 marker 残留修复 + B(alt→ALT) 启动**：
 - **修复 · 图片 marker 残留**（`fix/marker-sweep-retry`）：真机见多图导入后正文残留 `__MARKFLOW_IMG_q5hsn4_4__`。根因：某图走 `relocateMediaByFallbackIndex` 兜底路径（精确 relocate 失败 → 只确认 MEDIA 存在、**不删 marker 块**，留给 sweep）后，`sweepMarkers` **单次**清扫因 X `onChange` 异步 commit、读到 fiber 中间态而漏删。改 `sweepMarkers` 为 **async 多轮重试**（每轮 delay 让 X commit + 读最新 state 删残留，至多 4 轮；抽出 `sweepMarkersOnce` 返回「本轮是否有残留」），两处调用点加 `await`。tsc/build 绿，**待真机验证清理**。
-- **B（alt→图注）方向厘清（关键）**：真机确认 X 图片有**两个**入口——**Edit → ALT → Description**（无障碍 alt text，语义 = markdown `![alt]` 的 alt）与 **Edit Caption**（可见图注）。经用户选定，alt 写到 **ALT / Description**（语义正确、无障碍、不改文章视觉）。**待用户提供 ALT 弹窗 DOM**（入口「图左上 Edit」按钮 + 顶部 ALT tab + Description contenteditable[0/1000] + Save）后实现完整 B。之前探测脚本对 ALT 弹窗返回 undefined（选择器没匹配到「Edit image description」容器）。
+- **B（alt→ALT/Description）方向厘清 + DOM 全探清（下次开箱即实现）**：真机确认 X 图片**两个**入口——**Edit → ALT → Description**（无障碍 alt text，语义 = markdown `![alt]` 的 alt）与 **Edit Caption**（图左下、可见图注）。经用户选定，alt 写 **ALT / Description**（语义正确、无障碍、不改文章视觉）。**完整 DOM（用户实测提供）**：
+  - **入口**：图左上常驻 `button[aria-label="Edit media"]`（每张图一个，按 DOM 出现顺序对应第 k 张图）→ 点击打开「Edit media」弹窗（默认可能停在 Crop tab）。
+  - **切 ALT tab**：`[role="tab"][aria-label="Edit image description"]`（text "ALT"，`href="/compose/articles/media/edit"`，`aria-selected` 反映选中）→ 点击切到 ALT。
+  - **输入框**：`textarea[data-testid="altTextInput"]`（`name="altTextInput"`，`maxlength=1000`）——**是 textarea 非 contenteditable**！填值须用 native value setter（`Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(el, alt)`）+ `dispatchEvent(new Event('input',{bubbles:true}))`，否则 React 受控组件不认。
+  - **保存**：`[data-testid="endEditingButton"]`（text "Save"）→ 点击保存并关弹窗（点击用 realClick 完整事件序列，参考封面）。
+  - **流程（逐图串行）**：第 k 张 `uploadOneImage` 成功后，若 alt 非垃圾 → 点第 k 个 `Edit media` → 点 ALT tab → 填 altTextInput → 点 endEditingButton → 等弹窗关 → 下一张。串行避免弹窗叠加。
+  - **数据流**：`PreparedImage` 加 `alt`；`prepareOneImage` 带 `block.alt`；`imageMarkers` 记 alt。**垃圾 alt 过滤**（空/`image`/`img`/纯文件名如 `IMG_3512.PNG`/纯数字/单字符 → 跳过）。
+  - **未决**：`Edit media` 按钮与「第 k 张图」的对应需实现时验证（DOM 顺序假设）；Save 后 X 是否需额外确认。
 
 > 下一步接续：**B · alt→ALT/Description**（等用户 DOM）；**本地图按需授权**（导入时自动弹选文件夹——体验优化）。`docs/research/xposter-analysis.md` §3.5 标题/封面 GraphQL、§7 FS Access 实证。~~postMessage 隐私 A2(MessageChannel)~~ 已验证不可达成并放弃(见 §8)。
