@@ -36,9 +36,14 @@ export interface Options {
   punct: boolean;
   zhConvert: 'off' | 's2t' | 't2s';
   // 05 图片与媒体
+  /** 设置里的「默认文件夹」(persistent 作用域)是否已连接;兜底级。 */
   folder: boolean;
-  /** 已连接文件夹的显示名(未连接为 null);随 folder 语义同步更新。 */
+  /** 已连接默认文件夹的显示名(未连接为 null);随 folder 语义同步更新。 */
   folderName: string | null;
+  /** 素材板「当前文章文件夹」(active 作用域)是否已连接;优先级高于 folder。 */
+  activeFolder: boolean;
+  /** 已连接当前文章文件夹的显示名(未连接为 null);随 activeFolder 语义同步更新。 */
+  activeFolderName: string | null;
   compress: boolean;
   maxEdge: '960' | '1280' | '1600' | 'orig';
   quality: '60' | '70' | '82' | '90' | '95';
@@ -85,6 +90,8 @@ export const defaultOptions: Options = {
   zhConvert: 'off',
   folder: false,
   folderName: null,
+  activeFolder: false,
+  activeFolderName: null,
   compress: true,
   maxEdge: '1280',
   quality: '82',

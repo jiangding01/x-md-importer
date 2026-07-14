@@ -111,6 +111,13 @@ const zh = {
   folderDeniedToast: '读取权限被拒绝,未连接文件夹',
   folderTimeoutToast: '操作超时,请重试',
   folderFailToast: '文件夹操作失败',
+  folderRowName: '本篇图片文件夹',
+  folderNotConnected: '未连接',
+  folderUsingDefault: '未连接 · 将用默认文件夹',
+  folderConnect: '连接',
+  folderClear: '清除',
+  folderResume: '恢复',
+  folderReauth: '需重新授权',
 } as const;
 
 type Dict = Record<keyof typeof zh, string>;
@@ -220,6 +227,13 @@ const en: Dict = {
   folderDeniedToast: 'Read permission denied — folder not connected',
   folderTimeoutToast: 'Timed out — please retry',
   folderFailToast: 'Folder action failed',
+  folderRowName: "This article's folder",
+  folderNotConnected: 'Not connected',
+  folderUsingDefault: 'Not connected · will use default folder',
+  folderConnect: 'Connect',
+  folderClear: 'Clear',
+  folderResume: 'Resume',
+  folderReauth: 'needs re-auth',
 };
 
 export const dictionaries: Record<Lang, Dict> = { zh, en };

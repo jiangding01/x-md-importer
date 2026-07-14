@@ -75,7 +75,7 @@ export function SettingsTab() {
   // opts.folder 只是 sidepanel 缓存。修「旧版演示遗留 folder:true」「浏览器重启后权限失效但仍显示已连接」
   // 这类撒谎态。需已打开 X 页才能查(getFolderStatus 走 content);查不到则保持现状,不误清。
   useEffect(() => {
-    void getFolderStatus().then((res) => {
+    void getFolderStatus('persistent').then((res) => {
       if (!res.ok) return;
       if (res.connected !== opts.folder) setOpt('folder', res.connected);
       if (res.folderName !== opts.folderName) setOpt('folderName', res.folderName);
@@ -96,7 +96,7 @@ export function SettingsTab() {
   // sidepanel 侧只负责发消息、透传结果、更新 opts.folder(连接状态)+ opts.folderName(显示名)。
   const handleFolderAction = async () => {
     if (opts.folder) {
-      const res = await clearFolder();
+      const res = await clearFolder('persistent');
       if (res.ok) {
         setOpt('folder', false);
         setOpt('folderName', null);
@@ -108,7 +108,7 @@ export function SettingsTab() {
     }
 
     showToast(t.folderGuideToast);
-    const res = await connectFolder();
+    const res = await connectFolder('persistent');
     if (res.ok && res.connected) {
       setOpt('folder', true);
       setOpt('folderName', res.folderName);

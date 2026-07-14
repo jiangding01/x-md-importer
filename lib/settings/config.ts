@@ -96,10 +96,13 @@ export function settingsConfig({ en, folderConnected, folderName, wipeArm }: Con
           k: 'folder',
           t: 'action',
           label: T('本地图片文件夹', 'Local image folder'),
+          // 三态:已连接 / 未连接但 handle 仍在(浏览器重启权限回落,可一键恢复)/ 从未连接。
           desc: folderConnected
             ? T(`已连接:${folderName ?? ''}`, `Connected: ${folderName ?? ''}`)
-            : T('尚未连接。连接后可在 X 文章页写入本地图片。', 'Not connected. Connect to write local images on the X article page.'),
-          actLabel: folderConnected ? T('清除', 'Clear') : T('连接', 'Connect'),
+            : folderName
+              ? T(`需重新授权:${folderName}(浏览器重启后权限回落)`, `Needs re-auth: ${folderName} (permission lapsed after restart)`)
+              : T('尚未连接。连接后可在 X 文章页写入本地图片。', 'Not connected. Connect to write local images on the X article page.'),
+          actLabel: folderConnected ? T('清除', 'Clear') : folderName ? T('恢复', 'Resume') : T('连接', 'Connect'),
         },
         { k: 'compress', t: 'toggle', label: T('图片压缩', 'Image compression'), desc: T('>150KB 才压;上传更快、更抗限流。', 'Only if >150KB; faster & safer uploads.') },
         { k: 'maxEdge', t: 'select', label: T('最大长边', 'Max long edge'), desc: T('压缩时的尺寸上限。', 'Size cap when compressing.'), opts: [o('960', '960px', '960px'), o('1280', '1280px', '1280px'), o('1600', '1600px', '1600px'), o('orig', '原图', 'Original')] },

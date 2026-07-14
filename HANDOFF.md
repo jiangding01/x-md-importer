@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**：2026-07-14 · 分支 `feat/probe-auto-refresh` · **探针自动重探已实现并真机验证**(本地图片 FS Access PR #9 已合并)。ProbeProvider 监听 `tabs.onActivated`/`onUpdated` → 防抖 refresh,免手动刷新;`resolveTargetXTab` 改为**只认当前活动 X 标签**(探针+写入一致跟随当前标签,切到非 X 即未连接)。下一步:alt→图注、本地图按需授权、行内代码验证。
+**最后更新**：2026-07-14 · 分支 `feat/session-vault-folder` · **本地图按需授权(两级文件夹 + 一键恢复)已实现并真机验证**(探针自动重探 PR #10 已合并)。素材板新增「本篇图片文件夹」(active 作用域)可就地连接/更换/清除,读取优先级 active > persistent(设置默认) > 降级;浏览器重启权限回落后,素材板/设置显示「恢复」按钮,一键 `requestPermission` 复用存量 handle 免重选。下一步:alt→图注、行内代码验证、postMessage MessageChannel 私有化。
 
 ---
 
@@ -22,10 +22,11 @@
   - ✅ **M2 Phase 2 图片上传 + 封面**（PR #4/#5，真机验证）：独占行 `![alt](src)` → 上传（远程走 background 代理 + dataURI 就地解析），marker 占位事务 + onFilesAdded + MEDIA 轮询 + 归位 + 失败降级；封面 `setCoverImage`（frontmatter cover / 正文首图）。
   - ✅ **M2 code review 16 条修复**（PR #6）：封面误点按钮、SSRF via DNS、上传失败误报成功、postMessage 收敛、AssetsCard 预览一致性等。
   - ✅ **原生表格 + marker 修复**（PR #7）：GFM 表格 → `MARKDOWN` atomic（与代码块同通道，X 原生渲染）；marker 清扫改通用前缀（清历史遗留残留）。
-  - ✅ **本地图片 FS Access**（分支 `feat/m2-local-images`，真机验证）：`![](assets/x.png)` / Obsidian `![[y.png]]` → 从授权文件夹读取上传；handle 存 x.com IndexedDB、权限失效时 UI 校准不撒谎、size/MIME 上限对齐、授权浮层防卡屏/并发。
+  - ✅ **本地图片 FS Access**（PR #9，真机验证）：`![](assets/x.png)` / Obsidian `![[y.png]]` → 从授权文件夹读取上传；handle 存 x.com IndexedDB、权限失效时 UI 校准不撒谎、size/MIME 上限对齐、授权浮层防卡屏/并发。
+  - ✅ **本地图按需授权**（分支 `feat/session-vault-folder`，真机验证）：两级文件夹 `active`（素材板「本篇图片文件夹」）+ `persistent`（设置默认），读取优先级 active > persistent > 降级；素材板就地连接/更换/清除本篇专用文件夹；浏览器重启权限回落后「一键恢复」复用存量 handle（`requestPermission`，免重选文件夹）。
   - ✅ **探针自动重探**（分支 `feat/probe-auto-refresh`，真机验证）：监听标签页事件自动更新连接状态,免手动刷新;tab 定位改为跟随当前活动标签。
-- **还没做**：alt → 图注（`sheetDialog` 已探清）；本地图**按需授权**优化（导入时自动弹选文件夹、同文件夹不重复问）；行内代码 X 渲染验证；`postMessage` 隐私（A2，MessageChannel）；「打开 X Articles」跳转、备份/诊断/快捷键等演示项。
-- **下一步**：alt→图注 / 本地图按需授权 / 行内代码验证，任选。
+- **还没做**：alt → 图注（`sheetDialog` 已探清）；行内代码 X 渲染验证；`postMessage` 隐私（A2，MessageChannel）；「打开 X Articles」跳转、备份/诊断/快捷键等演示项。（本地图**按需授权**已落地:素材板本篇文件夹 + 一键恢复;「导入时自动弹选文件夹」为可选进一步优化,暂不做。）
+- **下一步**：alt→图注 / 行内代码验证 / postMessage 私有化,任选。
 - **怎么跑**：`pnpm install && pnpm build` → Chrome 加载 `.output/chrome-mv3`。详见 §7。
 
 ---

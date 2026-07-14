@@ -11,6 +11,7 @@ import {
   type RuntimeRequest,
   type SetTitleResponse,
   type TitleConflict,
+  type VaultScope,
 } from './protocol';
 import { resolveTargetXTab } from './locateXTab';
 
@@ -116,19 +117,22 @@ async function sendFolderRequest(request: RuntimeRequest): Promise<FolderRespons
  * 触发本地图片文件夹连接:content 在 X 页面弹出一次性浮层,由用户手势触发
  * `showDirectoryPicker` 完成授权。
  *
+ * @param scope 'active'=素材板「当前文章」文件夹(优先级高);'persistent'=设置默认文件夹(兜底)。
+ * @param forcePick true=「更换」强制重新选择文件夹;缺省/false=「连接 / 恢复」,存量 handle 仅
+ *                  权限回落(浏览器重启)时一键 requestPermission 复用,免重选。
  * @returns 连接成功回 `{ok:true, connected:true, folderName}`;用户取消回
  *          `{ok:false, error:'cancelled'}`;定位不到 X tab 时回 `{ok:false, error:'disconnected'}`。
  */
-export async function connectFolder(): Promise<FolderResponse> {
-  return sendFolderRequest({ type: CONNECT_FOLDER_TYPE });
+export async function connectFolder(scope: VaultScope, forcePick = false): Promise<FolderResponse> {
+  return sendFolderRequest({ type: CONNECT_FOLDER_TYPE, scope, forcePick });
 }
 
-/** 清除已连接的本地图片文件夹。 */
-export async function clearFolder(): Promise<FolderResponse> {
-  return sendFolderRequest({ type: CLEAR_FOLDER_TYPE });
+/** 清除指定作用域已连接的本地图片文件夹。 */
+export async function clearFolder(scope: VaultScope): Promise<FolderResponse> {
+  return sendFolderRequest({ type: CLEAR_FOLDER_TYPE, scope });
 }
 
-/** 查询当前本地图片文件夹的连接状态。 */
-export async function getFolderStatus(): Promise<FolderResponse> {
-  return sendFolderRequest({ type: FOLDER_STATUS_TYPE });
+/** 查询指定作用域本地图片文件夹的连接状态。 */
+export async function getFolderStatus(scope: VaultScope): Promise<FolderResponse> {
+  return sendFolderRequest({ type: FOLDER_STATUS_TYPE, scope });
 }
