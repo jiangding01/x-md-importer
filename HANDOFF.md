@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**：2026-07-13 · 分支 `feat/m2-cover`（基于 `main`，PR #4 图片上传已合并）· **M2 Phase 2a 图片上传已真机验证合并（9 图干净落位）；本分支做封面设置，tsc/build 绿，待真机验证**。下一步 alt→图注（caption 弹窗自动化）+ 本地文件夹 FS Access。
+**最后更新**：2026-07-14 · 分支 `main` · **M2 全部完成并真机验证合并** —— 图片上传(PR #4)+ 封面(PR #5)+ 16 条 code review 修复(PR #6)+ **原生表格 & 图片 marker 残留修复**(PR #7)。表格已实证走 X 的 `MARKDOWN` entity 原生渲染。下一步：alt→图注、本地图片 FS Access、行内代码渲染验证。
 
 ---
 
@@ -19,9 +19,11 @@
   - ✅ **侧边栏 UI 全部完成**（Phase A/B/C，四主题 + 中英）。
   - ✅ **M1 注入引擎全线打通**（PR #1）：三方通信 + fiber 探针（三灯）+ **Draft.js 直写**（标题/粗斜删/行内代码/链接/引用/列表/代码块/分割线/推文），真机验证 68 块文章写入成功。预检卡、写入按钮门控均接真实探针，**已无 mock**。
   - ✅ **M2 Phase 1 标题设置**（PR #2）：H1 / frontmatter title 抽取 → UI 打分写入 X 标题字段；frontmatter 不再泄入正文；并修掉 M1 code review 的探针/桥接层遗留。
-  - 🚧 **M2 Phase 2a 图片上传（远程 + dataURI）**（分支 `feat/m2-media-cover`，未合并）：独占行 `![alt](src)` → ImageBlock；injector marker 占位 + onFilesAdded 上传 + MEDIA 轮询 + 归位 + 清 marker + 失败降级；background 远程代理（SSRF/流式/magic-byte）+ 运行时 host 权限。两轮 review 修完阻断/安全问题。**tsc/build 绿，尚未真机验证**。
-- **还没做**：**本地图片文件夹（FS Access）、封面设置**（M2 Phase 2b）；「打开 X Articles」跳转、备份/诊断/快捷键等仍是演示。
-- **下一步**：① 真机验证 Phase 2a（登录 X + 文章编辑页 + 刷新页面后测远程图/dataURI 上传）→ 按实际表现精修多图 relocate 空块/fallback 配对；② Phase 2b 本地文件夹 + 封面。
+  - ✅ **M2 Phase 2 图片上传 + 封面**（PR #4/#5，真机验证）：独占行 `![alt](src)` → 上传（远程走 background 代理 + dataURI 就地解析），marker 占位事务 + onFilesAdded + MEDIA 轮询 + 归位 + 失败降级；封面 `setCoverImage`（frontmatter cover / 正文首图）。
+  - ✅ **M2 code review 16 条修复**（PR #6）：封面误点按钮、SSRF via DNS、上传失败误报成功、postMessage 收敛、AssetsCard 预览一致性等。
+  - ✅ **原生表格 + marker 修复**（PR #7）：GFM 表格 → `MARKDOWN` atomic（与代码块同通道，X 原生渲染）；marker 清扫改通用前缀（清历史遗留残留）。
+- **还没做**：alt → 图注（caption 弹窗自动化，已探清 `sheetDialog`）；本地图片 FS Access 文件夹授权；行内代码 X 渲染验证；「打开 X Articles」跳转、备份/诊断/快捷键等演示项。
+- **下一步**：alt→图注 / 本地图片 FS Access / 行内代码验证，任选。
 - **怎么跑**：`pnpm install && pnpm build` → Chrome 加载 `.output/chrome-mv3`。详见 §7。
 
 ---
@@ -113,6 +115,8 @@ background（开侧栏）                          injector.ts（MAIN world，�
   - 标题：`extractTitle`（frontmatter title > 首个 H1，跳代码块）→ injector `setTitle` UI 打分写入标题字段（**仅 UI 通道**，GraphQL 留 TODO）；H1 去重在 md 文本层（`stripFirstH1`）。
   - parser 跳过文首 frontmatter（不再把 `title:`/`cover:` 当正文分割线写入）。
   - 修掉 M1 review 遗留：connected 去 articleId 要求（新建页可写）、editorHasContent 接真实探针、ImportResult 回传 effectiveMode、tab 定位统一（locateXTab）、content 抽通用请求桥。
+- ✅ **M2 Phase 2 · 图片上传 + 封面**（PR #4/#5，真机验证）：远程图（background 代理 + SSRF 防护 + magic-byte + 16MB 上限）/ dataURI 上传；marker 占位事务 + onFilesAdded + MEDIA 轮询 + 归位 + 失败降级；封面 `setCoverImage`（frontmatter cover / 正文首图）。含 5 角度 review 的 16 条修复（PR #6）。
+- ✅ **原生表格 + marker 修复**（PR #7，真机验证）：GFM 表格 → `MARKDOWN` atomic（实证 X 表格走此 entity，原生渲染）；图片 marker 残留清理改通用前缀。
 
 `tsc --noEmit` 全绿；`pnpm build` 正常出包。
 
@@ -122,15 +126,14 @@ background（开侧栏）                          injector.ts（MAIN world，�
 
 | 位置 | 现状 | 目标里程碑 |
 |---|---|---|
-| **图片上传·远程 http(s)** | ✅ 已实现（`feat/m2-media-cover`，待真机验证）：background 代理 + onFilesAdded + marker 归位 | M2 Phase 2a |
-| **图片上传·dataURI** | ✅ 已实现（content 就地解析） | M2 Phase 2a |
-| **图片·本地相对路径** | 降级为原文（`prepareOneImage` local 分支返回 null） | **M2 Phase 2b**（FS Access 文件夹授权） |
-| **封面设置**（frontmatter cover / 正文首图·远程/dataURI） | ✅ 真机验证通过（`feat/m2-cover` PR #5）：`setCoverImage` 塞封面 fileInput + 自动点「Edit media」弹窗 Apply 落地 | M2 Phase 2b |
-| **alt → 图注（caption）** | 未做:caption 是弹窗（`data-testid="sheetDialog"` + contenteditable + Save）,需逐图 UI 自动化,跳过垃圾/空 alt | M2 Phase 2b（下一个） |
-| 表格 → canvas 渲图 | parser 未特殊处理表格（当前按文本） | M3 |
+| **alt → 图注（caption）** | 未做；caption 是弹窗（`data-testid="sheetDialog"` + contenteditable + Save），需逐图 UI 自动化、跳过空/垃圾 alt | 下一个 |
+| **图片·本地相对路径** | 降级为原文（`prepareOneImage` local 返回 null；AssetsCard 显示「暂不支持」） | FS Access 文件夹授权 |
+| 行内代码 X 渲染 | CODE inline style 已写入，但 X 实际渲染效果未真机确认 | 顺手验证 |
 | 「打开 X Articles」按钮 | 仅文案，无 `tabs.create` 跳转 | 顺手补 |
-| 标题冲突 `titleConflict='ask'` | 暂按保守 `keep` 处理 | M2+ 补独立询问弹窗 |
+| 标题冲突 `titleConflict='ask'` | 暂按保守 `keep` 处理 | 补独立询问弹窗 |
 | 备份/导出、诊断快照、快捷键跳转 | toast 演示 | M4 |
+
+> 图片上传（远程/dataURI）、封面、原生表格均已完成并真机验证合并（PR #4/#5/#7）。
 
 **M2 图片上传范本**见 `docs/research/xposter-analysis.md` §3：MAIN world 从 fiber 找 X 的 `onFilesAdded` 回调，把 `File` 交给它走 X 原生上传管线；轮询 blockMap 新增的 MEDIA entity 拿 mediaId；用 **marker 占位 → 上传 → 原位归位** 事务（M1 纯文本/atomic 单趟构造时特意没引入 marker，图片异步上传必须补上）。封面走 GraphQL `ArticleEntityUpdateCoverMedia`（queryId 硬编码脆弱，想好降级）。
 
@@ -228,4 +231,10 @@ pnpm build              # → .output/chrome-mv3
 - **Phase 2b 封面**（分支 `feat/m2-cover`）：frontmatter cover / 正文首图 → injector `setCoverImage` 塞 X 封面 fileInput。一轮 review 修了确定性 bug（首图封面源改用 blocks 首个 ImageBlock，与移除同源）+ 收紧 fileInput 选择（去通用兜底防误伤正文媒体）。tsc/build 绿,**待真机验证**。
 - **caption 弹窗已探清**（`sheetDialog` + contenteditable + Save），下一个做 alt→图注 UI 自动化(跳过垃圾/空 alt)。
 
-> 下一步接续：真机验证封面（打开「设置文章封面」开关后测,确认 fileInput 定位对、change 触发上传、coverSet 名副其实——这是 review #2/#3 的未验证假设）；随后 alt→图注 + 本地 FS Access 文件夹。
+**2026-07-14 · 第六次会话（本次）· M2 收尾 + 原生表格**：
+- **真机验证并合并封面**（PR #5）：收窄后的 Apply 文案仍命中 X 裁剪弹窗，封面正常落地。
+- **对已合并的 M2 Phase 2 做 5 角度并行 code review** → 16 条修复合并（PR #6）：封面误点不可逆按钮、SSRF via DNS（词法黑名单挡不住公网 DNS→内网）、上传失败误报成功、`postMessage('*')` 广播本地图字节、并发下载 OOM、AssetsCard 预览虚报等。**教训**：并行修复 agent 在共享工作区做 `git stash` 造成文件竞争——主控用 node 直读逐文件核实 15/15 修复标记在位才提交（不信 agent 自述）。
+- **原生表格 + marker 修复**（PR #7）：console 勘察实证 **X 表格 = `MARKDOWN` entity**（data.markdown 存 GFM 原文，与代码块同一通道）→ parser 一处识别即可，injector/协议**零改动**；顺带修图片 marker 历史残留（sweep 改用通用前缀 `__MARKFLOW_IMG_`，清掉反复导入的旧 prefix 残留）。均真机验证通过。
+- **文档同步 + 文案订正**（本 PR）：HANDOFF/CHANGELOG 更新到 M2 全完成 + 表格；`capability.ts` 表格文案由「按文本写入」订正为「原生表格·MARKDOWN entity」。
+
+> 下一步接续：**alt→图注**（caption 弹窗 UI 自动化，`sheetDialog` 已探清）/ **本地图片 FS Access** / **行内代码 X 渲染验证**，任选。`docs/research/xposter-analysis.md` §3.5 有标题/封面 GraphQL、§3.6 有表格转图（现已改用原生 entity，不需要）。
