@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**：2026-07-14 · 分支 `feat/m2-local-images` · **本地图片 FS Access 已实现并真机验证**(远程/dataURI/封面/表格此前已合并 PR #4-7)。本地图走 File System Access:content 在 X 页弹浮层调 `showDirectoryPicker` → handle 存 x.com IndexedDB → `prepareOneImage` local 分支读取,路径安全器防逃逸 + vault 首段剥离。下一步:探针**自动重探**(监听 tabs URL 变化,免手动刷新)、alt→图注、行内代码验证。
+**最后更新**：2026-07-14 · 分支 `feat/probe-auto-refresh` · **探针自动重探已实现并真机验证**(本地图片 FS Access PR #9 已合并)。ProbeProvider 监听 `tabs.onActivated`/`onUpdated` → 防抖 refresh,免手动刷新;`resolveTargetXTab` 改为**只认当前活动 X 标签**(探针+写入一致跟随当前标签,切到非 X 即未连接)。下一步:alt→图注、本地图按需授权、行内代码验证。
 
 ---
 
@@ -23,8 +23,9 @@
   - ✅ **M2 code review 16 条修复**（PR #6）：封面误点按钮、SSRF via DNS、上传失败误报成功、postMessage 收敛、AssetsCard 预览一致性等。
   - ✅ **原生表格 + marker 修复**（PR #7）：GFM 表格 → `MARKDOWN` atomic（与代码块同通道，X 原生渲染）；marker 清扫改通用前缀（清历史遗留残留）。
   - ✅ **本地图片 FS Access**（分支 `feat/m2-local-images`，真机验证）：`![](assets/x.png)` / Obsidian `![[y.png]]` → 从授权文件夹读取上传；handle 存 x.com IndexedDB、权限失效时 UI 校准不撒谎、size/MIME 上限对齐、授权浮层防卡屏/并发。
-- **还没做**：探针**自动重探**（监听页面 URL 变化免手动刷新，下一个）；alt → 图注（`sheetDialog` 已探清）；行内代码 X 渲染验证；「打开 X Articles」跳转、备份/诊断/快捷键等演示项。
-- **下一步**：探针自动重探 / alt→图注 / 行内代码验证，任选。
+  - ✅ **探针自动重探**（分支 `feat/probe-auto-refresh`，真机验证）：监听标签页事件自动更新连接状态,免手动刷新;tab 定位改为跟随当前活动标签。
+- **还没做**：alt → 图注（`sheetDialog` 已探清）；本地图**按需授权**优化（导入时自动弹选文件夹、同文件夹不重复问）；行内代码 X 渲染验证；`postMessage` 隐私（A2，MessageChannel）；「打开 X Articles」跳转、备份/诊断/快捷键等演示项。
+- **下一步**：alt→图注 / 本地图按需授权 / 行内代码验证，任选。
 - **怎么跑**：`pnpm install && pnpm build` → Chrome 加载 `.output/chrome-mv3`。详见 §7。
 
 ---
@@ -244,4 +245,8 @@ pnpm build              # → .output/chrome-mv3
 - 决策:**每篇独立文件夹**的场景要每次选文件夹(浏览器拿不到 md 绝对路径,无法自动),已和用户对齐——后续做「导入时按需授权(同文件夹不重复问)」优化。
 - 草稿丢失是误报(用户自己清空的,chrome.storage 持久正常)。
 
-> 下一步接续：**探针自动重探**(ProbeProvider 监听 `browser.tabs.onActivated`/`onUpdated`,防抖后 refresh,免手动刷新——已和用户约定紧接着做)/ **alt→图注**(`sheetDialog` 已探清)/ **行内代码 X 渲染验证** / **本地图按需授权优化**。`docs/research/xposter-analysis.md` §3.5 标题/封面 GraphQL、§7 FS Access 实证。
+**2026-07-14 · 第八次会话（本次）· 探针自动重探**：
+- **自动重探**（`feat/probe-auto-refresh`）：ProbeProvider 监听 `tabs.onActivated`（切标签）+ `onUpdated`（当前活动 X 标签内 SPA 导航），400ms 防抖后 refresh，免手动点刷新。
+- **tab 定位语义改变**：`resolveTargetXTab` 从「找任意打开的 X 标签(优先 active)」改为「**只认当前活动标签**，它是 X 才连、否则未连接」——用户选择「侧边栏跟随当前标签」(切到非 X 立即未连接、写入禁用)。探针 + 写入 + 标题 + 封面 + 文件夹全部共用此定位，一致。真机 1-5 全过（切标签自动更新 + 写入等回归无损）。
+
+> 下一步接续：**alt→图注**(`sheetDialog` 已探清，逐图 UI 自动化)/ **本地图按需授权**(导入时自动弹选文件夹、同文件夹不重复问——每篇独立文件夹场景的体验优化)/ **行内代码 X 渲染验证** / **postMessage 隐私 A2**(MessageChannel)。`docs/research/xposter-analysis.md` §3.5 标题/封面 GraphQL、§7 FS Access 实证。
