@@ -169,7 +169,7 @@ export function parseMarkdown(md: string): ImportBlock[] {
     const linkedImage = trimmed.match(RE_LINKED_IMAGE_LINE);
     if (linkedImage) {
       const alt = linkedImage[1] ?? '';
-      const src = (linkedImage[2] ?? '').trim(); // 内层图片 URL;外层链接(组3)丢弃
+      const src = normalizeImageSrc(linkedImage[2] ?? ''); // 内层图片 URL(剥 `<>`);外层链接(组3)丢弃
       blocks.push({ kind: 'image', source: src, alt, fallbackText: trimmed });
       i += 1;
       continue;
@@ -312,10 +312,27 @@ function isBlockBoundary(line: string): boolean {
 }
 
 /**
+ * 规范化图片 destination(CommonMark 语义):
+ *  - `<...>` 包裹 → 剥尖括号,**尖括号内整体为路径**(保留空格——本地图路径含空格很常见,如
+ *    `<images/a b.png>`;URL 含空格时 CommonMark 要求必须用 `<>` 包裹),忽略 `>` 之后的可选 title;
+ *  - 未包裹 → 去首尾空白后原样返回(保持既有行为)。
+ * 注:与行内链接的 normalizeUrl 有意不同——图片**不做**「截到第一个空白」,否则会切断含空格的本地路径。
+ */
+function normalizeImageSrc(raw: string): string {
+  const s = raw.trim();
+  if (s.startsWith('<')) {
+    const end = s.indexOf('>');
+    if (end >= 0) return s.slice(1, end); // 尖括号内原样(不 trim:空格是路径的一部分)
+  }
+  return s;
+}
+
+/**
  * 解析「独占一行的单张裸图片」`![alt](src)`。src 用括号配对扫描(容忍 URL 内含括号,
  * 如 `![a](http://h/f(1).png)`),并要求闭合 `)` 之后到行尾无其他字符——因此一行多图
  * `![a](x) ![b](y)` **不**匹配(返回 null,交由上层按普通文本保留),杜绝旧版贪婪 `.+`
  * 把整行吞成 source 畸形(`x) ![b](y`)的单张图。入参需为**已 trim** 的行。
+ * `<>` 包裹的 destination(CommonMark,含空格路径必需)由尖括号感知 + normalizeImageSrc 处理。
  */
 function matchImageLine(line: string): { alt: string; src: string } | null {
   const head = RE_IMAGE_LINE_HEAD.exec(line);
@@ -330,6 +347,15 @@ function matchImageLine(line: string): { alt: string; src: string } | null {
       i += 2; // 转义:连同下一字符跳过,不参与括号计数
       continue;
     }
+    // CommonMark:destination 用 `<...>` 包裹时,尖括号内整体是 URL(可含空格 / `)`),内部字符
+    // 不参与括号配对——直接跳到匹配的 `>`,避免路径里的 `)` 被误判为 destination 闭合。
+    if (ch === '<') {
+      const gt = line.indexOf('>', i);
+      if (gt >= 0) {
+        i = gt + 1;
+        continue;
+      }
+    }
     if (ch === '(') {
       depth += 1;
     } else if (ch === ')') {
@@ -340,7 +366,7 @@ function matchImageLine(line: string): { alt: string; src: string } | null {
   }
   if (depth !== 0) return null; // 括号未闭合
   if (i !== line.length - 1) return null; // 闭合 `)` 之后仍有字符 → 一行多图 / 尾随文本,不认作图片行
-  const src = line.slice(urlStart, i).trim();
+  const src = normalizeImageSrc(line.slice(urlStart, i));
   if (src === '') return null; // 空 src 不产出 ImageBlock
   return { alt, src };
 }

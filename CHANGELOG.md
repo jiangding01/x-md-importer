@@ -7,7 +7,8 @@
 
 ## [Unreleased]
 
-### 新增 · 「打开 X Articles」按钮 · 记录 · postMessage 私有化不可行（回退）
+### 新增 · 「打开 X Articles」按钮 · 修复 · 图片 `<>` 包裹路径 · 记录 · postMessage 私有化不可行（回退）
+- **修复 · 图片路径 `<>` 包裹（含空格）解析失败**：CommonMark 规定 destination 含空格时须用尖括号包裹（`![](<images/a b.png>)`）——原 parser 未剥尖括号，`source` 带字面 `<>` 导致**本地图读取全失败**（真机 `imageFail` 13/13）。修复：`matchImageLine` 感知 `<>`（尖括号内的 `)` 不再误判为 destination 闭合）+ 新增 `normalizeImageSrc` 剥括号并**保留路径空格**（不像行内链接那样截到第一个空白）；裸图 `![](<x>)` 与带链接图 `[![](<x>)](y)` 均适用。8 条用例实跑覆盖（含空格/含 `)`/尾随 title/多图/空 src/回归）。
 - **「打开 X Articles」按钮接真实跳转**：待发布页「未连接」提示里的按钮从演示 toast 改为 `chrome.tabs.create` 打开 X Articles 编辑器入口（`x.com/compose/articles`）；纯 UI 预览无 `chrome.tabs` 时降级 `window.open`，不崩。
 - **记录 · `postMessage`→MessageChannel「私有通道」验证不可达成并回退**：曾试图把 content↔injector 通信私有化，以对 x.com 页面脚本隐藏图片/封面 File 字节（分支 `feat/messagechannel-private`）。经两轮并行 code review + 实测确认不可行并**回退**：injector 在 MAIN world 与页面共享 window + JS 堆，借 `onFilesAdded` 上传时 File 必进 MAIN world 即被同 world 页面脚本可读；且 `window.postMessage(hello, origin, [port2])` 的 port 对**所有** window 监听器（含页面脚本）可见，MessageChannel 仅挡被动 `window.onmessage` 监听、挡不住主动脚本。**MAIN world 架构固有限制，不可修**，详见 HANDOFF §8。
 

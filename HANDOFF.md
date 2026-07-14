@@ -25,7 +25,7 @@
   - ✅ **本地图片 FS Access**（PR #9，真机验证）：`![](assets/x.png)` / Obsidian `![[y.png]]` → 从授权文件夹读取上传；handle 存 x.com IndexedDB、权限失效时 UI 校准不撒谎、size/MIME 上限对齐、授权浮层防卡屏/并发。
   - ✅ **本地图按需授权**（分支 `feat/session-vault-folder`，真机验证）：两级文件夹 `active`（素材板「本篇图片文件夹」）+ `persistent`（设置默认），读取优先级 active > persistent > 降级；素材板就地连接/更换/清除本篇专用文件夹；浏览器重启权限回落后「一键恢复」复用存量 handle（`requestPermission`，免重选文件夹）。
   - ✅ **探针自动重探**（分支 `feat/probe-auto-refresh`，真机验证）：监听标签页事件自动更新连接状态,免手动刷新;tab 定位改为跟随当前活动标签。
-- **本次刚做**：「打开 X Articles」按钮接真实 `chrome.tabs.create` 跳转（待真机验证 URL）。
+- **本次刚做**：「打开 X Articles」按钮接真实 `chrome.tabs.create` 跳转（待真机验证 URL）；**修复图片 `<>` 包裹路径解析**（含空格本地图曾全失败，真机 13/13，见 §11）。
 - **还没做**：alt → 图注（`sheetDialog` 已探清）；行内代码 X 渲染验证（CODE style 已写入，待真机看渲染）；备份/诊断/快捷键等演示项。（本地图**按需授权**已落地:素材板本篇文件夹 + 一键恢复;「导入时自动弹选文件夹」为可选进一步优化,暂不做。）
 - **已排除（固有限制）**：`postMessage`→MessageChannel「私有通道」——MAIN world 下 File 对页面脚本不可隐藏，已验证不可达成并回退（见 §8）。
 - **下一步**：alt→图注（caption，下一 PR）。
@@ -257,6 +257,7 @@ pnpm build              # → .output/chrome-mv3
 **2026-07-14 · 第九次会话（本次）· 「打开 X」按钮 + postMessage 私有化复盘（回退）· 分支 `feat/open-x-inline-caption`**：
 - **验证并回退 PR-A（MessageChannel 私有化）**：目标是让图片/封面 File 不被 x.com 页面脚本读取。已实现 content↔injector 全通信改走 MessageChannel port（tsc/build 绿），两轮并行 code review 结论分歧（可合并 vs 不可合并），但对**事实**一致、且第二方**实测确认**：`window.postMessage(hello, origin, [port2])` 的 port 对同 window 所有监听器（含页面脚本）可见，页面能在握手期抓 port 读走后续 File；更根本的是**借 `onFilesAdded` 上传 → File 必进 MAIN world → 与页面同堆无法隐藏**。判定隐私目标在此架构**不可达成 → 回退**，写入 §8 已知陷阱。**设计疏漏复盘**：① 误解 transfer port 经 window 广播对所有监听器可见的语义；② 未先定威胁模型，把「架构固有、不可解」当「可修 bug」，还在方案/注释里用了「读不到」的绝对表述。教训：动隔离/安全边界前先定威胁模型 + 查证 API 语义、确认理论可达再动手。
 - **C · 「打开 X Articles」按钮**：`DraftTab` 未连接提示里的按钮从演示 toast 改为 `chrome.tabs.create`（预览环境降级 `window.open`）。
-- **待你真机确认**：① 打开的 URL `x.com/compose/articles` 是否正确落到文章编辑器入口；② 行内代码（inline `code`）在 X 的实际渲染（等宽/底色是否生效）——CODE inline style 早已写入，仅缺真机确认。
+- **修复 · 图片 `<>` 包裹路径解析（真机暴露）**：用户真机测本地图**全失败**（`imageOk:0 / imageFail:13`）。根因：路径含空格时用 CommonMark 标准的尖括号包裹 `![](<images/a b.png>)`，parser 未剥尖括号 → `source` 带字面 `<>` → 本地读取找不到文件。修复 `parser.ts`：`matchImageLine` 感知 `<>`（内部 `)` 不误判闭合）+ `normalizeImageSrc` 剥括号**保留路径空格**（图片不能像行内链接那样截到第一个空白）；裸图 / 带链接图皆适用。8 用例 node 实跑全过。**又一次「用户写法合法、parser 有缺口」**（同 `[![](x)](y)`）——parser 对 CommonMark 边界仍需按真实文档补齐。
+- **待你真机确认**：① 本地图 `<>` 路径修复后能否真正上传（`imageOk` > 0）；② 打开的 URL `x.com/compose/articles` 是否正确落到文章编辑器入口；③ 行内代码（inline `code`）在 X 的实际渲染（等宽/底色是否生效）——CODE inline style 早已写入，仅缺真机确认。
 
 > 下一步接续：**alt→图注**(`sheetDialog` 已探清，逐图 UI 自动化，下一 PR)/ **本地图按需授权**(导入时自动弹选文件夹、同文件夹不重复问——体验优化)。`docs/research/xposter-analysis.md` §3.5 标题/封面 GraphQL、§7 FS Access 实证。~~postMessage 隐私 A2(MessageChannel)~~ 已验证不可达成并放弃(见 §8)。
