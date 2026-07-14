@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### 新增 · 探针自动重探 + tab 定位跟随当前标签
+- **自动重探**：ProbeProvider 监听 `browser.tabs.onActivated`（切换标签）+ `onUpdated`（当前活动 X 标签内 SPA 导航，如切换文章），400ms 防抖后自动 refresh——打开/切到/离开 X 编辑页时连接状态自动更新，免手动点刷新。手动刷新按钮保留。
+- **tab 定位改为跟随当前活动标签**：`resolveTargetXTab` 从「找任意打开的 X 标签」改为「只认当前活动标签，是 X 才连、否则未连接」。探针 + 写入 + 标题 + 封面 + 文件夹共用此定位，始终一致（不会探 A 写 B）；切到非 X 标签即显示未连接、写入禁用。
+
 ### 新增 · 本地图片（File System Access）
 - **本地图上传**：`![](assets/x.png)` 相对路径、Obsidian `![[y.png]]` 内链 → 从用户授权的文件夹读取上传。parser 新增 `![[x]]` 图片块识别。
 - **授权与持久**：content 在 X 页弹一次性浮层（页面手势）调 `showDirectoryPicker` → `FileSystemDirectoryHandle` 存 x.com origin 的 IndexedDB（`lib/bridge/localVault.ts`），跨会话 `queryPermission` 复活。

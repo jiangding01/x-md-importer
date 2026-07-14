@@ -101,6 +101,36 @@ export function ProbeProvider({ children }: ProbeProviderProps) {
     void runProbe();
   }, [runProbe]);
 
+  // 自动重探:监听标签页事件,免用户手动点刷新。事件驱动(非轮询)——
+  //  - onActivated:切换到别的标签(如切到 X 文章页)后重探;
+  //  - onUpdated:X 标签内 URL 变化(含 SPA pushState,如 首页→articles/edit/切换文章)后重探。
+  // 400ms 防抖:SPA 导航会连发多个事件,合并成一次探测。
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => void runProbe(), 400);
+    };
+    const onActivated = () => schedule();
+    const onUpdated = (
+      _tabId: number,
+      changeInfo: { url?: string },
+      tab: { url?: string; active?: boolean },
+    ) => {
+      // 仅「当前活动 X 标签」内的 URL 变化(如 SPA 切换文章)才重探——跟随当前标签,
+      // 后台标签的变化不影响当前显示。
+      if (!changeInfo.url || !tab.active) return;
+      if (/^https?:\/\/(?:[^/]+\.)?(?:x|twitter)\.com\//.test(tab.url ?? '')) schedule();
+    };
+    browser.tabs.onActivated.addListener(onActivated);
+    browser.tabs.onUpdated.addListener(onUpdated);
+    return () => {
+      browser.tabs.onActivated.removeListener(onActivated);
+      browser.tabs.onUpdated.removeListener(onUpdated);
+      if (timer) clearTimeout(timer);
+    };
+  }, [runProbe]);
+
   const value = useMemo<ProbeState>(
     () => ({ status, result, loading: status === 'probing', refresh: runProbe }),
     [status, result, runProbe],
