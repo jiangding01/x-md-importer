@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**：2026-07-14 · 分支 `feat/open-x-inline-caption` · **「打开 X Articles」按钮接真实 `chrome.tabs.create` 跳转**；**`postMessage`→MessageChannel「私有通道」经实测验证在 MAIN world 架构下不可达成、已回退**(复盘见 §8 + §11)。下一步:alt→图注(caption,`sheetDialog` 已探清);行内代码 X 渲染待真机确认。
+**最后更新**：2026-07-15 · 分支 `fix/marker-sweep-retry` · **图片 marker 残留修复**（`sweepMarkers` 改 async 多轮重试，清掉多图 fallbackIndex 路径 + X 异步 commit 导致的正文残留 `__MARKFLOW_IMG_*`，待真机验证）。**B（alt→图注）方向厘清**：真机确认 markdown `![alt]` 的 alt 应写到 X 的 **ALT / Description**（无障碍描述，非可见 Caption），待用户提供 ALT 弹窗 DOM 后实现。PR #12（本地图 `<>`/封面弹窗/代码块标签/行内代码降级/打开 X/postMessage 回退）已合并 main。
 
 ---
 
@@ -264,4 +264,15 @@ pnpm build              # → .output/chrome-mv3
 - **修复 · 行内代码降级（已确认 X 不支持）**：用户查 X 快捷键/工具栏确认 X Articles 正文**无行内代码功能**（仅 Bold/Italic/Underline/Strikethrough/链接/列表/引用 + 块级 Code）。parser 产出的 `CODE` inline style 正确但 X 不渲染（表格内生效的是 X 自渲染 markdown）。经用户选定，降级为**原样保留反引号纯文本** `` `code` ``（读者可辨识，不虚报样式）；`capability.ts` 文案订正、`protocol.ts` `CODE` 枚举保留兼容。3 断言实跑（不产 CODE / 反引号保留 / 粗斜不受影响）。**附带发现**：X 支持 Underline（⌘U，markdown 无标准语法故未用）、Insert 菜单有 LaTeX 块（未来 `$$` 数学块可接）。
 - **待你真机确认**：① 本地图 `<>` 路径（**已确认 197 成功**）；② 封面弹窗自动关闭（**已确认好了**）；③ 打开 X 按钮 URL 落点；④ 代码块语言标签是否变干净（`plain`）；⑤ 行内代码是否变成保留反引号的纯文本。
 
-> 下一步接续：**alt→图注**(`sheetDialog` 已探清，逐图 UI 自动化，下一 PR)/ **本地图按需授权**(导入时自动弹选文件夹、同文件夹不重复问——体验优化)。`docs/research/xposter-analysis.md` §3.5 标题/封面 GraphQL、§7 FS Access 实证。~~postMessage 隐私 A2(MessageChannel)~~ 已验证不可达成并放弃(见 §8)。
+**2026-07-15 · 第十次会话（本次）· 图片 marker 残留修复 + B(alt→ALT) 启动**：
+- **修复 · 图片 marker 残留**（`fix/marker-sweep-retry`）：真机见多图导入后正文残留 `__MARKFLOW_IMG_q5hsn4_4__`。根因：某图走 `relocateMediaByFallbackIndex` 兜底路径（精确 relocate 失败 → 只确认 MEDIA 存在、**不删 marker 块**，留给 sweep）后，`sweepMarkers` **单次**清扫因 X `onChange` 异步 commit、读到 fiber 中间态而漏删。改 `sweepMarkers` 为 **async 多轮重试**（每轮 delay 让 X commit + 读最新 state 删残留，至多 4 轮；抽出 `sweepMarkersOnce` 返回「本轮是否有残留」），两处调用点加 `await`。tsc/build 绿，**待真机验证清理**。
+- **B（alt→ALT/Description）方向厘清 + DOM 全探清（下次开箱即实现）**：真机确认 X 图片**两个**入口——**Edit → ALT → Description**（无障碍 alt text，语义 = markdown `![alt]` 的 alt）与 **Edit Caption**（图左下、可见图注）。经用户选定，alt 写 **ALT / Description**（语义正确、无障碍、不改文章视觉）。**完整 DOM（用户实测提供）**：
+  - **入口**：图左上常驻 `button[aria-label="Edit media"]`（每张图一个，按 DOM 出现顺序对应第 k 张图）→ 点击打开「Edit media」弹窗（默认可能停在 Crop tab）。
+  - **切 ALT tab**：`[role="tab"][aria-label="Edit image description"]`（text "ALT"，`href="/compose/articles/media/edit"`，`aria-selected` 反映选中）→ 点击切到 ALT。
+  - **输入框**：`textarea[data-testid="altTextInput"]`（`name="altTextInput"`，`maxlength=1000`）——**是 textarea 非 contenteditable**！填值须用 native value setter（`Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(el, alt)`）+ `dispatchEvent(new Event('input',{bubbles:true}))`，否则 React 受控组件不认。
+  - **保存**：`[data-testid="endEditingButton"]`（text "Save"）→ 点击保存并关弹窗（点击用 realClick 完整事件序列，参考封面）。
+  - **流程（逐图串行）**：第 k 张 `uploadOneImage` 成功后，若 alt 非垃圾 → 点第 k 个 `Edit media` → 点 ALT tab → 填 altTextInput → 点 endEditingButton → 等弹窗关 → 下一张。串行避免弹窗叠加。
+  - **数据流**：`PreparedImage` 加 `alt`；`prepareOneImage` 带 `block.alt`；`imageMarkers` 记 alt。**垃圾 alt 过滤**（空/`image`/`img`/纯文件名如 `IMG_3512.PNG`/纯数字/单字符 → 跳过）。
+  - **未决**：`Edit media` 按钮与「第 k 张图」的对应需实现时验证（DOM 顺序假设）；Save 后 X 是否需额外确认。
+
+> 下一步接续：**B · alt→ALT/Description**（等用户 DOM）；**本地图按需授权**（导入时自动弹选文件夹——体验优化）。`docs/research/xposter-analysis.md` §3.5 标题/封面 GraphQL、§7 FS Access 实证。~~postMessage 隐私 A2(MessageChannel)~~ 已验证不可达成并放弃(见 §8)。

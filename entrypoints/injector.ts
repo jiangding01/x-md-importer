@@ -516,10 +516,23 @@ export default defineUnlistedScript(() => {
     (node.props?.onChange as (s: DraftEditorState) => void)(ns);
   };
 
-  /** 兜底清扫:把任何残留的 __MARKFLOW_IMG_ marker 块清空删除,防中断后正文留脏占位符。 */
-  const sweepMarkers = (prefix: string): void => {
+  /**
+   * 兜底清扫:把任何残留的 __MARKFLOW_IMG_ marker 块清空删除,防中断后正文留脏占位符。
+   * **多轮重试**:X 的 onChange 是异步 commit,fallbackIndex 路径挪动 marker 后单次读 fiber
+   * state 可能读到中间态、漏掉刚移动的 marker 块(真机见最后一张图的 `_4_` 残留)。故每轮前留
+   * 时间让 X commit,读最新 state 删残留,直到某轮已无残留(或达上限)——单次删不干净就再来一轮。
+   */
+  const sweepMarkers = async (prefix: string): Promise<void> => {
+    for (let round = 0; round < 4; round += 1) {
+      await delay(round === 0 ? 120 : 220); // 首轮短等,后续留足 X commit 时间
+      if (!sweepMarkersOnce(prefix)) return; // 本轮已无残留 → 收工
+    }
+  };
+
+  /** 单轮清扫:读最新 state,删掉所有含 prefix 的非 atomic 块。返回「本轮是否发现并处理了残留」。 */
+  const sweepMarkersOnce = (prefix: string): boolean => {
     const node = findDraftStateNode();
-    if (!node) return;
+    if (!node) return false;
     const es = readEditorState(node);
     const content = es.getCurrentContent();
     const blockMap = content.getBlockMap();
@@ -528,7 +541,7 @@ export default defineUnlistedScript(() => {
       if (block.getType() === 'atomic') return;
       if (block.getText().includes(prefix)) toDelete.push(key);
     });
-    if (!toDelete.length) return;
+    if (!toDelete.length) return false;
     // Draft 不接受空 blockMap:若待删覆盖全部块(如纯单图文档 + 上传与降级都失败),
     // 保留第一个待删块、把它清空为普通空段落,只删其余——避免空 map + 指向已删块的 selection 崩。
     let survivorCount = 0;
@@ -558,6 +571,7 @@ export default defineUnlistedScript(() => {
     let ns = ESStatic.push(es, nc, 'remove-range');
     ns = ESStatic.forceSelection(ns, sel);
     (node.props?.onChange as (s: DraftEditorState) => void)(ns);
+    return true; // 本轮处理了残留 → 交外层再验一轮(确认 X commit 后是否还有漏网的)
   };
 
   /**
@@ -933,7 +947,7 @@ export default defineUnlistedScript(() => {
       }
       // 兜底清扫:任何残留 marker(本次走 fallbackIndex 未删的 + 历史遗留的)一并清掉。
       // 用通用前缀而非本次随机 prefix——否则清不掉之前导入残留的其它 prefix 的 marker。
-      if (imageMarkers.length) sweepMarkers(MARKER_SWEEP_PREFIX);
+      if (imageMarkers.length) await sweepMarkers(MARKER_SWEEP_PREFIX);
 
       // --- 封面(如有):把 File 塞进封面 fileInput,X 自行上传;失败不影响正文成功结论 ---
       // 契约(D4,见 protocol.ts):未请求封面时 coverSet 为 undefined(而非 false);
@@ -952,7 +966,7 @@ export default defineUnlistedScript(() => {
       console.error(`[MarkFlow] 写入异常 @${stage}`, err);
       // 出错也尽力清掉已写入的 marker 占位(通用前缀,连历史遗留一并清),避免正文残留脏 token。
       try {
-        sweepMarkers(MARKER_SWEEP_PREFIX);
+        await sweepMarkers(MARKER_SWEEP_PREFIX);
       } catch {
         /* 兜底清扫本身失败则放弃 */
       }
