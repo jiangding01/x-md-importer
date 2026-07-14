@@ -7,7 +7,16 @@
 
 ## [Unreleased]
 
-### 新增 · M2 Phase 2b — 文章封面（feat/m2-cover，待合并）
+### 新增 · 原生表格 + 修复 · 图片 marker 残留（PR #7）
+- **原生表格**：GFM 表格（表头行 + 紧跟分隔行 `| --- |`）→ `MARKDOWN` atomic block。console 勘察**实证 X 的表格与代码块共用 `MARKDOWN` entity**（`data.markdown` 存 GFM 原文），故 parser 一处识别即可、injector/协议**零改动**，X 原生渲染成表格。段落紧跟表格正确分离；纯 `---` 分割线、含 `|` 普通文本不误判（分隔行须含 `|` 与 `-`）。能力映射「原生表格」名副其实。
+- **修复 · 图片 marker 残留**：`sweepMarkers` 改用通用前缀 `__MARKFLOW_IMG_`（原只清本次随机 prefix），清掉走 fallbackIndex 未删的本次残留 + 同一草稿反复导入的历史遗留 marker（如 `__MARKFLOW_IMG_ngvm6j_2__`）。
+
+### 修复 · M2 Phase 2 code review（PR #6，16 条）
+- **P0**：封面「按文案猜按钮」误点不可逆动作（限裁剪弹窗内 + 收窄文案）；上传失败误报成功（照 xposter §3.2 加 pending 稳定性判定 + fallbackIndex 归位）；SSRF 前缀误伤合法域名 `fc2.com`（fc/fd 仅 IPv6 字面量判）；`postMessage('*')` 广播本地图 File 字节（收敛 targetOrigin）。
+- **P1**：SSRF via DNS（wildcard-DNS 后缀黑名单 + 残留风险标注）；background sender 校验；图片行手写括号配对（多图不损坏 source）；协议相对 URL → remote；下载并发池（限 3）；双击同步锁。
+- **P2**：AssetsCard 预览按块级图口径（行内图不虚报、本地图「暂不支持」、封面来源一致）；extractCover 支持 `[[x]]`；coverSet 契约对齐。
+
+### 新增 · M2 Phase 2b — 文章封面（已合并 PR #5，真机验证）
 - **封面设置**：来源 frontmatter `cover:`（支持 `![[x]]` / `![](x)` 包裹剥壳）> 正文首图，gated by 设置「设置文章封面」（默认关）。content 准备封面 File → injector 在 MAIN world 把 File 塞进 X 的封面 `fileInput`（`input.files = DataTransfer.files` + dispatch change）→ X 弹出「Edit media」裁剪弹窗 → **自动点 Apply 落地**（真机验证:fileInput 定位/上传都对,只差 Apply 这一步）。`coverSet` 仅在点到 Apply 时为 true,不谎报。
 - **首图去重**：`coverKeep=remove` 且封面取自正文首图时，从正文移除首个独占图片行（`stripFirstImageLine`，裸图/带链接图皆可，跳过代码块）。
 - 远程封面 host 权限连同正文远程图在写入手势内一并申请；封面结果计入 toast（`· 封面`）。封面失败不影响正文成功结论。
