@@ -80,7 +80,7 @@ export function capability(md: string, en: boolean): CapItem[] {
     en ? 'Inline code' : '行内代码',
     c(/`[^`]+`/g) - Math.floor(c(/^```/gm) / 2) * 2,
     'warn',
-    en ? 'CODE style, pending M0' : 'CODE 样式·渲染待验证',
+    en ? 'X unsupported → keep `backticks`' : 'X 不支持·保留反引号 `code`',
   );
 
   return items.filter((it) => it.count > 0);

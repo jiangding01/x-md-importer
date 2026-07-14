@@ -459,15 +459,14 @@ function walkInline(src: string): InlineResult {
       continue;
     }
 
-    // 行内代码最高优先:内部 * / _ 等一律不解析
+    // 行内代码:X Articles 正文**不支持**行内代码(无对应 inline style,真机实测确认),
+    // 写 CODE style 也不渲染。降级:原样保留 markdown 反引号(`code`)为纯文本——读者可辨识
+    // 是代码/字面量(尤其 `<占位符>`),不虚报样式。仍走 matchCodeSpan 识别边界(保护内部
+    // * / _ 不被当强调解析),但输出连反引号的原始子串、不产出 CODE range。
     if (ch === '`') {
       const code = matchCodeSpan(src, i);
       if (code) {
-        const base = out.length;
-        out += code.content;
-        if (code.content.length > 0) {
-          ranges.push({ offset: base, length: code.content.length, style: 'CODE' });
-        }
+        out += src.slice(i, code.end); // 连反引号原样保留(含多反引号 ``x`` 的边界)
         i = code.end;
         continue;
       }

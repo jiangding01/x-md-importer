@@ -26,7 +26,7 @@
   - ✅ **本地图按需授权**（分支 `feat/session-vault-folder`，真机验证）：两级文件夹 `active`（素材板「本篇图片文件夹」）+ `persistent`（设置默认），读取优先级 active > persistent > 降级；素材板就地连接/更换/清除本篇专用文件夹；浏览器重启权限回落后「一键恢复」复用存量 handle（`requestPermission`，免重选文件夹）。
   - ✅ **探针自动重探**（分支 `feat/probe-auto-refresh`，真机验证）：监听标签页事件自动更新连接状态,免手动刷新;tab 定位改为跟随当前活动标签。
 - **本次刚做**：「打开 X Articles」按钮接真实 `chrome.tabs.create` 跳转（待真机验证 URL）；**修复图片 `<>` 包裹路径解析**（含空格本地图曾全失败，真机 13/13，见 §11）。
-- **还没做**：alt → 图注（`sheetDialog` 已探清）；行内代码 X 渲染验证（CODE style 已写入，待真机看渲染）；备份/诊断/快捷键等演示项。（本地图**按需授权**已落地:素材板本篇文件夹 + 一键恢复;「导入时自动弹选文件夹」为可选进一步优化,暂不做。）
+- **还没做**：alt → 图注（`sheetDialog` 已探清）；备份/诊断/快捷键等演示项。（本地图**按需授权**已落地:素材板本篇文件夹 + 一键恢复;「导入时自动弹选文件夹」为可选进一步优化,暂不做。行内代码已确认 X 不支持、降级保留反引号。）
 - **已排除（固有限制）**：`postMessage`→MessageChannel「私有通道」——MAIN world 下 File 对页面脚本不可隐藏，已验证不可达成并回退（见 §8）。
 - **下一步**：alt→图注（caption，下一 PR）。
 - **怎么跑**：`pnpm install && pnpm build` → Chrome 加载 `.output/chrome-mv3`。详见 §7。
@@ -133,7 +133,7 @@ background（开侧栏）                          injector.ts（MAIN world，�
 |---|---|---|
 | **alt → 图注（caption）** | 未做；caption 是弹窗（`data-testid="sheetDialog"` + contenteditable + Save），需逐图 UI 自动化、跳过空/垃圾 alt | 下一个 |
 | ~~本地图 File 字节经 `postMessage` 到 MAIN world~~ | 本地图/远程/封面 File 在 MAIN world 对页面脚本可读(与远程/dataURI 同面) | **固有限制,不可修**(见 §8;MessageChannel 已验证无效并回退) |
-| 行内代码 X 渲染 | CODE inline style 已写入，但 X 实际渲染效果未真机确认 | 顺手验证 |
+| ~~行内代码 X 渲染~~ | ✅ 真机确认 X 正文**不支持**行内代码 → 降级保留反引号 `code`（`capability` 文案订正） | 本次(第九次会话) |
 | ~~「打开 X Articles」按钮~~ | ✅ 已接 `chrome.tabs.create`（待真机验证 URL 落点） | 本次(第九次会话) |
 | 标题冲突 `titleConflict='ask'` | 暂按保守 `keep` 处理 | 补独立询问弹窗 |
 | 备份/导出、诊断快照、快捷键跳转 | toast 演示 | M4 |
@@ -261,7 +261,7 @@ pnpm build              # → .output/chrome-mv3
 - **修复 · 封面裁剪弹窗点 Apply 后未关闭（真机暴露）**：真机 `coverSet:true` 但「Edit media」弹窗残留。根因：`setCoverImage` 裸 `.click()` 点 Apply，对 X React 裁剪按钮偶发不触发回调（点了却没关、还谎报成功）。修 `injector.ts`：新增 `realClick`（派发 pointer/mouse down→up→click 完整序列）+ `findApplyButton` 优先用稳定 `data-testid="applyButton"` 定位 + **轮询确认弹窗真关闭才返回 true**（没关重点，最多 5 轮），`coverSet` 不谎报。用户提供了 Apply 按钮 DOM（`data-testid="applyButton"` + 内嵌 `<span>Apply</span>`）。
 - **修复 · 清空 / 换稿后过期状态卡片残留（用户反馈）**：清空 md 后旧「预检结果」「导入报告」卡片仍在。改为在 `setMd`（所有内容替换的唯一入口）统一收起 `checkVisible`/`checkStep`/`reportVisible`——清空 / 载入示例 / 读文件 / 载入历史 / 编辑输入全覆盖。确认 `startImport` 不经 `setMd`，不会误清刚出的报告。
 - **修复 · 代码块语言标签 `plain&#x20;text`（真机暴露）**：源 md 代码围栏 info 带 HTML 实体（`&#x20;`，用户的 md 来自 HTML 导出）→ X 渲染出 `plain&#x20;text` 难看标签。parser 归一 info（`normalizeCodeInfo`：解码数字实体 + 取第一词作语言），`plain&#x20;text` → `plain`。6 用例实跑。
-- **行内代码 X 不渲染（真机暴露，待用户确认 X 能力）**：parser 产出的 `CODE` inline style **正确**（实跑确认 offset/length 精确），但 X 正文不渲染它——表格内的行内代码生效是 X 自渲染 markdown、非我们的 inline style。X Articles 工具栏 `</>` 是代码块、疑似**无正文行内代码功能**。用户去 X 手动验证是否支持；若不支持 → 降级纯文本 + 能力映射如实标注（下一步做）。
-- **待你真机确认**：① 本地图 `<>` 路径（**已确认 197 成功**）；② 封面弹窗自动关闭（**已确认好了**）；③ 打开 X 按钮 URL 落点；④ 代码块语言标签是否变干净（`plain`）；⑤ 行内代码 X 是否支持（决定降级与否）。
+- **修复 · 行内代码降级（已确认 X 不支持）**：用户查 X 快捷键/工具栏确认 X Articles 正文**无行内代码功能**（仅 Bold/Italic/Underline/Strikethrough/链接/列表/引用 + 块级 Code）。parser 产出的 `CODE` inline style 正确但 X 不渲染（表格内生效的是 X 自渲染 markdown）。经用户选定，降级为**原样保留反引号纯文本** `` `code` ``（读者可辨识，不虚报样式）；`capability.ts` 文案订正、`protocol.ts` `CODE` 枚举保留兼容。3 断言实跑（不产 CODE / 反引号保留 / 粗斜不受影响）。**附带发现**：X 支持 Underline（⌘U，markdown 无标准语法故未用）、Insert 菜单有 LaTeX 块（未来 `$$` 数学块可接）。
+- **待你真机确认**：① 本地图 `<>` 路径（**已确认 197 成功**）；② 封面弹窗自动关闭（**已确认好了**）；③ 打开 X 按钮 URL 落点；④ 代码块语言标签是否变干净（`plain`）；⑤ 行内代码是否变成保留反引号的纯文本。
 
 > 下一步接续：**alt→图注**(`sheetDialog` 已探清，逐图 UI 自动化，下一 PR)/ **本地图按需授权**(导入时自动弹选文件夹、同文件夹不重复问——体验优化)。`docs/research/xposter-analysis.md` §3.5 标题/封面 GraphQL、§7 FS Access 实证。~~postMessage 隐私 A2(MessageChannel)~~ 已验证不可达成并放弃(见 §8)。
