@@ -133,8 +133,14 @@ export function parseMarkdown(md: string): ImportBlock[] {
         j += 1;
       }
       if (closed) {
-        // 原文含 ```lang 首行与闭合行,整体塞进 MARKDOWN entity
-        const markdown = lines.slice(i, j + 1).join('\n');
+        // 规范化开栏首行的 info(语言):解码 HTML 实体 + 只取第一词——源 md 里 `plain&#x20;text` /
+        // `plain text` 会被 X 当成含空格/实体的语言名,渲染出难看的 `plain&#x20;text` 标签。
+        // 代码内容(i+1..j)与闭合围栏行原样保留,只重写开栏首行的语言部分。
+        const openLine = lines[i] ?? '';
+        const fm = /^(`{3,}|~{3,})(.*)$/.exec(openLine);
+        const marker = fm?.[1] ?? '```';
+        const lang = normalizeCodeInfo(fm?.[2] ?? '');
+        const markdown = [marker + lang, ...lines.slice(i + 1, j + 1)].join('\n');
         blocks.push({ kind: 'atomic', entityType: 'MARKDOWN', data: { markdown } });
         i = j + 1;
         continue;
@@ -388,6 +394,30 @@ function matchFenceClose(line: string, fence: Fence): boolean {
   if (!m) return false;
   const marker = m[1] ?? '';
   return (marker[0] ?? '') === fence.char && marker.length >= fence.len;
+}
+
+/** 把 HTML 数字实体(&#x20; / &#32; 等)解码回字符;越界/非法码点丢弃。用于代码围栏 info 归一。 */
+function decodeNumericEntities(s: string): string {
+  return s
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => {
+      const cp = parseInt(h, 16);
+      return cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : '';
+    })
+    .replace(/&#(\d+);/g, (_, d) => {
+      const cp = parseInt(d, 10);
+      return cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : '';
+    });
+}
+
+/**
+ * 规范化代码围栏的 info string(语言标识):
+ *  - 先解码 HTML 数字实体(源 md 可能来自 HTML 导出,空格被转义成 `&#x20;` 混进了 info);
+ *  - 再只取第一个 token 作语言(CommonMark:info 首词为语言,其余是元数据)。
+ * 例:`plain&#x20;text` / `plain text` → `plain`;`typescript` → `typescript`;空 info → 空(无语言块保持无语言)。
+ * 否则含空格 / 实体的 info 会被 X 当成语言名整体渲染出 `plain&#x20;text` 这种难看标签。
+ */
+function normalizeCodeInfo(info: string): string {
+  return decodeNumericEntities(info).trim().split(/\s+/)[0] ?? '';
 }
 
 // ---------------------------------------------------------------------------
