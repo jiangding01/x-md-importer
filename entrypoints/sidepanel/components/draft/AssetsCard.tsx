@@ -2,7 +2,8 @@ import type { CSSProperties } from 'react';
 import { useI18n } from '@/lib/i18n/useI18n';
 import { useSettings } from '@/lib/settings/SettingsProvider';
 import { useWorkspace } from '@/lib/workspace/WorkspaceProvider';
-import { images, type ImageKind } from '@/lib/markdown/capability';
+import { parseMarkdown } from '@/lib/markdown/parser';
+import { classifyImageSource, type ImageBlock, type ImageSourceKind } from '@/lib/bridge/protocol';
 import { extractCover } from '@/lib/markdown/frontmatter';
 
 const card: CSSProperties = {
@@ -28,10 +29,12 @@ export function AssetsCard() {
   const { opts } = useSettings();
   const { md, showToast } = useWorkspace();
 
-  const imgs = images(md);
+  // 口径与真实上传行为对齐:只有「独占行块级图」(parser 产出的 ImageBlock)才会被上传/选作封面,
+  // 段落内的行内图不会——故这里必须用 parseMarkdown 的块级结果计数/渲染,而不是全文正则 images()。
+  const imgs = parseMarkdown(md).filter((b): b is ImageBlock => b.kind === 'image');
   if (!md.trim() || (imgs.length === 0 && !opts.setCover)) return null;
 
-  const kindLabel: Record<ImageKind, string> = { local: t.kindLocal, remote: t.kindRemote, data: t.kindData };
+  const kindLabel: Record<ImageSourceKind, string> = { local: t.kindLocal, remote: t.kindRemote, data: t.kindData };
   // 与 extractCover 一致(仅 frontmatter、支持 Cover/封面),避免预览标签与实际行为不符。
   const fmCover = extractCover(md) !== null;
   const coverSource = opts.setCover ? (fmCover ? t.coverFm : imgs.length ? t.coverFirst : t.coverNone) : t.coverNone;
@@ -77,8 +80,11 @@ export function AssetsCard() {
       </div>
 
       {imgs.map((im, i) => {
-        const ready = im.kind === 'remote' ? true : im.kind === 'local' ? opts.folder : true;
-        const status = ready ? t.stReady : im.kind === 'local' ? t.stNeedFolder : t.stNeedAuth;
+        const kind = classifyImageSource(im.source);
+        // 本 PR 本地图片(相对路径)不支持上传——content 的 prepareOneImage 对 local 恒返回
+        // file:null,与 opts.folder 无关,故这里不能再用 opts.folder 判定「就绪」。
+        const ready = kind !== 'local';
+        const status = ready ? t.stReady : t.stUnsupported;
         return (
           <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 13px', borderTop: '1px solid var(--lsoft)' }}>
             <span style={{ width: 5, height: 5, flex: 'none', borderRadius: '50%', background: 'var(--ink3)' }} />
@@ -94,9 +100,9 @@ export function AssetsCard() {
                 textAlign: 'left',
               }}
             >
-              {im.src}
+              {im.source}
             </span>
-            <span style={chip('ink2')}>{kindLabel[im.kind]}</span>
+            <span style={chip('ink2')}>{kindLabel[kind]}</span>
             <span style={chip(ready ? 'ok' : 'warn')}>{status}</span>
           </div>
         );

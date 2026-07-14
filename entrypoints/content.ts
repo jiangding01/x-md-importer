@@ -84,10 +84,35 @@ async function prepareOneImage(block: ImageBlock): Promise<PreparedImage> {
   }
 }
 
-/** 按文档顺序准备 blocks 中所有 ImageBlock 的字节,返回与之对齐的 PreparedImage[]。 */
+/** 图片准备的最大并发数:多图时限流,避免几十个 fetch 同时打向 background + base64 编解码峰值内存 OOM。 */
+const PREPARE_IMAGE_CONCURRENCY = 3;
+
+/**
+ * 按文档顺序准备 blocks 中所有 ImageBlock 的字节,返回与之对齐的 PreparedImage[]。
+ *
+ * 用「有限并发池 + 索引回填」串行泄流,而非 Promise.all 一次性全量并发:后者在多图场景会
+ * 同时发起几十个 fetch(经 background 代理)并让 base64 编解码峰值内存叠加,存在 OOM 风险。
+ * 结果按 imageBlocks 的原始索引回填到 results[i],故返回数组与 imageBlocks 的文档顺序严格一一对齐
+ * ——这是 injector 侧 PreparedImage[k] 与第 k 张 ImageBlock 对齐的前提,务必保持。
+ */
 async function prepareImages(blocks: ImportBlock[]): Promise<PreparedImage[]> {
   const imageBlocks = blocks.filter((b): b is ImageBlock => b.kind === 'image');
-  return Promise.all(imageBlocks.map(prepareOneImage));
+  const results = new Array<PreparedImage>(imageBlocks.length);
+  // 共享游标:各 worker 抢占下一个待处理索引,处理完把结果写回同索引位置(顺序无关紧要,索引对齐)。
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = cursor;
+      cursor += 1;
+      const block = imageBlocks[index];
+      if (block === undefined) return; // 越界即池内所有图片已认领完毕,worker 退出。
+      results[index] = await prepareOneImage(block);
+    }
+  };
+  // 池大小取「并发上限」与「实际图片数」的较小值,避免为 0/少图场景空转 worker。
+  const poolSize = Math.min(PREPARE_IMAGE_CONCURRENCY, imageBlocks.length);
+  await Promise.all(Array.from({ length: poolSize }, worker));
+  return results;
 }
 
 /**
@@ -111,7 +136,11 @@ export default defineContentScript({
     let retry: ReturnType<typeof setInterval> | undefined;
     let attempts = 0;
 
-    const post = (msg: IsoMessage) => window.postMessage(msg, '*');
+    // import 消息会携带本地图 / dataURI 的 File 私有字节,故 targetOrigin 收敛为
+    // window.location.origin,挡住把这些字节投递给跨 origin 的 iframe/文档上下文读取。
+    // (同 origin 的页面脚本因 MAIN world 与页面共享同一 window 仍能读到,这是 MAIN world
+    //  固有限制,非本收敛能解决;后续可考虑改用 MessageChannel 做点对点私有通道。)
+    const post = (msg: IsoMessage) => window.postMessage(msg, window.location.origin);
     const stopRetry = () => {
       if (retry !== undefined) {
         clearInterval(retry);

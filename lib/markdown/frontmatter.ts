@@ -53,15 +53,18 @@ function fromFrontmatter(md: string): string | null {
 }
 
 /**
- * 从文首 frontmatter 解析封面 `cover`;支持 Obsidian 的 `![[x]]` / `![](x)` 包裹写法(剥壳)。
- * 无 → null。仅解析 frontmatter,正文首图由上层用 images() 兜底。
+ * 从文首 frontmatter 解析封面 `cover`;支持 Obsidian 的 `![[x]]`(嵌入)、`[[x]]`(内链,无 `!`)、
+ * `![](x)` 三种包裹写法(剥壳)。无 → null。仅解析 frontmatter,正文首图由上层用块级图兜底。
  */
 export function extractCover(md: string): string | null {
   const raw = frontmatterValue(md, ['cover', 'Cover', '封面']);
   if (raw === null) return null;
-  // 兼容 ![[assets/x.png]] / ![](assets/x.png) 包裹
+  // 兼容 ![[assets/x.png]] 包裹(先于 [[x]] 判断,避免被误剥成 !x)
   const wiki = /^!\[\[(.+?)\]\]$/.exec(raw);
   if (wiki) return (wiki[1] ?? '').trim();
+  // 兼容 Obsidian 无 ! 的内链 [[assets/x.png]]
+  const wikiLink = /^\[\[(.+?)\]\]$/.exec(raw);
+  if (wikiLink) return (wikiLink[1] ?? '').trim();
   const md2 = /^!\[[^\]]*\]\((.+)\)$/.exec(raw);
   if (md2) return (md2[1] ?? '').trim();
   return raw;

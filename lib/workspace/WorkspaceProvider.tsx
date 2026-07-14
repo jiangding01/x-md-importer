@@ -149,6 +149,10 @@ export function WorkspaceProvider({
   const [histClearArm, setHistClearArm] = useState(false);
 
   const timers = useRef<Timers>({});
+  // 同步闸门:防极快双击并发触发两次 startImport(React state 的 importing 更新是异步的,
+  // 双击间隔内两次 writeX 都可能读到陈旧的 importing=false)。ref 写入同步生效,
+  // 只做「进入即锁、结束即解」的闸门作用,UI 展示仍用 importing state。
+  const importingRef = useRef(false);
 
   const showToast = useCallback((msg: string) => {
     if (timers.current.toast) clearTimeout(timers.current.toast);
@@ -285,6 +289,10 @@ export function WorkspaceProvider({
   // 条纹动画在 await 期间提供 indeterminate 观感)。
   const startImport = useCallback(
     async (mode: ImportMode) => {
+      // 同步闸门优先于一切:极快双击时第二次调用在这里直接短路,
+      // 不会重复触发下载阶段(在任何 await 之前完成拦截)。
+      if (importingRef.current) return;
+      importingRef.current = true;
       setImporting(true);
       setReportVisible(false);
       setStageIdx(0);
@@ -357,6 +365,8 @@ export function WorkspaceProvider({
         // 无论成功/失败/抛错,importing 一定复位——否则写入按钮会被永久禁用。
         // finishImport 已在成功路径把 importing 置 false,此处再置一次是幂等的。
         setImporting(false);
+        // 同步闸门同样在此统一复位,与 importing state 复位保持一致的收尾时机。
+        importingRef.current = false;
       }
     },
     [md, en, t, opts.setTitle, opts.h1Handle, opts.titleConflict, opts.setCover, opts.coverKeep, finishImport, showToast],

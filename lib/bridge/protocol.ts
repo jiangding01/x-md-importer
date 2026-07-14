@@ -108,10 +108,14 @@ export type ImportBlock = TextBlock | AtomicBlock | ImageBlock;
 /** 图片来源分类:决定字节的准备路径。 */
 export type ImageSourceKind = 'remote' | 'data' | 'local';
 
-/** 判定图片来源类别(与 lib/markdown/capability.ts 的 images() 分类一致)。 */
+/**
+ * 判定图片来源类别(决定字节准备路径)。
+ * 协议相对 URL(`//host/a.png`)继承页面协议、本质是跨域远程资源,与 http(s) 同走
+ * background 代理,故归 'remote'(而非误判为 'local' 走本地读取路径)。
+ */
 export function classifyImageSource(src: string): ImageSourceKind {
   if (src.startsWith('data:')) return 'data';
-  if (/^https?:\/\//i.test(src)) return 'remote';
+  if (/^https?:\/\//i.test(src) || src.startsWith('//')) return 'remote';
   return 'local';
 }
 
