@@ -7,6 +7,12 @@
 
 ## [Unreleased]
 
+### 新增 · 快捷键跳转 / 诊断快照 / 备份恢复（设置 action 接真实实现）
+- 把设置面板里剩余 3 个「演示 toast」的 action 接上真实功能(纯前端,静态预览验证)：
+  - **快捷键**「前往设置」→ `chrome.tabs.create('chrome://extensions/shortcuts')`(纯 UI 预览无 chrome.tabs 时提示地址);
+  - **诊断面板**「导出快照」→ 收集探针状态/结果 + 全部设置 + 环境(扩展版本 / UA / 时间)→ 下载 JSON,报障用;
+  - **备份与恢复**→ 新模块 `lib/storage/backup.ts`:导出 `prefs + options + history + draft` 为 JSON;恢复校验来源(`app==='markflow'`)后**宽松写回**各切片(缺字段由 `loadX` 合并默认值兜底)、reload 生效,无效文件拒绝。`backup` 行特殊渲染「导出 + 恢复」双按钮(恢复走隐藏 file input)。
+
 ### 新增 · 图片压缩（批次 C）+ 修复 · 探针「需刷新」文案区分
 - **图片压缩**：新模块 `lib/image/compress.ts`（canvas 缩放 + JPEG 重编码）。**只压 `image/jpeg` 照片**——PNG(截图/文字/UI 图,转 JPEG 会糊 + 缩放让文字变小)、WebP(已压)、GIF(动图)一律保持原样,保护清晰度（实测「截图压完糊掉」后的取舍）;`>150KB` 才压、`maxEdge` 等比缩放(orig=不缩)、**压完更大/异常退回原图**(绝不抛错)。`compress/maxEdge/quality` 经 import 消息传到 content,统一处理所有来源(远程/本地/dataURI)的 File + 封面,并打 console 日志(原体积→压后体积)便于验证。
 - **修复 · 探针「需刷新」文案**：当前活动标签**是** X 编辑页但 content 不应答(扩展更新后没刷新等)时,原「未连接:请打开 X 文章编辑页」是误导。新增 `ProbeStatus 'needs-refresh'`(拿到 X 标签但 sendMessage 无应答/抛错)→ StatusBar/PreflightCard/DraftTab 显示「请刷新此 X 页面以启用插件」;当前非 X 页仍「请打开编辑页」。静态预览验证。
