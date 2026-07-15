@@ -7,6 +7,11 @@
 
 ## [Unreleased]
 
+### 新增 · scrollTop 接真实实现（批次 B2）+ 修复 · stale-closure / 探针刷新重探
+- **scrollTop「完成后滚动到顶部」**：`opts.scrollTop` 经 import 消息传到 content(ISOLATED world 与页面共享 DOM),写入成功后把 X 编辑器滚回文章开头(先滚 window,再沿正文 contenteditable 向上找最近可滚动祖先滚顶)。best-effort、try/catch,失败不影响写入结论;向后兼容。真机验证。
+- **修复 · stale-closure**：`startImport` 的 useCallback 依赖逐字段列举、漏了新读的 `opts.scrollTop`/`obsidianImg`/`wikilink` → 「切开关后不改 markdown 直接点写入」读到旧值(关掉 scrollTop 仍滚、B1 的 obsidian/wikilink 切换不生效)。改为**依赖整个 `opts` 对象**,任一设置切换都重建回调,一次修好且防以后再漏。
+- **修复 · 探针刷新后自动重探**：`onUpdated` 原只在 `changeInfo.url` 存在时重探,但整页刷新(⌘R)/首次进入时 URL 不变、只有 `status` → 收不到信号,导致「刷新后连不上、要手动点刷新」。改为 `status==='complete'` 时也重探(仍限当前活动 X 标签),刷新/进入编辑页自动连上。
+
 ### 新增 · Obsidian 图片 / Wikilink 开关接真实实现（批次 B1）
 - **obsidianImg**：关时 `![[x]]` 不再识别为内嵌图片、按普通文本处理(默认开,行为不变)。
 - **wikilink**：行内 `[[目标]]` / `[[目标|别名]]` → 纯文本(别名优先);**默认开**(此前是不转的字面保留),关时保持字面 `[[x]]`。
