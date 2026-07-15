@@ -1,13 +1,30 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
 import { useI18n } from '@/lib/i18n/useI18n';
 import { useTheme } from '@/lib/theme/useTheme';
 import { useSettings } from '@/lib/settings/SettingsProvider';
 import { useWorkspace } from '@/lib/workspace/WorkspaceProvider';
+import { useProbe } from '@/lib/bridge/useProbe';
 import { settingsConfig, type SettingRow } from '@/lib/settings/config';
 import { skinSwatch, SKINS, type Skin, type ThemeMode } from '@/lib/theme/themes';
 import type { LangPref } from '@/lib/i18n/dict';
 import type { Options } from '@/lib/settings/options';
 import { clearFolder, connectFolder, getFolderStatus } from '@/lib/bridge/importArticle';
+import { exportBackup, importBackup } from '@/lib/storage/backup';
+
+/** 触发浏览器下载一个 JSON 文件(备份 / 诊断快照共用)。纯前端,失败静默。 */
+function downloadJson(filename: string, data: unknown): void {
+  try {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch {
+    /* 下载失败(极少见):静默,不影响其它设置 */
+  }
+}
 
 function pill(on: boolean): CSSProperties {
   return {
@@ -56,9 +73,12 @@ export function SettingsTab() {
   const { skin, setSkin, theme, setTheme } = useTheme();
   const { opts, setOpt } = useSettings();
   const { showToast, wipeAll } = useWorkspace();
+  const { status, result } = useProbe();
 
   const [openSec, setOpenSec] = useState<Record<string, boolean>>(defaultOpen);
   const [wipeArm, setWipeArm] = useState(false);
+  // 备份「恢复」用的隐藏文件选择器(点「恢复」按钮触发)。
+  const restoreInputRef = useRef<HTMLInputElement>(null);
 
   const en = lang === 'en';
   const setOptRaw = setOpt as (k: string, v: unknown) => void;
@@ -116,6 +136,56 @@ export function SettingsTab() {
       return;
     }
     if (!res.ok && res.error !== 'cancelled') showToast(folderErrText(res.error));
+  };
+
+  /** 快捷键:打开 Chrome 的扩展快捷键设置页(纯 UI 预览无 chrome.tabs 时提示地址)。 */
+  const openShortcuts = () => {
+    const url = 'chrome://extensions/shortcuts';
+    if (typeof chrome !== 'undefined' && chrome.tabs?.create) void chrome.tabs.create({ url });
+    else showToast(t.shortcutsHint);
+  };
+
+  /** 诊断:导出探针快照 + 设置 + 环境信息的 JSON(报障用)。 */
+  const exportDiagnostics = () => {
+    const version =
+      typeof chrome !== 'undefined' && chrome.runtime?.getManifest
+        ? chrome.runtime.getManifest().version
+        : 'preview';
+    downloadJson(`markflow-diagnostics-${Date.now()}.json`, {
+      app: 'markflow',
+      kind: 'diagnostics',
+      at: new Date().toISOString(),
+      version,
+      ua: navigator.userAgent,
+      probe: { status, result },
+      prefs: { skin, theme, langPref },
+      options: opts,
+    });
+    showToast(t.diagExported);
+  };
+
+  /** 备份:导出全部本地数据(偏好/设置/记录/草稿)为 JSON。 */
+  const doExportBackup = async () => {
+    try {
+      downloadJson(`markflow-backup-${Date.now()}.json`, await exportBackup());
+      showToast(t.backupExported);
+    } catch {
+      showToast(t.backupExportFail);
+    }
+  };
+
+  /** 恢复:读用户选的备份 JSON → 写回 storage → 刷新面板重读生效。 */
+  const doRestoreBackup = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // 允许再次选同一文件
+    if (!file) return;
+    try {
+      await importBackup(JSON.parse(await file.text()));
+      showToast(t.backupRestored);
+      setTimeout(() => window.location.reload(), 700); // reload 后 main.tsx 重新从 storage 读取
+    } catch {
+      showToast(t.backupRestoreFail);
+    }
   };
 
   const renderControl = (row: SettingRow) => {
@@ -177,6 +247,35 @@ export function SettingsTab() {
     }
     // action
     const danger = Boolean(row.danger);
+    // 备份行:特殊渲染「导出 + 恢复」双按钮 + 隐藏文件选择器(单 actLabel 装不下两个动作)。
+    if (row.k === 'backup') {
+      const actBtn: CSSProperties = {
+        flex: 'none',
+        border: '1px solid var(--line)',
+        background: 'none',
+        padding: '5px 12px',
+        borderRadius: 'var(--rEl)',
+        font: '500 10.5px var(--fUI)',
+        color: 'var(--ink2)',
+      };
+      return (
+        <div style={{ display: 'flex', gap: 6, flex: 'none', marginTop: 2 }}>
+          <button className="mf-btn mf-hover-soft" onClick={() => void doExportBackup()} style={actBtn}>
+            {t.backupExport}
+          </button>
+          <button className="mf-btn mf-hover-soft" onClick={() => restoreInputRef.current?.click()} style={actBtn}>
+            {t.backupRestore}
+          </button>
+          <input
+            ref={restoreInputRef}
+            type="file"
+            accept=".json,application/json"
+            style={{ display: 'none' }}
+            onChange={(e) => void doRestoreBackup(e)}
+          />
+        </div>
+      );
+    }
     const onAct = () => {
       if (row.k === 'folder') {
         void handleFolderAction();
@@ -193,6 +292,8 @@ export function SettingsTab() {
         showToast(en ? 'All data erased' : '所有数据已清除');
         return;
       }
+      if (row.k === 'shortcuts') return openShortcuts();
+      if (row.k === 'diag') return exportDiagnostics();
       showToast(t.demoToast);
     };
     return (

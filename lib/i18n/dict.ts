@@ -119,6 +119,14 @@ const zh = {
   folderClear: '清除',
   folderResume: '恢复',
   folderReauth: '需重新授权',
+  backupExport: '导出',
+  backupRestore: '恢复',
+  backupExported: '备份已导出为 JSON',
+  backupExportFail: '导出失败',
+  backupRestored: '已恢复,即将刷新面板…',
+  backupRestoreFail: '恢复失败:不是有效的 MarkFlow 备份',
+  diagExported: '诊断快照已导出',
+  shortcutsHint: '请在 chrome://extensions/shortcuts 设置快捷键',
 } as const;
 
 type Dict = Record<keyof typeof zh, string>;
@@ -236,6 +244,14 @@ const en: Dict = {
   folderClear: 'Clear',
   folderResume: 'Resume',
   folderReauth: 'needs re-auth',
+  backupExport: 'Export',
+  backupRestore: 'Restore',
+  backupExported: 'Backup exported as JSON',
+  backupExportFail: 'Export failed',
+  backupRestored: 'Restored — reloading the panel…',
+  backupRestoreFail: 'Restore failed: not a valid MarkFlow backup',
+  diagExported: 'Diagnostics snapshot exported',
+  shortcutsHint: 'Set shortcuts at chrome://extensions/shortcuts',
 };
 
 export const dictionaries: Record<Lang, Dict> = { zh, en };
