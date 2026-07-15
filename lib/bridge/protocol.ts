@@ -204,7 +204,7 @@ export type MainMessage =
  * 本地图片文件夹的两级作用域(单一事实来源,localVault 与 UI 共用):
  *  - 'active'     = 素材板「当前文章」文件夹(优先级高、随时更换,记住最近连接);
  *  - 'persistent' = 设置里的默认文件夹(兜底)。
- * 读本地图时 active 优先、persistent 兜底(见 content 的 getReadableVault)。
+ * 读本地图时 active 优先、persistent 兜底、逐文件兜底(见 content 的 resolveLocalImageAcrossScopes)。
  */
 export type VaultScope = 'active' | 'persistent';
 
