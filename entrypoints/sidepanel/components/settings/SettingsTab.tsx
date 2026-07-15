@@ -120,9 +120,15 @@ export function SettingsTab() {
 
   const renderControl = (row: SettingRow) => {
     if (row.t === 'toggle') {
-      const on = Boolean(opts[row.k as keyof Options]);
+      // 装饰开关(未接实现)→ 置灰 + 固定显示 off、不可点(诚实呈现「未生效」)。
+      const on = row.disabled ? false : Boolean(opts[row.k as keyof Options]);
       return (
-        <button className="mf-btn" onClick={() => setOptRaw(row.k, !on)} style={pill(on)}>
+        <button
+          className="mf-btn"
+          disabled={row.disabled}
+          onClick={row.disabled ? undefined : () => setOptRaw(row.k, !on)}
+          style={{ ...pill(on), ...(row.disabled ? { opacity: 0.4, cursor: 'not-allowed' } : null) }}
+        >
           <span style={knob(on)} />
         </button>
       );
@@ -131,15 +137,18 @@ export function SettingsTab() {
       let val = String(opts[row.k as keyof Options] ?? '');
       if (row.k === 'lang') val = langPref;
       if (row.k === 'appearance') val = theme;
+      // 装饰 select 置灰:固定展示「生效档」(opts 首位),不读可能过期的存储值。
+      if (row.disabled) val = row.opts[0]?.v ?? val;
       const onChange = (v: string) => {
         if (row.k === 'lang') setLang(v as LangPref);
         else if (row.k === 'appearance') setTheme(v as ThemeMode);
         else setOptRaw(row.k, v);
       };
       return (
-        <div style={{ position: 'relative', flex: 'none' }}>
+        <div style={{ position: 'relative', flex: 'none', ...(row.disabled ? { opacity: 0.4 } : null) }}>
           <select
             value={val}
+            disabled={row.disabled}
             onChange={(e) => onChange(e.target.value)}
             style={{
               appearance: 'none',
@@ -150,7 +159,7 @@ export function SettingsTab() {
               padding: '5px 24px 5px 10px',
               font: '500 11px var(--fUI)',
               color: 'var(--ink)',
-              cursor: 'pointer',
+              cursor: row.disabled ? 'not-allowed' : 'pointer',
               maxWidth: 150,
             }}
           >

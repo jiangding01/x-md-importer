@@ -9,9 +9,6 @@ export interface Options {
   wrap: boolean;
   // 02 导入行为
   onExisting: 'ask' | 'append' | 'overwrite';
-  strict: boolean;
-  imgFail: 'skip' | 'abort';
-  pace: 'steady' | 'fast';
   scrollTop: boolean;
   autoReport: 'always' | 'anomaly' | 'never';
   // 03 标题与封面
@@ -21,16 +18,8 @@ export interface Options {
   setCover: boolean;
   coverKeep: 'keep' | 'remove';
   // 04 内容转换
-  tableStrategy: 'native' | 'mdblock' | 'image';
   codeStrategy: 'native' | 'image' | 'quote';
-  codeLang: 'plaintext' | 'javascript' | 'python' | 'bash';
-  h4Plus: 'bold' | 'sub';
-  inlineCode: 'backtick' | 'unicode' | 'text';
-  tweetUrl: 'embed' | 'link';
-  divider: 'divider' | 'ignore';
   taskList: 'symbol' | 'plain';
-  footnote: 'list' | 'ignore';
-  htmlBlock: 'text' | 'ignore';
   obsidianImg: boolean;
   wikilink: boolean;
   punct: boolean;
@@ -47,7 +36,6 @@ export interface Options {
   compress: boolean;
   maxEdge: '960' | '1280' | '1600' | 'orig';
   quality: '60' | '70' | '82' | '90' | '95';
-  altCaption: boolean;
   // 06 成功反馈
   confetti: boolean;
   sound: boolean;
@@ -55,8 +43,6 @@ export interface Options {
   // 07 记录与数据
   histLimit: '50' | '200' | 'inf';
   // 09 高级
-  graphql: boolean;
-  concurrency: '1' | '2' | '3' | '4' | '5';
   retries: '0' | '1' | '3' | '5';
 }
 
@@ -64,9 +50,6 @@ export const defaultOptions: Options = {
   editorFont: 'md',
   wrap: true,
   onExisting: 'ask',
-  strict: false,
-  imgFail: 'skip',
-  pace: 'steady',
   scrollTop: true,
   autoReport: 'anomaly',
   setTitle: true,
@@ -74,16 +57,8 @@ export const defaultOptions: Options = {
   h1Handle: 'remove',
   setCover: false,
   coverKeep: 'keep',
-  tableStrategy: 'native',
   codeStrategy: 'native',
-  codeLang: 'plaintext',
-  h4Plus: 'bold',
-  inlineCode: 'backtick',
-  tweetUrl: 'embed',
-  divider: 'divider',
   taskList: 'symbol',
-  footnote: 'list',
-  htmlBlock: 'text',
   obsidianImg: true,
   wikilink: true,
   punct: false,
@@ -95,12 +70,9 @@ export const defaultOptions: Options = {
   compress: true,
   maxEdge: '1280',
   quality: '82',
-  altCaption: true,
   confetti: true,
   sound: true,
   soundStyle: 'soft',
   histLimit: '200',
-  graphql: false,
-  concurrency: '3',
   retries: '3',
 };

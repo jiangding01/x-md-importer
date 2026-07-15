@@ -7,6 +7,12 @@
 
 ## [Unreleased]
 
+### 变更 · 设置面板诚实化 · 精简 + 装饰开关置灰（批次 A）
+- 盘点发现设置里近三分之二开关「改了不生效」。本批整顿设置面板、不再撒谎(「UI 不撒谎」原则)：
+  - **删除 14 个无意义/不可行的项**(选择是假的或功能永远做不了):`altCaption`(ALT 实证不可行)、`graphql`(明确不碰私有接口)、`tableStrategy`/`h4Plus`/`inlineCode`/`tweetUrl`/`divider`(X 平台限制下只有一种合理行为)、`imgFail`、`strict`/`pace`/`htmlBlock`/`footnote`(伪需求/ROI 低)、`codeLang`/`concurrency`(高级微调、受众窄)。config 行 + `options` 字段一并移除;能力仍由「能力映射」卡片体现。
+  - **保留但置灰**未接实现的装饰开关(`codeStrategy`/`taskList`/`punct`/`zhConvert`/`retries`)→ desc 标「规划中」/「当前固定」;`SettingsTab` 新增 disabled 渲染(toggle/select 灰化不可交互),置灰控件固定展示「生效档」不读可能过期的存储值。
+- 批次 B(低成本接实现:`scrollTop`/`wikilink`/`obsidianImg`)、批次 C(图片压缩)随后。
+
 ### 修复 · 图片 marker 残留清理不彻底（多图 fallbackIndex + 异步 commit）
 - **正文残留 `__MARKFLOW_IMG_xxx_N__`**：多图导入时某张图走 `relocateMediaByFallbackIndex` 兜底路径（精确 relocate 失败 → 只确认 MEDIA 存在、不删 marker 块，留给 `sweepMarkers` 收尾）后，`sweepMarkers` **单次**清扫因 X 的 `onChange` 异步 commit、读到 fiber 中间态而漏删 → 正文留下 marker 脏 token（真机见最后一张图 `_4_` 残留）。改 `sweepMarkers` 为**多轮重试**（每轮留时间让 X commit、读最新 state 删残留，直到某轮无残留或达 4 轮上限）。
 
