@@ -165,7 +165,8 @@ export function AssetsCard() {
 
   // 口径与真实上传行为对齐:只有「独占行块级图」(parser 产出的 ImageBlock)才会被上传/选作封面,
   // 段落内的行内图不会——故这里必须用 parseMarkdown 的块级结果计数/渲染,而不是全文正则 images()。
-  const imgs = parseMarkdown(md).filter((b): b is ImageBlock => b.kind === 'image');
+  // 传 obsidianImg:关时 ![[x]] 不算图片块,素材计数与实际写入一致。
+  const imgs = parseMarkdown(md, { obsidianImg: opts.obsidianImg }).filter((b): b is ImageBlock => b.kind === 'image');
   if (!md.trim() || (imgs.length === 0 && !opts.setCover)) return null;
 
   // 是否含本地图(相对路径):有才展示「本篇图片文件夹」入口 + 就绪判定才涉及文件夹连接。

@@ -7,6 +7,11 @@
 
 ## [Unreleased]
 
+### 新增 · Obsidian 图片 / Wikilink 开关接真实实现（批次 B1）
+- **obsidianImg**：关时 `![[x]]` 不再识别为内嵌图片、按普通文本处理(默认开,行为不变)。
+- **wikilink**：行内 `[[目标]]` / `[[目标|别名]]` → 纯文本(别名优先);**默认开**(此前是不转的字面保留),关时保持字面 `[[x]]`。
+- parser 新增 `parseMarkdown(md, opts)` 参数——用模块级标志在入口设置(parser 同步执行、不重入,免逐层穿参);`WorkspaceProvider`(写入)、`AssetsCard`(图片计数)传 opts,计数与写入一致。8 条 node 用例验证(转纯文本/字面/段落不破/不误吞普通链接图片)。
+
 ### 变更 · 设置面板诚实化 · 精简 + 装饰开关置灰（批次 A）
 - 盘点发现设置里近三分之二开关「改了不生效」。本批整顿设置面板、不再撒谎(「UI 不撒谎」原则)：
   - **删除 14 个无意义/不可行的项**(选择是假的或功能永远做不了):`altCaption`(ALT 实证不可行)、`graphql`(明确不碰私有接口)、`tableStrategy`/`h4Plus`/`inlineCode`/`tweetUrl`/`divider`(X 平台限制下只有一种合理行为)、`imgFail`、`strict`/`pace`/`htmlBlock`/`footnote`(伪需求/ROI 低)、`codeLang`/`concurrency`(高级微调、受众窄)。config 行 + `options` 字段一并移除;能力仍由「能力映射」卡片体现。
