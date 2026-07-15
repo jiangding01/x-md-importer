@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### 新增 · 图片压缩（批次 C）+ 修复 · 探针「需刷新」文案区分
+- **图片压缩**：新模块 `lib/image/compress.ts`（canvas 缩放 + JPEG 重编码）。**只压 `image/jpeg` 照片**——PNG(截图/文字/UI 图,转 JPEG 会糊 + 缩放让文字变小)、WebP(已压)、GIF(动图)一律保持原样,保护清晰度（实测「截图压完糊掉」后的取舍）;`>150KB` 才压、`maxEdge` 等比缩放(orig=不缩)、**压完更大/异常退回原图**(绝不抛错)。`compress/maxEdge/quality` 经 import 消息传到 content,统一处理所有来源(远程/本地/dataURI)的 File + 封面,并打 console 日志(原体积→压后体积)便于验证。
+- **修复 · 探针「需刷新」文案**：当前活动标签**是** X 编辑页但 content 不应答(扩展更新后没刷新等)时,原「未连接:请打开 X 文章编辑页」是误导。新增 `ProbeStatus 'needs-refresh'`(拿到 X 标签但 sendMessage 无应答/抛错)→ StatusBar/PreflightCard/DraftTab 显示「请刷新此 X 页面以启用插件」;当前非 X 页仍「请打开编辑页」。静态预览验证。
+
 ### 新增 · scrollTop 接真实实现（批次 B2）+ 修复 · stale-closure / 探针刷新重探
 - **scrollTop「完成后滚动到顶部」**：`opts.scrollTop` 经 import 消息传到 content(ISOLATED world 与页面共享 DOM),写入成功后把 X 编辑器滚回文章开头(先滚 window,再沿正文 contenteditable 向上找最近可滚动祖先滚顶)。best-effort、try/catch,失败不影响写入结论;向后兼容。真机验证。
 - **修复 · stale-closure**：`startImport` 的 useCallback 依赖逐字段列举、漏了新读的 `opts.scrollTop`/`obsidianImg`/`wikilink` → 「切开关后不改 markdown 直接点写入」读到旧值(关掉 scrollTop 仍滚、B1 的 obsidian/wikilink 切换不生效)。改为**依赖整个 `opts` 对象**,任一设置切换都重建回调,一次修好且防以后再漏。

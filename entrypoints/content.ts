@@ -35,6 +35,10 @@ import {
   saveVaultHandle,
 } from '@/lib/bridge/localVault';
 import type { VaultScope } from '@/lib/bridge/protocol';
+import { compressImage } from '@/lib/image/compress';
+
+/** content 侧图片压缩参数(来自设置 compress/maxEdge/quality);null=不压。 */
+type CompressOpts = { maxEdge: string; quality: number } | null;
 
 /** 允许的图片 MIME(与 background 一致):dataURI 解析、本地图读取都据此校验。 */
 const ALLOWED_IMAGE_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
@@ -111,6 +115,23 @@ async function prepareOneImage(block: ImageBlock): Promise<PreparedImage> {
 const PREPARE_IMAGE_CONCURRENCY = 3;
 
 /**
+ * 压缩 File 并在 X 页 console 打一条日志——让用户/诊断能直观看到每张图「原体积 → 压后体积」,
+ * 确认压缩是否生效(压缩本身是静默的)。compress=null(设置关闭)时原样返回、不打日志。
+ * `out === file` 表示 compressImage 内部 gate 跳过了(体积过小 / gif / 压完更大),据此标注。
+ */
+async function compressAndLog(file: File, compress: CompressOpts, label: string): Promise<File> {
+  if (!compress) return file;
+  const before = file.size;
+  const out = await compressImage(file, compress.maxEdge, compress.quality);
+  const kb = (n: number) => Math.round(n / 1024);
+  console.info(
+    `[MarkFlow] 图片压缩 ${label}(${file.name}): ${kb(before)}KB → ${kb(out.size)}KB` +
+      (out === file ? ' · 未压缩(非 JPEG 照片 / 体积过小 / 无收益)' : ''),
+  );
+  return out;
+}
+
+/**
  * 按文档顺序准备 blocks 中所有 ImageBlock 的字节,返回与之对齐的 PreparedImage[]。
  *
  * 用「有限并发池 + 索引回填」串行泄流,而非 Promise.all 一次性全量并发:后者在多图场景会
@@ -118,7 +139,7 @@ const PREPARE_IMAGE_CONCURRENCY = 3;
  * 结果按 imageBlocks 的原始索引回填到 results[i],故返回数组与 imageBlocks 的文档顺序严格一一对齐
  * ——这是 injector 侧 PreparedImage[k] 与第 k 张 ImageBlock 对齐的前提,务必保持。
  */
-async function prepareImages(blocks: ImportBlock[]): Promise<PreparedImage[]> {
+async function prepareImages(blocks: ImportBlock[], compress: CompressOpts): Promise<PreparedImage[]> {
   const imageBlocks = blocks.filter((b): b is ImageBlock => b.kind === 'image');
   const results = new Array<PreparedImage>(imageBlocks.length);
   // 共享游标:各 worker 抢占下一个待处理索引,处理完把结果写回同索引位置(顺序无关紧要,索引对齐)。
@@ -129,7 +150,11 @@ async function prepareImages(blocks: ImportBlock[]): Promise<PreparedImage[]> {
       cursor += 1;
       const block = imageBlocks[index];
       if (block === undefined) return; // 越界即池内所有图片已认领完毕,worker 退出。
-      results[index] = await prepareOneImage(block);
+      const prepared = await prepareOneImage(block);
+      // 压缩(如启用):在准备好的 File 上就地压;compressImage 内部 gate + 失败退回原图。
+      results[index] = prepared.file
+        ? { file: await compressAndLog(prepared.file, compress, `图${index + 1}`) }
+        : prepared;
     }
   };
   // 池大小取「并发上限」与「实际图片数」的较小值,避免为 0/少图场景空转 worker。
@@ -285,16 +310,18 @@ export default defineContentScript({
       mode: ImportMode,
       coverSource: string | null,
       scrollTop: boolean,
+      compress: CompressOpts,
     ): Promise<ImportResponse> => {
       if (!handshaked) return { ok: false, error: 'no-injector' };
-      // 先在 ISOLATED 侧准备图片字节(dataURI 就地解析 / 远程走 background 代理),
-      // 再随 import 消息把 File 交给 injector——File 经结构化克隆跨 world 传递。
-      const images = await prepareImages(blocks);
+      // 先在 ISOLATED 侧准备图片字节(dataURI 就地解析 / 远程走 background 代理),再压缩(如启用),
+      // 然后随 import 消息把 File 交给 injector——File 经结构化克隆跨 world 传递。
+      const images = await prepareImages(blocks, compress);
       // 封面同样在 content 准备好 File 再交给 injector(injector 在 MAIN world 设到封面 fileInput,
-      // File 同世界赋值更稳)。
-      const cover = coverSource
+      // File 同世界赋值更稳);封面也走同一压缩。
+      let cover = coverSource
         ? (await prepareOneImage({ kind: 'image', source: coverSource, alt: '', fallbackText: '' })).file
         : null;
+      if (cover) cover = await compressAndLog(cover, compress, '封面');
       // 通道超时必须显著大于「图片数 × injector 单图 30s 预算」,否则慢图/多图会先在通道超时,
       // 报失败并丢弃 injector 事后回来的成功结果(而 injector 仍在后台改写编辑器)。基础 45s +
       // 每图 40s(单图 30s 预算 + 归位/清理冗余)+ 封面 20s。
@@ -473,7 +500,13 @@ export default defineContentScript({
     ): Promise<ProbeResponse | ImportResponse | SetTitleResponse | FolderResponse> | undefined => {
       if (isProbeRequest(message)) return probeInjector();
       if (isImportRequest(message))
-        return importInjector(message.blocks, message.mode, message.coverSource ?? null, message.scrollTop === true);
+        return importInjector(
+          message.blocks,
+          message.mode,
+          message.coverSource ?? null,
+          message.scrollTop === true,
+          message.compress ?? null,
+        );
       if (isSetTitleRequest(message)) return setTitleInjector(message.title, message.conflict);
       // scope 用 messageScope 归一(旧消息缺字段时回落 persistent),不裸信任 message.scope。
       if (isConnectFolderRequest(message))

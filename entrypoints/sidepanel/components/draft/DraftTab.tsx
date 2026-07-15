@@ -2,6 +2,7 @@ import { useRef } from 'react';
 import { useI18n } from '@/lib/i18n/useI18n';
 import { useWorkspace } from '@/lib/workspace/WorkspaceProvider';
 import { useConnection } from '@/lib/bridge/useConnection';
+import { useProbe } from '@/lib/bridge/useProbe';
 import { DraftRow } from './DraftRow';
 import { EditorCard } from './EditorCard';
 import { AssetsCard } from './AssetsCard';
@@ -18,6 +19,7 @@ export function DraftTab() {
   const { t } = useI18n();
   const { readFile } = useWorkspace();
   const { connected } = useConnection();
+  const { status } = useProbe();
   const fileRef = useRef<HTMLInputElement>(null);
 
   const openFilePicker = () => fileRef.current?.click();
@@ -60,7 +62,9 @@ export function DraftTab() {
             }}
           >
             <span style={{ width: 8, height: 8, flex: 'none', borderRadius: '50%', background: 'var(--dgr)', animation: 'blinkDot 1.6s ease infinite' }} />
-            <span style={{ flex: 1, font: '400 11px/1.5 var(--fUI)', color: 'var(--ink2)' }}>{t.noPageDesc}</span>
+            <span style={{ flex: 1, font: '400 11px/1.5 var(--fUI)', color: 'var(--ink2)' }}>
+              {status === 'needs-refresh' ? t.probeNeedsRefresh : t.noPageDesc}
+            </span>
             <button
               className="mf-btn"
               onClick={openXArticles}

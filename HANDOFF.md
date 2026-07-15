@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**：2026-07-15 · 分支 `docs/refresh-readme` · **全面刷新 README + HANDOFF 文档**（此前 README 停在「M2 图片上传进行中、表格待后续」、HANDOFF §5/§9 停在 PR #7/M2 Phase 2a,严重落后于批次 A/B/C 的实际进度）:README 补齐已合并能力,HANDOFF §0/§5/§9 同步到当前。**并行:批次 C（图片压缩 + 探针需刷新文案）**在 `feat/batch-c-compress`,压缩逻辑浏览器实测通过、待真机验证上传。上一轮:**批次 B2:scrollTop 接真实实现 + 修 stale-closure / 探针刷新重探**(真机验证):`startImport` useCallback 依赖改为整个 `opts`;探针 `onUpdated` 加 `status==='complete'`。上一轮:**批次 B1:Obsidian 图片 / Wikilink 开关接真实实现**：parser 加 `parseMarkdown(md, opts)`(模块级标志);`obsidianImg` 关时 `![[x]]` 不当图片、`wikilink` 开时行内 `[[x]]`→纯文本(默认开)。8 条 node 用例验证。批次 B 剩 scrollTop(B2,需真机)。设置精简 PR #15 已合并。上一轮:**设置面板诚实化(精简 + 置灰,批次 A,PR #15)**：盘点发现设置里近 2/3 开关「改了不生效」。批次 A **删除 14 个无意义/不可行的项**(altCaption/graphql/tableStrategy/h4Plus/inlineCode/tweetUrl/divider/imgFail/strict/pace/htmlBlock/footnote/codeLang/concurrency,config 行+options 字段一并移除)+ **置灰保留**未接的(codeStrategy/taskList/punct/zhConvert/retries,标「规划中」/「当前固定」);`SettingsTab` 加 disabled 渲染。纯 UI,静态预览验证(删除项消失、保留项置灰、批次 B/C 项保持可交互)。批次 B(低成本接:scrollTop/wikilink/obsidianImg)、批次 C(图片压缩)随后。上一轮:自动填图片 ALT 尝试后搁置(三路皆不通,代码已回退)。PR #10~#14 已合并 main。
+**最后更新**：2026-07-15 · 分支 `feat/batch-c-compress` · **批次 C:图片压缩（智能保护 PNG）+ 探针「需刷新」文案（真机验证）**——设置面板诚实化(批次 A/B/C)收官。图片压缩**只压 JPEG 照片**、PNG 截图/文字图保持原样清晰（实测截图压完糊掉后的取舍),压缩打 console 日志;探针 `needs-refresh` 态(当前是 X 页但 content 不应答→提示刷新页面)。上一轮:**全面刷新 README + HANDOFF 文档**（此前停在 M2 早期,严重落后）。上一轮:**批次 B2:scrollTop 接真实实现 + 修 stale-closure / 探针刷新重探**(真机验证):`startImport` useCallback 依赖改为整个 `opts`;探针 `onUpdated` 加 `status==='complete'`。上一轮:**批次 B1:Obsidian 图片 / Wikilink 开关接真实实现**：parser 加 `parseMarkdown(md, opts)`(模块级标志);`obsidianImg` 关时 `![[x]]` 不当图片、`wikilink` 开时行内 `[[x]]`→纯文本(默认开)。8 条 node 用例验证。批次 B 剩 scrollTop(B2,需真机)。设置精简 PR #15 已合并。上一轮:**设置面板诚实化(精简 + 置灰,批次 A,PR #15)**：盘点发现设置里近 2/3 开关「改了不生效」。批次 A **删除 14 个无意义/不可行的项**(altCaption/graphql/tableStrategy/h4Plus/inlineCode/tweetUrl/divider/imgFail/strict/pace/htmlBlock/footnote/codeLang/concurrency,config 行+options 字段一并移除)+ **置灰保留**未接的(codeStrategy/taskList/punct/zhConvert/retries,标「规划中」/「当前固定」);`SettingsTab` 加 disabled 渲染。纯 UI,静态预览验证(删除项消失、保留项置灰、批次 B/C 项保持可交互)。批次 B(低成本接:scrollTop/wikilink/obsidianImg)、批次 C(图片压缩)随后。上一轮:自动填图片 ALT 尝试后搁置(三路皆不通,代码已回退)。PR #10~#14 已合并 main。
 
 ---
 
@@ -26,7 +26,7 @@
   - ✅ **本地图按需授权**（分支 `feat/session-vault-folder`，真机验证）：两级文件夹 `active`（素材板「本篇图片文件夹」）+ `persistent`（设置默认），读取优先级 active > persistent > 降级；素材板就地连接/更换/清除本篇专用文件夹；浏览器重启权限回落后「一键恢复」复用存量 handle（`requestPermission`，免重选文件夹）。
   - ✅ **探针自动重探**（PR #10，真机验证）：监听标签页事件自动更新连接状态,免手动刷新;tab 定位改为跟随当前活动标签。
   - ✅ **设置面板诚实化**（PR #15/#16/#17，批次 A/B）：盘点发现近 2/3 开关「改了不生效」→ 删 14 个无意义/不可行项 + 置灰未接项;`obsidianImg`/`wikilink`/`scrollTop` 接真实实现;修 stale-closure（切开关不改 md 即时生效）+ 探针刷新后自动重探。
-- **本次刚做**：**批次 C · 图片压缩**（canvas 缩放 + JPEG,>150KB 才压,分支 `feat/batch-c-compress`,压缩逻辑浏览器实测通过、待真机验证上传）+ 探针「需刷新页面」文案区分;**全面刷新 README / HANDOFF 文档**（此前停在 M2 早期,严重落后）。
+- **本次刚做**：**批次 C · 图片压缩（智能保护 PNG）**——只压 JPEG 照片,PNG 截图保持清晰;探针「需刷新页面」文案;压缩 console 日志。真机验证通过（`feat/batch-c-compress`,待提 PR）。此前全面刷新了 README / HANDOFF 文档。
 - **还没做**：标题 `ask` 独立询问弹窗;备份导出/恢复、诊断快照、快捷键跳转（设置里 3 个 action 仍是 toast 演示）。
 - **已排除（固有限制）**：`postMessage`→MessageChannel「私有通道」（MAIN world 下 File 对页面脚本不可隐藏，见 §8）；**自动填图片 ALT/Description**——实测 ALT 不在 Draft MEDIA entity data（`data` 只有 `mediaItems`）、走 X 后端 `media/edit`,无法「借 Draft 直写」;程序化打开「Edit media」弹窗永久 loading(内部元素不渲染)、Save 只回 Crop tab 不关窗。三路(直写/UI 弹窗/私有接口)皆不通,**自动 alt 已搁置**、代码已回退(分支 `feat/image-alt-text`),`altCaption` 开关为演示占位。详见 §11。
 - **下一步**：批次 C 真机验证通过后提 PR;之后标题 ask 弹窗 / 备份导出 / 诊断 / 快捷键任选。
@@ -128,7 +128,7 @@ background（开侧栏）                          injector.ts（MAIN world，�
 - ✅ **本地图按需授权**（PR #11，真机验证）：素材板「本篇图片文件夹」(active) + 设置默认文件夹 (persistent) 两级、**逐文件兜底**（`resolveLocalImageAcrossScopes`）；浏览器重启权限回落后**一键恢复**复用存量 handle。
 - ✅ **图片 `<>` 路径 / 封面弹窗 Apply / 代码块语言标签 / 行内代码降级 / 打开 X 跳转**（PR #12）+ **图片 marker 残留多轮重试**（PR #13）。
 - ✅ **设置面板诚实化**（PR #15/#16/#17，批次 A/B）：盘点发现近 2/3 开关「改了不生效」→ **删 14 个无意义/不可行项 + 置灰未接项**（批次 A）；`obsidianImg`/`wikilink` 接真实实现（B1）；`scrollTop` 接实现 + 修 stale-closure + 探针刷新重探（B2）。
-- 🚧 **图片压缩 + 探针「需刷新」文案**（批次 C，分支 `feat/batch-c-compress`，压缩逻辑浏览器实测通过，**待真机验证压缩图上传**）。
+- ✅ **图片压缩 + 探针「需刷新」文案**（批次 C，真机验证）：**智能保护 PNG**——只压 `image/jpeg` 照片,PNG（截图/文字/UI 图）/ WebP / GIF 保持原样、不转不缩（实测「截图压完糊掉」后的取舍);压缩打 console 日志（原体积→压后体积)。探针新增 `needs-refresh` 态（当前是 X 页但 content 不应答 → 提示「请刷新此 X 页面」而非「打开编辑页」）。
 
 `tsc --noEmit` 全绿；`pnpm build` 正常出包。
 
@@ -192,15 +192,13 @@ pnpm build              # → .output/chrome-mv3
 
 ## 9. 待办与路线图
 
-**已完成**（均已合并 main 并真机验证）：✅ Phase A/B/C UI · ✅ M1 注入引擎（正文全格式直写）· ✅ M2 标题 / 图片上传（远程 + dataURI）/ 封面 / 原生表格 · ✅ 本地图 FS Access + **按需授权（两级文件夹 + 一键恢复）** · ✅ 探针自动重探 · ✅ **设置面板诚实化（批次 A/B：精简 + 置灰 + obsidianImg/wikilink/scrollTop 接实现）**。详见 §5 与 CHANGELOG。
+**已完成**（均已合并 main 并真机验证）：✅ Phase A/B/C UI · ✅ M1 注入引擎（正文全格式直写）· ✅ M2 标题 / 图片上传（远程 + dataURI）/ 封面 / 原生表格 · ✅ 本地图 FS Access + **按需授权（两级文件夹 + 一键恢复）** · ✅ 探针自动重探 · ✅ **设置面板诚实化（批次 A/B/C：精简 + 置灰 + obsidianImg/wikilink/scrollTop/图片压缩接实现）** · ✅ 探针「需刷新页面」文案区分。详见 §5 与 CHANGELOG。
 
-**当前正在进行：批次 C（图片压缩 + 探针「需刷新」文案）**
-- [ ] 真机验证压缩图上传（大图 >150KB 导入 → 压成 JPEG 上传成功；关开关不压）——压缩逻辑已浏览器实测（13MB→891KB、缩到 1280），文案已静态预览验证。分支 `feat/batch-c-compress`。
+**设置面板诚实化（批次 A/B/C）已收官**——每个能点的开关都真实生效。图片压缩为「智能保护 PNG」：只压 JPEG 照片、PNG 截图保持清晰（批次 C，`feat/batch-c-compress`，真机验证，待提 PR）。
 
 **待办（体验/数据类，任选）**
 - [ ] 标题冲突 `titleConflict='ask'` 独立询问弹窗（当前保守按 `keep`）。
 - [ ] 备份导出 / 恢复（全部设置 + 记录 → 本地 JSON）；诊断面板（探针快照导出）；快捷键跳转 `chrome://extensions/shortcuts`（设置里 3 个 action 仍是 toast 演示）。
-- [ ] 探针 `disconnected` 文案区分已随批次 C 落地（needs-refresh）。
 
 **远期**：文章 → Markdown 反向导出（xposter 有范本，§8.1 导出器）。
 

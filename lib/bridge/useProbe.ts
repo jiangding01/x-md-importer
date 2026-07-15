@@ -30,8 +30,18 @@ import { resolveTargetXTab } from './locateXTab';
  * 逻辑本身未改动(seq 防竞态、五态映射、tab 选取策略、错误兜底全保留)。
  */
 
-/** 探针状态机:挂载即视为「探测中」,而非额外的 idle 态。 */
-export type ProbeStatus = 'probing' | 'disconnected' | 'no-injector' | 'timeout' | 'ready';
+/**
+ * 探针状态机:挂载即视为「探测中」,而非额外的 idle 态。
+ * 'disconnected' = 当前活动标签不是 X 编辑页(该去打开);
+ * 'needs-refresh' = 当前**是** X 编辑页、但 content script 不应答(扩展更新后页面没刷新等,该刷新页面)。
+ */
+export type ProbeStatus =
+  | 'probing'
+  | 'disconnected'
+  | 'needs-refresh'
+  | 'no-injector'
+  | 'timeout'
+  | 'ready';
 
 export interface ProbeState {
   /** 当前探针状态。 */
@@ -74,6 +84,7 @@ export function ProbeProvider({ children }: ProbeProviderProps) {
 
     const tabId = await resolveTargetXTab();
     if (tabId === null) {
+      // 当前活动标签不是 X 编辑页 → 该去打开。
       settle('disconnected', null);
       return;
     }
@@ -83,16 +94,19 @@ export function ProbeProvider({ children }: ProbeProviderProps) {
       const response = (await browser.tabs.sendMessage(tabId, PROBE_REQUEST)) as
         | ProbeResponse
         | undefined;
+      // 走到这里说明当前活动标签**就是** X 编辑页(resolveTargetXTab 已确认);content 不应答
+      // (无回应)则是「页面里没有 content script」——扩展更新后没刷新等——归为「需刷新页面」,
+      // 而非误导用户「去打开编辑页」。
       if (!response) {
-        settle('disconnected', null);
+        settle('needs-refresh', null);
       } else if (response.ok) {
         settle('ready', response.result);
       } else {
         settle(response.error, null);
       }
     } catch {
-      // 目标 tab 没有 content script(非 X 文章编辑页 / 页面未刷新)→ 归为「未连接」
-      settle('disconnected', null);
+      // sendMessage 抛错 = 该 X 标签没有 content script(页面未刷新 / 扩展刚更新)→ 需刷新页面。
+      settle('needs-refresh', null);
     }
   }, []);
 
