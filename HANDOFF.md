@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**：2026-07-15 · 分支 `feat/settings-actions` · **设置 action 接真实实现(A 组)**：快捷键跳转 `chrome://extensions/shortcuts`、诊断快照导出 JSON、备份/恢复(新模块 `lib/storage/backup.ts`,导出 prefs+options+history+draft、恢复宽松写回)。纯前端,静态预览验证(tabs.create URL / 诊断备份 JSON 结构 / 恢复写回 4 key、无效拒绝)。剩:标题 `ask` 弹窗(B 组,需真机)。上一轮:**批次 C:图片压缩（智能保护 PNG）+ 探针「需刷新」文案（真机验证）**——设置面板诚实化(批次 A/B/C)收官。图片压缩**只压 JPEG 照片**、PNG 截图/文字图保持原样清晰（实测截图压完糊掉后的取舍),压缩打 console 日志;探针 `needs-refresh` 态(当前是 X 页但 content 不应答→提示刷新页面)。上一轮:**全面刷新 README + HANDOFF 文档**（此前停在 M2 早期,严重落后）。上一轮:**批次 B2:scrollTop 接真实实现 + 修 stale-closure / 探针刷新重探**(真机验证):`startImport` useCallback 依赖改为整个 `opts`;探针 `onUpdated` 加 `status==='complete'`。上一轮:**批次 B1:Obsidian 图片 / Wikilink 开关接真实实现**：parser 加 `parseMarkdown(md, opts)`(模块级标志);`obsidianImg` 关时 `![[x]]` 不当图片、`wikilink` 开时行内 `[[x]]`→纯文本(默认开)。8 条 node 用例验证。批次 B 剩 scrollTop(B2,需真机)。设置精简 PR #15 已合并。上一轮:**设置面板诚实化(精简 + 置灰,批次 A,PR #15)**：盘点发现设置里近 2/3 开关「改了不生效」。批次 A **删除 14 个无意义/不可行的项**(altCaption/graphql/tableStrategy/h4Plus/inlineCode/tweetUrl/divider/imgFail/strict/pace/htmlBlock/footnote/codeLang/concurrency,config 行+options 字段一并移除)+ **置灰保留**未接的(codeStrategy/taskList/punct/zhConvert/retries,标「规划中」/「当前固定」);`SettingsTab` 加 disabled 渲染。纯 UI,静态预览验证(删除项消失、保留项置灰、批次 B/C 项保持可交互)。批次 B(低成本接:scrollTop/wikilink/obsidianImg)、批次 C(图片压缩)随后。上一轮:自动填图片 ALT 尝试后搁置(三路皆不通,代码已回退)。PR #10~#14 已合并 main。
+**最后更新**：2026-07-15 · 分支 `feat/title-ask-dialog` · **标题冲突 `ask` 询问弹窗**（`TitleConflictDialog` + Promise 化 resolver：编辑器已有标题时弹「覆盖/保留」，真冲突才弹、无冲突静默设，待真机验证）。上一轮:**设置 action 接真实实现(A 组)**：快捷键跳转 `chrome://extensions/shortcuts`、诊断快照导出 JSON、备份/恢复(新模块 `lib/storage/backup.ts`,导出 prefs+options+history+draft、恢复宽松写回)。纯前端,静态预览验证(tabs.create URL / 诊断备份 JSON 结构 / 恢复写回 4 key、无效拒绝)。剩:标题 `ask` 弹窗(B 组,需真机)。上一轮:**批次 C:图片压缩（智能保护 PNG）+ 探针「需刷新」文案（真机验证）**——设置面板诚实化(批次 A/B/C)收官。图片压缩**只压 JPEG 照片**、PNG 截图/文字图保持原样清晰（实测截图压完糊掉后的取舍),压缩打 console 日志;探针 `needs-refresh` 态(当前是 X 页但 content 不应答→提示刷新页面)。上一轮:**全面刷新 README + HANDOFF 文档**（此前停在 M2 早期,严重落后）。上一轮:**批次 B2:scrollTop 接真实实现 + 修 stale-closure / 探针刷新重探**(真机验证):`startImport` useCallback 依赖改为整个 `opts`;探针 `onUpdated` 加 `status==='complete'`。上一轮:**批次 B1:Obsidian 图片 / Wikilink 开关接真实实现**：parser 加 `parseMarkdown(md, opts)`(模块级标志);`obsidianImg` 关时 `![[x]]` 不当图片、`wikilink` 开时行内 `[[x]]`→纯文本(默认开)。8 条 node 用例验证。批次 B 剩 scrollTop(B2,需真机)。设置精简 PR #15 已合并。上一轮:**设置面板诚实化(精简 + 置灰,批次 A,PR #15)**：盘点发现设置里近 2/3 开关「改了不生效」。批次 A **删除 14 个无意义/不可行的项**(altCaption/graphql/tableStrategy/h4Plus/inlineCode/tweetUrl/divider/imgFail/strict/pace/htmlBlock/footnote/codeLang/concurrency,config 行+options 字段一并移除)+ **置灰保留**未接的(codeStrategy/taskList/punct/zhConvert/retries,标「规划中」/「当前固定」);`SettingsTab` 加 disabled 渲染。纯 UI,静态预览验证(删除项消失、保留项置灰、批次 B/C 项保持可交互)。批次 B(低成本接:scrollTop/wikilink/obsidianImg)、批次 C(图片压缩)随后。上一轮:自动填图片 ALT 尝试后搁置(三路皆不通,代码已回退)。PR #10~#14 已合并 main。
 
 ---
 
@@ -142,7 +142,7 @@ background（开侧栏）                          injector.ts（MAIN world，�
 | ~~本地图 File 字节经 `postMessage` 到 MAIN world~~ | 本地图/远程/封面 File 在 MAIN world 对页面脚本可读(与远程/dataURI 同面) | **固有限制,不可修**(见 §8;MessageChannel 已验证无效并回退) |
 | ~~行内代码 X 渲染~~ | ✅ 真机确认 X 正文**不支持**行内代码 → 降级保留反引号 `code`（`capability` 文案订正） | 本次(第九次会话) |
 | ~~「打开 X Articles」按钮~~ | ✅ 已接 `chrome.tabs.create`（待真机验证 URL 落点） | 本次(第九次会话) |
-| 标题冲突 `titleConflict='ask'` | 暂按保守 `keep` 处理 | 补独立询问弹窗 |
+| ~~标题冲突 `titleConflict='ask'`~~ | ✅ 已接询问弹窗（`TitleConflictDialog`，真冲突时问覆盖/保留） | 本次 |
 | 备份/导出、诊断快照、快捷键跳转 | toast 演示 | M4 |
 
 > 图片上传（远程/dataURI）、封面、原生表格均已完成并真机验证合并（PR #4/#5/#7）。
@@ -197,7 +197,7 @@ pnpm build              # → .output/chrome-mv3
 **设置面板诚实化（批次 A/B/C）已收官**——每个能点的开关都真实生效。图片压缩为「智能保护 PNG」：只压 JPEG 照片、PNG 截图保持清晰（批次 C，`feat/batch-c-compress`，真机验证，待提 PR）。
 
 **待办（体验/数据类，任选）**
-- [ ] 标题冲突 `titleConflict='ask'` 独立询问弹窗（当前保守按 `keep`）。
+- [x] ~~标题冲突 `titleConflict='ask'` 独立询问弹窗~~ ✅ 已实现（`feat/title-ask-dialog`：`TitleConflictDialog` + Promise 化 resolver，真冲突时才弹，待真机验证）。
 - [x] ~~备份导出 / 恢复、诊断面板、快捷键跳转~~ ✅ 已接真实实现（A 组，`feat/settings-actions`，静态预览验证，待合并）。
 
 **远期**：文章 → Markdown 反向导出（xposter 有范本，§8.1 导出器）。
@@ -218,7 +218,10 @@ pnpm build              # → .output/chrome-mv3
 
 ## 11. 最近一次会话小结
 
-**2026-07-15 · 第十一次会话（本次）· 本地图按需授权(PR #11)+ 自动 alt 尝试后搁置**：
+**2026-07-15 · 第十二次会话（本次）· 标题冲突 `ask` 询问弹窗**：
+- **`titleConflict='ask'` 接真实实现**（`feat/title-ask-dialog`）：此前 `ask` 保守降级 `keep`，现补独立询问弹窗。机制：标题在正文写入**后**设置，`ask` 模式先 `setTitleOnXTab(title,'keep')` 探测——`applied=true`（编辑器本无标题、顺便设好）无冲突不弹；`applied=false`（已有标题被跳过）→ `askTitleConflict(title)` 弹 `TitleConflictDialog` 并 **await 用户选**。resolver 存 `titleAskResolver` ref，用户点覆盖/保留 → `settleTitleAsk` 兑现 Promise 恢复 `startImport`。只在**真冲突**打扰、无冲突静默设。改 3 处（`WorkspaceProvider` async 逻辑 + 新组件 + dict）。纯前端，tsc/build 绿，**待真机验证**（需编辑器已有标题的场景）。
+
+**2026-07-15 · 第十一次会话· 本地图按需授权(PR #11)+ 自动 alt 尝试后搁置**：
 - **本地图按需授权**（PR #11,已合并）：两级文件夹 `active`（素材板「本篇图片文件夹」)+ `persistent`（设置默认），逐文件兜底 `resolveLocalImageAcrossScopes`(active 缺某图才回落 persistent);素材板就地连接/更换/清除;浏览器重启权限回落后「一键恢复」复用存量 handle。真机全通过。
 - **自动填图片 ALT/Description —— 尝试后搁置**：目标是把 markdown `![alt]` 的 alt 写进 X 图片的 ALT 无障碍描述。实现并真机后失败,逐一排除三条路:
   - **直写 Draft entity data 不可行**:手动填 ALT+Save 后 dump MEDIA entity,`data` 只有 `entityKey` + `mediaItems[{localMediaId, mediaCategory:"DraftTweetImage", mediaId}]`,**无 alt/description 字段**、填的文本也不在 → ALT 走 X 后端(按 mediaId 经 `/compose/articles/media/edit`),不进 Draft。
