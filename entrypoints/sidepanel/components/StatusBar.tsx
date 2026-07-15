@@ -59,6 +59,8 @@ function statusLabel(t: Dict, status: ProbeStatus, result: ProbeResult | null): 
       return t.probeChecking;
     case 'disconnected':
       return t.probeDisconnected;
+    case 'needs-refresh':
+      return t.probeNeedsRefresh;
     case 'no-injector':
       return t.probeNoInjector;
     case 'timeout':
