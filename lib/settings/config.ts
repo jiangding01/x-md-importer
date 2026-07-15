@@ -52,9 +52,6 @@ export function settingsConfig({ en, folderConnected, folderName, wipeArm }: Con
       title: T('导入行为', 'Import behavior'),
       rows: [
         { k: 'onExisting', t: 'select', label: T('编辑器已有内容时', 'When editor has content'), desc: T('写入前如何处理已有草稿。', 'How to handle an existing draft.'), opts: [o('ask', '每次询问', 'Always ask'), o('append', '总是追加', 'Always append'), o('overwrite', '总是覆盖', 'Always overwrite')] },
-        { k: 'strict', t: 'toggle', disabled: true, label: T('严格模式', 'Strict mode'), desc: T('任何降级前逐项确认;关闭则自动降级并在报告中说明。（规划中）', 'Confirm every degradation; off = auto-degrade with report. (planned)') },
-        { k: 'imgFail', t: 'select', disabled: true, label: T('图片失败时', 'On image failure'), desc: T('保留原文兜底、跳过继续（当前固定）。', 'Keep source text as fallback, skip & continue (fixed).'), opts: [o('skip', '跳过继续', 'Skip & continue')] },
-        { k: 'pace', t: 'select', disabled: true, label: T('写入节奏', 'Write pace'), desc: T('快速会缩短块间等待,超长文慎用。（规划中）', 'Fast shortens waits; careful with long docs. (planned)'), opts: [o('steady', '稳妥', 'Steady'), o('fast', '快速', 'Fast')] },
         { k: 'scrollTop', t: 'toggle', label: T('完成后滚动到顶部', 'Scroll to top when done'), desc: T('写入完成后回到文章开头。', 'Return to the top after writing.') },
         { k: 'autoReport', t: 'select', label: T('自动展开导入报告', 'Auto-expand report'), desc: T('导入完成后是否自动展开报告。', 'Expand the report automatically.'), opts: [o('always', '总是', 'Always'), o('anomaly', '仅异常时', 'On anomaly'), o('never', '从不', 'Never')] },
       ],
@@ -76,16 +73,9 @@ export function settingsConfig({ en, folderConnected, folderName, wipeArm }: Con
       num: '04',
       title: T('内容转换', 'Content conversion'),
       rows: [
-        { k: 'tableStrategy', t: 'select', disabled: true, label: T('表格策略', 'Tables'), desc: T('原生表格,X 直接渲染（当前固定）。', 'Native table, rendered by X (fixed).'), opts: [o('native', '原生表格', 'Native table')] },
         { k: 'codeStrategy', t: 'select', disabled: true, label: T('代码块策略', 'Code blocks'), desc: T('原生代码块带语言标注（当前固定）。', 'Native code block with language (fixed).'), opts: [o('native', '原生代码块', 'Native')] },
         { k: 'codeLang', t: 'select', label: T('代码块默认语言', 'Default code language'), desc: T('无语言标注的 fence 使用。', 'Used for unlabeled fences.'), opts: [o('plaintext', 'plaintext', 'plaintext'), o('javascript', 'javascript', 'javascript'), o('python', 'python', 'python'), o('bash', 'bash', 'bash')] },
-        { k: 'h4Plus', t: 'select', disabled: true, label: T('#### 以下标题', 'H4+ headings'), desc: T('X 仅两级标题,更深层级用粗体段落（当前固定）。', 'X has only two heading levels; deeper use bold paragraph (fixed).'), opts: [o('bold', '粗体段落', 'Bold paragraph')] },
-        { k: 'inlineCode', t: 'select', disabled: true, label: T('行内代码', 'Inline code'), desc: T('X 正文不支持行内代码,保留反引号(当前固定)。', 'X body has no inline code; keep backticks (fixed).'), opts: [o('backtick', '保留反引号', 'Keep backticks')] },
-        { k: 'tweetUrl', t: 'select', disabled: true, label: T('推文 URL(独行)', 'Tweet URL (own line)'), desc: T('嵌入推文卡片（当前固定）。', 'Embed tweet card (fixed).'), opts: [o('embed', '嵌入卡片', 'Embed card')] },
-        { k: 'divider', t: 'select', disabled: true, label: T('分割线 ---', 'Divider ---'), desc: T('转 DIVIDER 原生块（当前固定）。', 'Native DIVIDER block (fixed).'), opts: [o('divider', 'DIVIDER 块', 'DIVIDER block')] },
         { k: 'taskList', t: 'select', disabled: true, label: T('任务列表 - [ ]', 'Task lists'), desc: T('☑/☐ 符号列表或普通列表。（规划中）', 'Symbol list or plain list. (planned)'), opts: [o('symbol', '符号列表', 'Symbol list'), o('plain', '普通列表', 'Plain list')] },
-        { k: 'footnote', t: 'select', disabled: true, label: T('GFM 脚注', 'GFM footnotes'), desc: T('转文末「注释」编号列表。（规划中）', 'Endnotes list at the bottom. (planned)'), opts: [o('list', '文末列表', 'Endnotes'), o('ignore', '忽略', 'Ignore')] },
-        { k: 'htmlBlock', t: 'select', disabled: true, label: T('内嵌 HTML 块', 'Inline HTML'), desc: T('剥离标签保留文本,或整块忽略。（规划中）', 'Strip tags keep text, or drop. (planned)'), opts: [o('text', '保留文本', 'Keep text'), o('ignore', '整块忽略', 'Drop block')] },
         { k: 'obsidianImg', t: 'toggle', label: T('Obsidian 图片嵌入', 'Obsidian embeds'), desc: T('识别 ![[图片]] 语法(本地文件夹解析)。', 'Recognize ![[image]] syntax.') },
         { k: 'wikilink', t: 'toggle', label: T('Wikilink 转纯文本', 'Wikilinks to text'), desc: T('[[wikilink]] 转为纯文本。', 'Convert [[wikilink]] to text.') },
         { k: 'punct', t: 'toggle', disabled: true, label: T('智能标点', 'Smart punctuation'), desc: T('修正中文标点,保护代码/链接/URL 区域。（规划中）', 'Fix CJK punctuation; protect code & URLs. (planned)') },
@@ -112,7 +102,6 @@ export function settingsConfig({ en, folderConnected, folderName, wipeArm }: Con
         { k: 'compress', t: 'toggle', label: T('图片压缩', 'Image compression'), desc: T('>150KB 才压;上传更快、更抗限流。', 'Only if >150KB; faster & safer uploads.') },
         { k: 'maxEdge', t: 'select', label: T('最大长边', 'Max long edge'), desc: T('压缩时的尺寸上限。', 'Size cap when compressing.'), opts: [o('960', '960px', '960px'), o('1280', '1280px', '1280px'), o('1600', '1600px', '1600px'), o('orig', '原图', 'Original')] },
         { k: 'quality', t: 'select', label: T('压缩质量', 'Quality'), desc: T('JPEG 质量(60-95)。', 'JPEG quality (60-95).'), opts: [o('60', '60', '60'), o('70', '70', '70'), o('82', '82(推荐)', '82 (rec.)'), o('90', '90', '90'), o('95', '95', '95')] },
-        { k: 'altCaption', t: 'toggle', disabled: true, label: T('alt 写入图片描述', 'Alt → image ALT'), desc: T('X 的 ALT 走后端、无法可靠写入。（暂不支持）', 'X stores ALT server-side; not reliably writable. (unavailable)') },
       ],
     },
     {
@@ -148,7 +137,6 @@ export function settingsConfig({ en, folderConnected, folderName, wipeArm }: Con
       num: '09',
       title: T('高级', 'Advanced'),
       rows: [
-        { k: 'graphql', t: 'toggle', disabled: true, label: T('GraphQL 增强通道', 'GraphQL channel'), desc: T('标题/封面直写 X 私有接口。接口脆弱,默认关闭。（规划中）', 'Writes title/cover via private API. Fragile; off by default. (planned)') },
         { k: 'concurrency', t: 'select', label: T('图片准备并发', 'Image concurrency'), desc: T('并行准备图片的数量。', 'Parallel image preparation.'), opts: [o('1', '1', '1'), o('2', '2', '2'), o('3', '3', '3'), o('4', '4', '4'), o('5', '5', '5')] },
         { k: 'retries', t: 'select', disabled: true, label: T('重试次数', 'Retries'), desc: T('图片抓取/上传失败的重试。（规划中）', 'Retries for fetch/upload failures. (planned)'), opts: [o('0', '0', '0'), o('1', '1', '1'), o('3', '3', '3'), o('5', '5', '5')] },
         { k: 'diag', t: 'action', label: T('诊断面板', 'Diagnostics'), desc: T('探针快照查看/导出 JSON(报障用)。', 'Probe snapshot / export JSON.'), actLabel: T('导出快照', 'Export') },

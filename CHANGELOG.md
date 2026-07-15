@@ -7,11 +7,10 @@
 
 ## [Unreleased]
 
-### 变更 · 设置面板诚实化 · 装饰开关置灰（批次 A）
-- 盘点发现设置里近三分之二开关「改了不生效」。本批把**装饰开关**置灰、不再撒谎(「UI 不撒谎」原则)：
-  - **完全没做**的(`strict`/`pace`/`punct`/`zhConvert`/`footnote`/`htmlBlock`/`taskList`/`graphql`/`retries`/`altCaption`)→ 置灰 + desc 标「规划中」/「暂不支持」;
-  - **默认档已生效、切换无效**的 select(`tableStrategy`/`codeStrategy`/`h4Plus`/`inlineCode`/`tweetUrl`/`divider`/`imgFail`)→ 删无效选项、置灰展示生效档 + 标「当前固定」;
-  - `SettingsTab` 新增 disabled 渲染(toggle/select 灰化不可交互);`options` 类型不改(避免旧存储迁移),置灰控件固定展示「生效档」不读可能过期的存储值。
+### 变更 · 设置面板诚实化 · 精简 + 装饰开关置灰（批次 A）
+- 盘点发现设置里近三分之二开关「改了不生效」。本批整顿设置面板、不再撒谎(「UI 不撒谎」原则)：
+  - **删除 12 个无意义/不可行的项**(选择是假的或功能永远做不了):`altCaption`(ALT 实证不可行)、`graphql`(明确不碰私有接口)、`tableStrategy`/`h4Plus`/`inlineCode`/`tweetUrl`/`divider`(X 平台限制下只有一种合理行为)、`imgFail`、`strict`/`pace`/`htmlBlock`/`footnote`(伪需求/ROI 低)。config 行 + `options` 字段一并移除;能力仍由「能力映射」卡片体现。
+  - **保留但置灰**未接实现的装饰开关(`codeStrategy`/`taskList`/`punct`/`zhConvert`/`retries`)→ desc 标「规划中」/「当前固定」;`SettingsTab` 新增 disabled 渲染(toggle/select 灰化不可交互),置灰控件固定展示「生效档」不读可能过期的存储值。
 - 批次 B(低成本接实现:`scrollTop`/`concurrency`/`codeLang`/`wikilink`/`obsidianImg`)、批次 C(图片压缩)随后。
 
 ### 修复 · 图片 marker 残留清理不彻底（多图 fallbackIndex + 异步 commit）

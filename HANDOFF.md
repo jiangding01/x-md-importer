@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**：2026-07-15 · 分支 `chore/settings-honesty` · **设置面板诚实化(装饰开关置灰,批次 A)**：盘点发现设置里近 2/3 开关「改了不生效」。批次 A 把装饰开关置灰——完全没做的标「规划中」、默认档已生效的删无效选项+标「当前固定」;`SettingsTab` 加 disabled 渲染,`options` 类型不改。纯 UI,已静态预览验证。批次 B(低成本接:scrollTop/concurrency/codeLang/wikilink/obsidianImg)、批次 C(图片压缩)随后。上一轮:自动填图片 ALT 尝试后搁置(ALT 不在 Draft entity、走后端,UI 弹窗卡 loading;三路皆不通,代码已回退)。PR #10~#14 已合并 main。
+**最后更新**：2026-07-15 · 分支 `chore/settings-honesty`(PR #15) · **设置面板诚实化(精简 + 置灰,批次 A)**：盘点发现设置里近 2/3 开关「改了不生效」。批次 A **删除 12 个无意义/不可行的项**(altCaption/graphql/tableStrategy/h4Plus/inlineCode/tweetUrl/divider/imgFail/strict/pace/htmlBlock/footnote,config 行+options 字段一并移除)+ **置灰保留**未接的(codeStrategy/taskList/punct/zhConvert/retries,标「规划中」/「当前固定」);`SettingsTab` 加 disabled 渲染。纯 UI,静态预览验证(删除项消失、保留项置灰、批次 B/C 项保持可交互)。批次 B(低成本接:scrollTop/concurrency/codeLang/wikilink/obsidianImg)、批次 C(图片压缩)随后。上一轮:自动填图片 ALT 尝试后搁置(三路皆不通,代码已回退)。PR #10~#14 已合并 main。
 
 ---
 
