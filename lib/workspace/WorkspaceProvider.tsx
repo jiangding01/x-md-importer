@@ -338,7 +338,7 @@ export function WorkspaceProvider({
         // 写入中(等待 content → injector 直写)
         setStageLabel(t.stBody);
         setStagePct(75);
-        const res = await importToXTab(blocks, mode, coverSource);
+        const res = await importToXTab(blocks, mode, coverSource, opts.scrollTop);
         if (res.ok) {
           setStagePct(100);
           // #7:所选 append 但引擎实际降级为 replace(编辑器为空)→ 明确提示,不静默。
@@ -375,7 +375,11 @@ export function WorkspaceProvider({
         importingRef.current = false;
       }
     },
-    [md, en, t, opts.setTitle, opts.h1Handle, opts.titleConflict, opts.setCover, opts.coverKeep, finishImport, showToast],
+    // 依赖整个 opts(而非逐字段):startImport 读多个设置(setTitle/h1Handle/titleConflict/
+    // setCover/coverKeep/scrollTop/obsidianImg/wikilink…),逐列极易漏(漏了会 stale-closure
+    // 读到旧值——切开关后不改 md 就点写入即失效)。setOpt 每次产生新 opts 引用,依赖整个 opts
+    // 让任一设置切换都重建回调,正确且防再漏。
+    [md, en, t, opts, finishImport, showToast],
   );
 
   const writeX = useCallback(() => {
