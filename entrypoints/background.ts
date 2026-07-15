@@ -79,9 +79,13 @@ async function readCapped(resp: Response, max: number): Promise<Uint8Array<Array
  */
 function isBlockedHost(host: string): boolean {
   const raw = host.toLowerCase();
-  const h = raw.replace(/^\[|\]$/g, ''); // 去掉 IPv6 字面量方括号
+  const unbracketed = raw.replace(/^\[|\]$/g, ''); // 去掉 IPv6 字面量方括号
   // 是否为 IPv6 字面量:被方括号包裹,或去括号后仍含冒号。fc/fd 前缀规则仅对它生效。
-  const isIPv6Literal = raw.startsWith('[') || h.includes(':');
+  const isIPv6Literal = raw.startsWith('[') || unbracketed.includes(':');
+  // 归一剥「尾点」(FQDN 根标签):`new URL('http://localhost./').hostname` === 'localhost.',
+  // 尾点被保留会让 'localhost.'/'foo.local.'/'x.nip.io.' 绕过下方精确/后缀匹配 → 放行到回环/内网。
+  // 尾点只对命名主机 / IPv4 有意义;IPv6 字面量(`[::1]` 等)不带尾点,剥了反而可能误伤,故跳过。
+  const h = isIPv6Literal ? unbracketed : unbracketed.replace(/\.$/, '');
   if (h === 'localhost' || h.endsWith('.local') || h.endsWith('.internal') || h.endsWith('.localhost')) return true;
   if (h === '0.0.0.0' || h === '::1' || h === '::') return true;
   // 常见「泛解析到内网 / 回环」的 wildcard-DNS 服务:形如 10-0-0-1.nip.io、

@@ -3,11 +3,13 @@ import {
   CONNECT_FOLDER_TYPE,
   FOLDER_STATUS_TYPE,
   IMPORT_REQUEST_TYPE,
+  PROBE_REQUEST_TYPE,
   SET_TITLE_REQUEST_TYPE,
   type FolderResponse,
   type ImportBlock,
   type ImportMode,
   type ImportResponse,
+  type ProbeResponse,
   type RuntimeRequest,
   type SetTitleResponse,
   type TitleConflict,
@@ -42,11 +44,15 @@ export async function importToXTab(
   coverSource: string | null = null,
   scrollTop = false,
   compress: { maxEdge: string; quality: number } | null = null,
+  pinnedTabId?: number,
 ): Promise<ImportResponse> {
   const request: RuntimeRequest = { type: IMPORT_REQUEST_TYPE, blocks, mode, coverSource, scrollTop, compress };
 
   // ── 1. 定位目标 X 标签页(拿不到直接判「未连接」)──
-  const tabId = await resolveTargetXTab();
+  // 传入 pinnedTabId(startImport 开头解析一次并全程复用)时**跳过内部重解析**,直接用它——
+  // 否则多图/ask 弹窗挂起期间用户切到另一篇 X 草稿,此处重解析会命中那一篇、写错目标(review B1)。
+  // 不传时维持原行为(自行解析当前活动标签),保持向后兼容。
+  const tabId = pinnedTabId ?? (await resolveTargetXTab());
   if (tabId === null) {
     return { ok: false, error: 'disconnected' };
   }
@@ -76,10 +82,13 @@ export async function importToXTab(
 export async function setTitleOnXTab(
   title: string,
   conflict: TitleConflict,
+  pinnedTabId?: number,
 ): Promise<SetTitleResponse> {
   const request: RuntimeRequest = { type: SET_TITLE_REQUEST_TYPE, title, conflict };
 
-  const tabId = await resolveTargetXTab();
+  // 标题阶段在正文写完后才跑,是 review B1 的核心暴露点:必须复用 startImport 钉死的
+  // pinnedTabId,而非在此重解析「当前活动标签」——否则弹窗挂起期间用户切走会静默覆盖别篇标题。
+  const tabId = pinnedTabId ?? (await resolveTargetXTab());
   if (tabId === null) {
     return { ok: false, error: 'disconnected' };
   }
@@ -137,4 +146,29 @@ export async function clearFolder(scope: VaultScope): Promise<FolderResponse> {
 /** 查询指定作用域本地图片文件夹的连接状态。 */
 export async function getFolderStatus(scope: VaultScope): Promise<FolderResponse> {
   return sendFolderRequest({ type: FOLDER_STATUS_TYPE, scope });
+}
+
+/**
+ * 即时探一次目标 X 编辑器的连接与「已有内容」状态,返回**新鲜**值(review #5)。
+ *
+ * useProbe 的快照只在挂载/tab 事件/手动刷新/导入后更新——用户切到 X tab(彼时编辑器空)
+ * 后在编辑器手打内容不会触发重探,导致 onExisting='ask' 误判「编辑器为空」直接 replace、
+ * 覆盖手打内容。写入决策(ask/replace)前调用本函数拿到当下真相,而非依赖陈旧快照。
+ *
+ * connected 语义与 useConnection 对齐:探针 ready(response.ok)且定位到 Draft 实例
+ * (hasDraftNode)才算已连接;hasContent 取探针结果(未连接时恒 false)。
+ */
+export async function probeXTabContent(): Promise<{ connected: boolean; hasContent: boolean }> {
+  const tabId = await resolveTargetXTab();
+  if (tabId === null) return { connected: false, hasContent: false };
+
+  try {
+    const response = (await browser.tabs.sendMessage(tabId, { type: PROBE_REQUEST_TYPE })) as
+      | ProbeResponse
+      | undefined;
+    if (!response || !response.ok) return { connected: false, hasContent: false };
+    return { connected: response.result.hasDraftNode, hasContent: response.result.hasContent };
+  } catch {
+    return { connected: false, hasContent: false };
+  }
 }

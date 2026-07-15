@@ -313,6 +313,13 @@ export default defineContentScript({
       compress: CompressOpts,
     ): Promise<ImportResponse> => {
       if (!handshaked) return { ok: false, error: 'no-injector' };
+      // B5 缓解:vault handle 存于 x.com origin 的 IndexedDB,页面脚本/XSS 可取出后免手势遍历读
+      // 整个文件夹。handle 因 FS Access 的 origin 绑定无法搬到扩展 origin,故把暴露窗口收敛到「单次
+      // 导入」——本次导入若涉及本地图(local 来源),读完即清掉用过的 vault handle。是否涉及本地图
+      // 在此处(prepareImages 消费 vault 之前)判定,以决定导入完成后是否清理。
+      const usesLocalImage =
+        blocks.some((b) => b.kind === 'image' && classifyImageSource(b.source) === 'local') ||
+        (coverSource !== null && classifyImageSource(coverSource) === 'local');
       // 先在 ISOLATED 侧准备图片字节(dataURI 就地解析 / 远程走 background 代理),再压缩(如启用),
       // 然后随 import 消息把 File 交给 injector——File 经结构化克隆跨 world 传递。
       const images = await prepareImages(blocks, compress);
@@ -336,7 +343,27 @@ export default defineContentScript({
       // 写入成功且用户勾选「完成后滚动到顶部」→ 把 X 编辑器滚回文章开头,方便从头检查。
       // content 在 ISOLATED world 但与页面共享 DOM,可直接操作滚动(无需经 injector)。
       if (response.ok && scrollTop) scrollEditorToTop();
+      // B5:本次导入涉及本地图时,vault 已在 prepareImages 中被读取过——无论导入成败,读取都已发生,
+      // 故导入流程结束即清掉用过的 handle(active 与 persistent 都清),把整文件夹的暴露窗口收敛到
+      // 「单次导入」。清理是 best-effort、try/catch 吞异常,绝不影响导入结论。清后 folder-status 因
+      // 读不到 handle 会如实回落「未连接、folderName:null」,不会撒谎;代价是下篇导入需重选文件夹
+      //(用户已知晓)。无本地图的导入不触发,避免清掉用户刚连接、本篇却没用上的文件夹。
+      if (usesLocalImage) await clearVaultHandlesAfterImport();
       return response;
+    };
+
+    /**
+     * B5:清掉「用过的」vault handle(active + persistent 两级都清)。仅在导入实际涉及本地图后调用。
+     * best-effort:任一级清理失败都吞掉,不影响已得出的导入结论。
+     */
+    const clearVaultHandlesAfterImport = async (): Promise<void> => {
+      for (const scope of ['active', 'persistent'] as const) {
+        try {
+          await clearVaultHandle(scope);
+        } catch {
+          /* 清理失败静默:handle 残留是可接受的已知退化,不该让导入报错 */
+        }
+      }
     };
 
     /**

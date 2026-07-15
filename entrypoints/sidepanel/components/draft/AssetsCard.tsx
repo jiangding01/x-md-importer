@@ -1,4 +1,4 @@
-import { useEffect, type CSSProperties } from 'react';
+import { useEffect, useMemo, type CSSProperties } from 'react';
 import { useI18n } from '@/lib/i18n/useI18n';
 import { useSettings } from '@/lib/settings/SettingsProvider';
 import { useWorkspace } from '@/lib/workspace/WorkspaceProvider';
@@ -166,7 +166,12 @@ export function AssetsCard() {
   // 口径与真实上传行为对齐:只有「独占行块级图」(parser 产出的 ImageBlock)才会被上传/选作封面,
   // 段落内的行内图不会——故这里必须用 parseMarkdown 的块级结果计数/渲染,而不是全文正则 images()。
   // 传 obsidianImg:关时 ![[x]] 不算图片块,素材计数与实际写入一致。
-  const imgs = parseMarkdown(md, { obsidianImg: opts.obsidianImg }).filter((b): b is ImageBlock => b.kind === 'image');
+  // review B6-UI:用 useMemo 缓存解析——组件每次渲染都重跑 parseMarkdown 会在长文卡顿;
+  // 且靠 App 层 ErrorBoundary 兜底 parser 抛错(不连累整树)。仅 md/obsidianImg 变化时重算。
+  const imgs = useMemo(
+    () => parseMarkdown(md, { obsidianImg: opts.obsidianImg }).filter((b): b is ImageBlock => b.kind === 'image'),
+    [md, opts.obsidianImg],
+  );
   if (!md.trim() || (imgs.length === 0 && !opts.setCover)) return null;
 
   // 是否含本地图(相对路径):有才展示「本篇图片文件夹」入口 + 就绪判定才涉及文件夹连接。

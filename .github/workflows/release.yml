@@ -1,0 +1,53 @@
+name: Release
+
+# 打 tag（如 v0.2.0）时自动构建 MV3 产物并发 GitHub Release、上传 zip。
+# 版本号以 package.json 为准（WXT 自动写入 manifest.version），tag 只做触发 + 命名。
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write # 创建 Release 需要写权限
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4 # 从 package.json 的 packageManager 字段读取 pnpm 版本
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Guard — tag 与 package.json 版本必须一致
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::tag ($TAG_VERSION) 与 package.json ($PKG_VERSION) 版本不一致——先对齐再打 tag"
+            exit 1
+          fi
+          echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build & zip (Chrome MV3)
+        run: pnpm zip
+
+      - name: Extract release notes from CHANGELOG
+        run: node .github/scripts/extract-release-notes.mjs "${GITHUB_REF_NAME#v}" > release-notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          files: .output/*-chrome.zip
+          fail_on_unmatched_files: true # 没打出 zip 就让 release 失败，不发空版本

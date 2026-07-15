@@ -725,9 +725,8 @@ export default defineUnlistedScript(() => {
   ): Promise<ImportResult> => {
     if (importInFlight) return { ok: false, error: 'import already in progress' };
     importInFlight = true;
+    // 以下声明本身不会抛错,且 catch(stage)/finally 需引用,故留在 try 外层:
     let stage = 'draft node';
-    const imageCount = blocks.filter((b) => b.kind === 'image').length;
-    console.info('[MarkFlow] 写入开始', { blocks: blocks.length, mode, images: imageCount });
     // 每次运行独立的 marker 前缀,避免与历史残留 / 并发写入串扰。
     const markerPrefix = `__MARKFLOW_IMG_${Math.random().toString(36).slice(2, 8)}_`;
     // 清扫用**通用**前缀:不仅清本次,也清掉「历史遗留」——同一草稿反复导入时,之前某次
@@ -736,6 +735,11 @@ export default defineUnlistedScript(() => {
     // 记录每个图片 marker、其在 images[] 中的下标(按文档顺序 = 第几个 ImageBlock)、及失败兜底原文。
     const imageMarkers: Array<{ marker: string; imageIndex: number; fallbackText: string }> = [];
     try {
+      // 触碰 blocks 的语句必须在 try 内:页面可伪造无 blocks 字段的 import 消息,
+      // blocks.filter / blocks.length 会抛 TypeError——放 try 外会跳过 finally 的
+      // importInFlight 复位,导致该页此后所有合法导入永久收到 'import already in progress'。
+      const imageCount = blocks.filter((b) => b.kind === 'image').length;
+      console.info('[MarkFlow] 写入开始', { blocks: blocks.length, mode, images: imageCount });
       let draftNode = findDraftStateNode();
       if (!draftNode) return { ok: false, error: 'draft state node not found' };
 
@@ -903,17 +907,32 @@ export default defineUnlistedScript(() => {
       stage = 'verify';
       await delay(150);
       if (effectiveMode === 'replace') {
-        const verifyNode = findDraftStateNode();
-        if (verifyNode) {
+        const ourKeys = new Set(built.map(([k]) => k));
+        // 重读一轮最新 blockMap 并重数命中的新块 key。X 的 onChange 是异步 commit
+        // (见 sweepMarkers 注释:单次读 fiber 可能读到中间态),封装成可重试的计数器。
+        // 读不到状态节点时不作数,按「通过」处理(返回 blocks.length),避免误报失败。
+        const countHits = (): number => {
+          const verifyNode = findDraftStateNode();
+          if (!verifyNode) return blocks.length;
           const verifyMap = readEditorState(verifyNode).getCurrentContent().getBlockMap();
-          const ourKeys = new Set(built.map(([k]) => k));
-          let hit = 0;
+          let n = 0;
           verifyMap.forEach((b) => {
-            if (ourKeys.has(b.getKey())) hit += 1;
+            if (ourKeys.has(b.getKey())) n += 1;
           });
-          if (hit < blocks.length) {
-            return { ok: false, error: `verify: only ${hit}/${blocks.length} blocks landed` };
-          }
+          return n;
+        };
+        let hit = countHits();
+        if (hit < blocks.length) {
+          // 首轮不达标不立即判失败:X 可能尚未 commit 完,再等一轮重读最新 blockMap 复核,
+          // 给 X 足够时间落盘,消除「150ms 读到旧 state → hit 偏小」的误报。
+          await delay(200);
+          hit = countHits();
+        }
+        if (hit < blocks.length) {
+          // 确实仍不达标才判失败。此 return 不走 catch,故此处显式补一次清扫——
+          // 否则随正文提交的 __MARKFLOW_IMG_* 占位块会残留用户草稿(仅在确有图片 marker 时清)。
+          if (imageMarkers.length) await sweepMarkers(MARKER_SWEEP_PREFIX);
+          return { ok: false, error: `verify: only ${hit}/${blocks.length} blocks landed` };
         }
       }
 

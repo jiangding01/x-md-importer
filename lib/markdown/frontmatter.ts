@@ -7,6 +7,8 @@
  * `title:` / `Title:` / `标题:`,不支持嵌套 YAML、不支持多行值。
  */
 
+import { forEachContentLine } from './parser';
+
 /** 抽取结果:命中标题及其来源(供上层决定是否从正文移除 H1)。 */
 export interface ExtractedTitle {
   title: string;
@@ -26,10 +28,23 @@ function stripQuotes(raw: string): string {
   return v;
 }
 
-/** 取文首 frontmatter 块的原文(独占行 `---` 包裹);无则 null。 */
+/**
+ * 取文首 frontmatter 块的原文(独占行 `---` 包裹);无则 null。
+ * 闭合 `---` 必须出现在**首个空行之前**(frontmatter 体不含空行)——须与 parser.ts 的
+ * parseMarkdown 文首跳过判定完全对齐,否则文首装饰性 `---\n\n正文\n\n---` 会被这里当成
+ * frontmatter(把「正文」误抽为 title/cover),而 parser 却按分割线+正文处理,两边漂移。
+ */
 function frontmatterBody(md: string): string | null {
-  const m = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(md);
-  return m ? (m[1] ?? '') : null;
+  const lines = md.split(/\r?\n/);
+  if (!/^---[ \t]*$/.test(lines[0] ?? '')) return null;
+  const body: string[] = [];
+  for (let j = 1; j < lines.length; j += 1) {
+    const l = lines[j] ?? '';
+    if (/^---[ \t]*$/.test(l)) return body.join('\n'); // 闭合
+    if (l.trim() === '') return null; // 空行前未闭合 → 非 frontmatter
+    body.push(l);
+  }
+  return null; // 未闭合
 }
 
 /** 在 frontmatter 里按 key 列表取第一个命中的值(去引号);无 / 空 → null。 */
@@ -76,24 +91,20 @@ export function extractCover(md: string): string | null {
  * extractTitle 与 stripFirstH1 共用它,保证「抽为标题的 H1」与「从正文移除的 H1」是同一行。
  */
 function findFirstH1(lines: string[]): { index: number; title: string } | null {
-  let fence: string | null = null; // 当前围栏字符(` 或 ~),null=不在围栏内
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i] ?? '';
-    const fenceMatch = /^(`{3,}|~{3,})/.exec(line);
-    if (fenceMatch) {
-      const marker = (fenceMatch[1] ?? '')[0] ?? '`';
-      if (fence === null) fence = marker; // 开栏
-      else if (marker === fence) fence = null; // 同字符闭栏
-      continue;
-    }
-    if (fence !== null) continue; // 围栏内一律不解析
+  let found: { index: number; title: string } | null = null;
+  // 复用 parser 的严格围栏遍历(与解析主循环同源):`~~~` 与 ``` 不互闭、闭栏须裸行且数量足够,
+  // 代码块内的 `# 注释` 不会被误当文章标题。`/^#\s+/` 只匹配 H1(`## ` 因 `#` 后非空白不命中)。
+  forEachContentLine(lines, (line, index) => {
     const h1 = /^#\s+(.+)$/.exec(line);
     if (h1) {
       const title = (h1[1] ?? '').trim();
-      if (title.length > 0) return { index: i, title };
+      if (title.length > 0) {
+        found = { index, title };
+        return true;
+      }
     }
-  }
-  return null;
+  });
+  return found;
 }
 
 /** 从正文抽取第一个 H1(跳过代码块);无则 null。 */
