@@ -7,7 +7,8 @@
 
 ## [Unreleased]
 
-### 新增 · 快捷键跳转 / 诊断快照 / 备份恢复（设置 action 接真实实现）
+### 新增 · 标题冲突 `ask` 询问弹窗
+- **`titleConflict='ask'` 接真实实现**：编辑器已有标题时弹窗让用户决定覆盖/保留（此前 `ask` 保守降级为 `keep`）。机制：标题在正文写入后设置，`ask` 模式先以 `keep` 探测——编辑器本无标题则顺便设好（无冲突不打扰）、已有标题则被跳过（`applied=false`）后弹出 `TitleConflictDialog`（显示待写入的新标题 + 覆盖/保留），用户选覆盖才二次 `overwrite`。弹窗经 Promise 化 resolver 暂停/恢复 `startImport` 的 async 流程。仅在**真冲突**时打扰，无冲突静默设置。
 - 把设置面板里剩余 3 个「演示 toast」的 action 接上真实功能(纯前端,静态预览验证)：
   - **快捷键**「前往设置」→ `chrome.tabs.create('chrome://extensions/shortcuts')`(纯 UI 预览无 chrome.tabs 时提示地址);
   - **诊断面板**「导出快照」→ 收集探针状态/结果 + 全部设置 + 环境(扩展版本 / UA / 时间)→ 下载 JSON,报障用;

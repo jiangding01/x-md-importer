@@ -13,7 +13,7 @@ import { useConnection } from '@/lib/bridge/useConnection';
 import { useProbe } from '@/lib/bridge/useProbe';
 import { importToXTab, setTitleOnXTab } from '@/lib/bridge/importArticle';
 import { requestRemoteImagePermissions } from '@/lib/bridge/imagePermissions';
-import type { ImageBlock, ImportMode, SetTitleResponse, TitleConflict } from '@/lib/bridge/protocol';
+import type { ImageBlock, ImportMode, SetTitleResponse } from '@/lib/bridge/protocol';
 import { capability, firstTitle } from '@/lib/markdown/capability';
 import { extractCover, extractTitle, stripFirstH1 } from '@/lib/markdown/frontmatter';
 import { parseMarkdown } from '@/lib/markdown/parser';
@@ -62,6 +62,11 @@ interface WorkspaceValue {
   overwriteConfirm: () => void;
   overwriteCancel: () => void;
   editorHasContent: boolean;
+  // 标题冲突询问(titleConflict='ask' 且编辑器已有标题时,写入后按需弹出)
+  askTitleOverwrite: boolean;
+  pendingTitle: string | null; // 待写入的新标题(弹窗内显示)
+  titleOverwriteConfirm: () => void; // 覆盖为新标题
+  titleOverwriteKeep: () => void; // 保留原标题
   // 报告 / 庆祝
   reportVisible: boolean;
   closeReport: () => void;
@@ -143,12 +148,20 @@ export function WorkspaceProvider({
   const [stageLabel, setStageLabel] = useState('');
   const [reportVisible, setReportVisible] = useState(false);
   const [askOverwrite, setAskOverwrite] = useState(false);
+  const [askTitleOverwrite, setAskTitleOverwrite] = useState(false);
+  const [pendingTitle, setPendingTitle] = useState<string | null>(null);
   const [celebrating, setCelebrating] = useState(false);
   const [histQ, setHistQ] = useState('');
   const [history, setHistory] = useState<HistoryItem[]>(initialHistory);
+  // history 的最新值镜像:finishImport 可能在标题 ask 弹窗挂起(等用户输入,时长任意)后才收尾,
+  // 期间用户若在「记录」页删改历史,闭包捕获的 history 会陈旧——finishImport 改读 ref 避免用旧值
+  // commit 覆盖 storage、复活已删条目。所有写入都经 commitHistory 同步此 ref。
+  const historyRef = useRef<HistoryItem[]>(initialHistory);
   const [histClearArm, setHistClearArm] = useState(false);
 
   const timers = useRef<Timers>({});
+  // 标题冲突询问的 resolver:startImport 弹窗时存入,用户点覆盖/保留时兑现,恢复 async 流程。
+  const titleAskResolver = useRef<((overwrite: boolean) => void) | null>(null);
   // 同步闸门:防极快双击并发触发两次 startImport(React state 的 importing 更新是异步的,
   // 双击间隔内两次 writeX 都可能读到陈旧的 importing=false)。ref 写入同步生效,
   // 只做「进入即锁、结束即解」的闸门作用,UI 展示仍用 importing state。
@@ -172,6 +185,7 @@ export function WorkspaceProvider({
   }, []);
 
   const commitHistory = useCallback((next: HistoryItem[]) => {
+    historyRef.current = next; // 同步镜像,供挂起后的 finishImport 读最新值
     setHistory(next);
     void saveHistory(next);
   }, []);
@@ -276,7 +290,9 @@ export function WorkspaceProvider({
     setReportVisible(opts.autoReport !== 'never');
 
     const limit = opts.histLimit === 'inf' ? Infinity : Number(opts.histLimit);
-    const nextHistory = [item, ...history];
+    // 读 historyRef.current(最新值)而非闭包 history:标题 ask 弹窗挂起期间用户可能已在记录页
+    // 删改历史,用陈旧闭包 commit 会复活已删条目并写回 storage(review P1)。
+    const nextHistory = [item, ...historyRef.current];
     commitHistory(nextHistory.length > limit ? nextHistory.slice(0, limit) : nextHistory);
 
     if (opts.confetti) {
@@ -288,11 +304,29 @@ export function WorkspaceProvider({
     // 写入成功后重探编辑器状态,更新 hasContent——否则「只探一次」的探针会让下次
     // ask 模式误判编辑器仍为空,直接静默 replace 覆盖刚写入的正文(review #3)。
     void refreshProbe();
-  }, [md, en, opts.autoReport, opts.histLimit, opts.confetti, history, commitHistory, showToast, t.writtenToast, playSound, refreshProbe]);
+    // history 不再进 deps:finishImport 改读 historyRef.current(最新镜像),不依赖闭包快照。
+  }, [md, en, opts.autoReport, opts.histLimit, opts.confetti, commitHistory, showToast, t.writtenToast, playSound, refreshProbe]);
 
   // 真实写入:解析 → 送达 X tab → 按结果收尾。纯文本写入近乎瞬时,
   // 进度条只走「解析中 → 写入中 → 完成」三段真实阶段(不再用定时器编造百分比,
   // 条纹动画在 await 期间提供 indeterminate 观感)。
+  // 标题冲突询问:弹窗并 await 用户选择(覆盖=true / 保留=false)。startImport 标题阶段调用它。
+  // 定义在 startImport 之前——后者依赖它,顺序颠倒会 TDZ。
+  const askTitleConflict = useCallback((title: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      titleAskResolver.current = resolve;
+      setPendingTitle(title);
+      setAskTitleOverwrite(true);
+    });
+  }, []);
+  const settleTitleAsk = useCallback((overwrite: boolean) => {
+    setAskTitleOverwrite(false);
+    setPendingTitle(null);
+    const resolve = titleAskResolver.current;
+    titleAskResolver.current = null;
+    resolve?.(overwrite);
+  }, []);
+
   const startImport = useCallback(
     async (mode: ImportMode) => {
       // 同步闸门优先于一切:极快双击时第二次调用在这里直接短路,
@@ -353,12 +387,20 @@ export function WorkspaceProvider({
           if (res.coverSet) toastMsg = `${toastMsg} · ${en ? 'cover' : '封面'}`;
           // 标题流程:正文已成功,再设置标题。标题失败不推翻正文成功结论(部分成功)。
           if (extracted) {
-            // conflict 映射:'overwrite'→overwrite;'keep'/'ask' 一律 keep(保守)。
-            // 'ask' 尚无独立询问 UI,取「保守不覆盖」而非 overwrite——遇到编辑器已有标题时
-            // 宁可保留原标题也不静默覆盖(叠加打分误命中时更不能贸然覆盖)。
-            // TODO(M2+): 标题 ask 独立询问弹窗,再区分 ask 与 keep。
-            const conflict: TitleConflict = opts.titleConflict === 'overwrite' ? 'overwrite' : 'keep';
-            const titleRes = await setTitleOnXTab(extracted.title, conflict);
+            let titleRes: SetTitleResponse;
+            if (opts.titleConflict === 'overwrite') {
+              titleRes = await setTitleOnXTab(extracted.title, 'overwrite');
+            } else if (opts.titleConflict === 'keep') {
+              titleRes = await setTitleOnXTab(extracted.title, 'keep');
+            } else {
+              // ask:先以 keep 探测——编辑器本无标题则顺便设好(applied=true,无冲突不打扰);
+              // 已有标题则被跳过(applied=false)→ 弹窗问用户,选覆盖才二次 overwrite。
+              titleRes = await setTitleOnXTab(extracted.title, 'keep');
+              if (titleRes.ok && titleRes.applied === false) {
+                const overwrite = await askTitleConflict(extracted.title);
+                if (overwrite) titleRes = await setTitleOnXTab(extracted.title, 'overwrite');
+              }
+            }
             toastMsg = `${toastMsg} · ${titleResultText(titleRes, t)}`;
           }
           finishImport(toastMsg, res.imageFail);
@@ -381,7 +423,7 @@ export function WorkspaceProvider({
     // setCover/coverKeep/scrollTop/obsidianImg/wikilink…),逐列极易漏(漏了会 stale-closure
     // 读到旧值——切开关后不改 md 就点写入即失效)。setOpt 每次产生新 opts 引用,依赖整个 opts
     // 让任一设置切换都重建回调,正确且防再漏。
-    [md, en, t, opts, finishImport, showToast],
+    [md, en, t, opts, finishImport, showToast, askTitleConflict],
   );
 
   const writeX = useCallback(() => {
@@ -404,6 +446,8 @@ export function WorkspaceProvider({
     void startImport('replace');
   }, [startImport]);
   const overwriteCancel = useCallback(() => setAskOverwrite(false), []);
+  const titleOverwriteConfirm = useCallback(() => settleTitleAsk(true), [settleTitleAsk]);
+  const titleOverwriteKeep = useCallback(() => settleTitleAsk(false), [settleTitleAsk]);
 
   // ── 记录 ──
   const loadHistoryItem = useCallback(
@@ -477,6 +521,10 @@ export function WorkspaceProvider({
       overwriteAppend,
       overwriteConfirm,
       overwriteCancel,
+      askTitleOverwrite,
+      pendingTitle,
+      titleOverwriteConfirm,
+      titleOverwriteKeep,
       editorHasContent,
       reportVisible,
       closeReport: () => setReportVisible(false),
@@ -495,6 +543,7 @@ export function WorkspaceProvider({
       tab, toast, showToast, md, setMd, mode, dragging, save, clear, clearArm, loadSample, readFile,
       capOpen, checkVisible, checkStep, runCheck, closeCheck, importing, stageIdx, stagePct, stageLabel,
       writeX, askOverwrite, overwriteAppend, overwriteConfirm, overwriteCancel,
+      askTitleOverwrite, pendingTitle, titleOverwriteConfirm, titleOverwriteKeep,
       editorHasContent, reportVisible, celebrating, history, histQ, loadHistoryItem, copyHistoryItem,
       deleteHistoryItem, clearHistory, histClearArm, wipeAll,
     ],
