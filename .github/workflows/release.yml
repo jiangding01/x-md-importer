@@ -23,7 +23,9 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 必须 ≥ 22.13:packageManager 指定的 pnpm 11.12 用到 node:sqlite(Node 22.5+ 内置),
+          # Node 20 下会 ERR_UNKNOWN_BUILTIN_MODULE 崩溃。与本地(Node 22+/24)对齐。
+          node-version: 22
           cache: pnpm
 
       - name: Install dependencies
