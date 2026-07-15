@@ -338,7 +338,9 @@ export function WorkspaceProvider({
         // 写入中(等待 content → injector 直写)
         setStageLabel(t.stBody);
         setStagePct(75);
-        const res = await importToXTab(blocks, mode, coverSource, opts.scrollTop);
+        // 压缩参数:compress 开时传 { maxEdge, quality };关时 null(content 侧不压)。
+        const compress = opts.compress ? { maxEdge: opts.maxEdge, quality: Number(opts.quality) } : null;
+        const res = await importToXTab(blocks, mode, coverSource, opts.scrollTop, compress);
         if (res.ok) {
           setStagePct(100);
           // #7:所选 append 但引擎实际降级为 replace(编辑器为空)→ 明确提示,不静默。
