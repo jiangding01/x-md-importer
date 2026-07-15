@@ -225,6 +225,8 @@ export type RuntimeRequest =
       mode: ImportMode;
       /** 封面图来源(frontmatter cover / 正文首图);null=不设封面。content 准备后设到 X 封面 fileInput。 */
       coverSource?: string | null;
+      /** 写入成功后是否把 X 编辑器滚回文章开头(对应设置「完成后滚动到顶部」)。 */
+      scrollTop?: boolean;
     }
   | { type: typeof SET_TITLE_REQUEST_TYPE; title: string; conflict: TitleConflict }
   // forcePick=true 强制重新 showDirectoryPicker 选文件夹(「更换」);缺省/false 时若存量 handle
@@ -283,6 +285,7 @@ export function isImportRequest(msg: unknown): msg is {
   blocks: ImportBlock[];
   mode: ImportMode;
   coverSource?: string | null;
+  scrollTop?: boolean;
 } {
   return (
     typeof msg === 'object' &&

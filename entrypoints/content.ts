@@ -284,6 +284,7 @@ export default defineContentScript({
       blocks: ImportBlock[],
       mode: ImportMode,
       coverSource: string | null,
+      scrollTop: boolean,
     ): Promise<ImportResponse> => {
       if (!handshaked) return { ok: false, error: 'no-injector' };
       // 先在 ISOLATED 侧准备图片字节(dataURI 就地解析 / 远程走 background 代理),
@@ -298,13 +299,38 @@ export default defineContentScript({
       // 报失败并丢弃 injector 事后回来的成功结果(而 injector 仍在后台改写编辑器)。基础 45s +
       // 每图 40s(单图 30s 预算 + 归位/清理冗余)+ 封面 20s。
       const timeoutMs = 45_000 + images.length * 40_000 + (cover ? 20_000 : 0);
-      return bridge.request<ImportResult, ImportResponse>(
+      const response = await bridge.request<ImportResult, ImportResponse>(
         'import-result',
         (id) => post({ source: ISO_SOURCE, kind: 'import', nonce, id, blocks, mode, images, cover }),
         timeoutMs,
         (result) => result,
         () => ({ ok: false, error: 'timeout' }),
       );
+      // 写入成功且用户勾选「完成后滚动到顶部」→ 把 X 编辑器滚回文章开头,方便从头检查。
+      // content 在 ISOLATED world 但与页面共享 DOM,可直接操作滚动(无需经 injector)。
+      if (response.ok && scrollTop) scrollEditorToTop();
+      return response;
+    };
+
+    /**
+     * 把 X 文章编辑器滚回顶部:先滚页面 window,再沿正文 contenteditable 向上找**可滚动祖先**
+     * 滚顶(X 的编辑区常在独立滚动容器里,单滚 window 不够)。best-effort、异常吞掉——
+     * 滚动失败绝不影响写入成功结论。
+     */
+    const scrollEditorToTop = () => {
+      try {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        const editor = document.querySelector<HTMLElement>('[contenteditable="true"]');
+        for (let el = editor?.parentElement; el; el = el.parentElement) {
+          const oy = getComputedStyle(el).overflowY;
+          if (el.scrollHeight > el.clientHeight && (oy === 'auto' || oy === 'scroll')) {
+            el.scrollTo({ top: 0, behavior: 'smooth' });
+            break; // 只滚最近的一个可滚动容器
+          }
+        }
+      } catch {
+        /* 滚动是锦上添花,失败静默 */
+      }
     };
 
     /**
@@ -446,7 +472,8 @@ export default defineContentScript({
       message: unknown,
     ): Promise<ProbeResponse | ImportResponse | SetTitleResponse | FolderResponse> | undefined => {
       if (isProbeRequest(message)) return probeInjector();
-      if (isImportRequest(message)) return importInjector(message.blocks, message.mode, message.coverSource ?? null);
+      if (isImportRequest(message))
+        return importInjector(message.blocks, message.mode, message.coverSource ?? null, message.scrollTop === true);
       if (isSetTitleRequest(message)) return setTitleInjector(message.title, message.conflict);
       // scope 用 messageScope 归一(旧消息缺字段时回落 persistent),不裸信任 message.scope。
       if (isConnectFolderRequest(message))

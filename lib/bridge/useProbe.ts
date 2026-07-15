@@ -103,8 +103,11 @@ export function ProbeProvider({ children }: ProbeProviderProps) {
 
   // 自动重探:监听标签页事件,免用户手动点刷新。事件驱动(非轮询)——
   //  - onActivated:切换到别的标签(如切到 X 文章页)后重探;
-  //  - onUpdated:X 标签内 URL 变化(含 SPA pushState,如 首页→articles/edit/切换文章)后重探。
-  // 400ms 防抖:SPA 导航会连发多个事件,合并成一次探测。
+  //  - onUpdated:当前活动 X 标签的 ①URL 变化(SPA pushState,如切换文章)或 ②加载完成
+  //    (status==='complete')后重探。**②不可省**:整页刷新(⌘R)/首次进入时 URL 不变、
+  //    changeInfo.url 为空,只有 status——此时 content script 刚重新注入,必须靠 complete 感知,
+  //    否则「刷新后连不上、要手动点刷新」(实测暴露)。
+  // 400ms 防抖:SPA 导航 / 加载会连发多个事件,合并成一次探测。
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const schedule = () => {
@@ -114,12 +117,12 @@ export function ProbeProvider({ children }: ProbeProviderProps) {
     const onActivated = () => schedule();
     const onUpdated = (
       _tabId: number,
-      changeInfo: { url?: string },
+      changeInfo: { url?: string; status?: string },
       tab: { url?: string; active?: boolean },
     ) => {
-      // 仅「当前活动 X 标签」内的 URL 变化(如 SPA 切换文章)才重探——跟随当前标签,
-      // 后台标签的变化不影响当前显示。
-      if (!changeInfo.url || !tab.active) return;
+      // 仅「当前活动 X 标签」的 URL 变化 或 加载完成 才重探——跟随当前标签,后台标签不影响显示。
+      if (!tab.active) return;
+      if (!changeInfo.url && changeInfo.status !== 'complete') return;
       if (/^https?:\/\/(?:[^/]+\.)?(?:x|twitter)\.com\//.test(tab.url ?? '')) schedule();
     };
     browser.tabs.onActivated.addListener(onActivated);

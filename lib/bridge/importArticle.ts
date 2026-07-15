@@ -40,8 +40,9 @@ export async function importToXTab(
   blocks: ImportBlock[],
   mode: ImportMode,
   coverSource: string | null = null,
+  scrollTop = false,
 ): Promise<ImportResponse> {
-  const request: RuntimeRequest = { type: IMPORT_REQUEST_TYPE, blocks, mode, coverSource };
+  const request: RuntimeRequest = { type: IMPORT_REQUEST_TYPE, blocks, mode, coverSource, scrollTop };
 
   // ── 1. 定位目标 X 标签页(拿不到直接判「未连接」)──
   const tabId = await resolveTargetXTab();
