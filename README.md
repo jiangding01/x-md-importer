@@ -6,6 +6,59 @@ Chrome 扩展（Manifest V3）· WXT + React 18 + TypeScript · 侧边栏工作�
 
 ---
 
+## 界面预览
+
+侧边栏工作台 —— 编辑、实时预览、写入前的「能力映射」：
+
+<table>
+  <tr>
+    <td width="33%"><img src="docs/qa/shots/02-draft-edit-minimal-zh.impl.png" alt="Markdown 编辑"></td>
+    <td width="33%"><img src="docs/qa/shots/03-draft-preview-minimal-zh.impl.png" alt="实时预览"></td>
+    <td width="33%"><img src="docs/qa/shots/04-draft-capability-minimal-zh.impl.png" alt="能力映射预览"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Markdown 编辑</sub></td>
+    <td align="center"><sub>实时预览</sub></td>
+    <td align="center"><sub>能力映射：写入前告知每个元素会变成什么</sub></td>
+  </tr>
+</table>
+
+导入报告、历史记录、诚实的设置面板：
+
+<table>
+  <tr>
+    <td width="33%"><img src="docs/qa/shots/08-draft-report-minimal-zh.impl.png" alt="导入报告"></td>
+    <td width="33%"><img src="docs/qa/shots/09-history-minimal-zh.impl.png" alt="历史记录"></td>
+    <td width="33%"><img src="docs/qa/shots/10-settings-minimal-zh.impl.png" alt="设置面板"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>导入报告（逐项成功 / 降级 / 失败）</sub></td>
+    <td align="center"><sub>历史记录（搜索 / 载入 / 重导）</sub></td>
+    <td align="center"><sub>设置面板（每个开关都真实生效）</sub></td>
+  </tr>
+</table>
+
+四套界面主题（各分明暗，一键切换）：
+
+<table>
+  <tr>
+    <td width="25%"><img src="docs/qa/shots/10-settings-minimal-zh.impl.png" alt="极简主题"></td>
+    <td width="25%"><img src="docs/qa/shots/11-settings-console-zh.impl.png" alt="控制台主题"></td>
+    <td width="25%"><img src="docs/qa/shots/12-settings-paper-zh.impl.png" alt="纸感主题"></td>
+    <td width="25%"><img src="docs/qa/shots/13-settings-glass-zh.impl.png" alt="玻璃主题"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>极简 Minimal</sub></td>
+    <td align="center"><sub>控制台 Console</sub></td>
+    <td align="center"><sub>纸感 Paper</sub></td>
+    <td align="center"><sub>玻璃 Glass</sub></td>
+  </tr>
+</table>
+
+<sub>截图为侧边栏各视图（极简主题·中文）；界面持续演进，以实际运行为准。</sub>
+
+---
+
 ## 功能
 
 **写入 X 文章正文**（借 Draft.js 直写，非合成粘贴）：标题（H1/H2）、粗体 / 斜体 / 删除线、链接、有序 / 无序列表、引用、**原生代码块**（X 的 `MARKDOWN` entity，带语言标注）、**原生表格**（GFM，X 直接渲染而非转图片）、分割线、**推文嵌入**（独占行 X/Twitter 链接 → 卡片）；行内代码 X 正文不支持、降级为保留反引号纯文本。支持整体覆盖 / 追加两种写入模式。
@@ -30,7 +83,7 @@ Chrome 扩展（Manifest V3）· WXT + React 18 + TypeScript · 侧边栏工作�
 
 **其它**：四套界面主题（极简 / 控制台 / 纸感 / 玻璃，各分明暗，一键切换）· 中英双语 · 本地优先、无遥测 · **永不自动发布**（发布按钮永远留给用户）。
 
-> **状态**：核心链路已全线打通并真机验证——正文（含代码块 / 表格 / 图片 / 封面 / 推文 / 分割线）真实写入 X 编辑器，本地图按需授权、图片压缩、探针自动重探等均已落地，设置面板完成「诚实化」整顿。演进细节见 [CHANGELOG.md](./CHANGELOG.md)，进度与规划见 [HANDOFF.md](./HANDOFF.md)。
+> **状态（v0.2.0）**：核心链路已全线打通并真机验证——正文（含代码块 / 表格 / 图片 / 封面 / 推文 / 分割线）真实写入 X 编辑器，本地图按需授权、图片压缩、探针自动重探、标题冲突询问均已落地，设置面板完成「诚实化」整顿，并做过发布前 4 专项审计加固。演进细节见 [CHANGELOG.md](./CHANGELOG.md)，进度与规划见 [HANDOFF.md](./HANDOFF.md)。
 
 ## 快速开始
 
@@ -44,6 +97,8 @@ pnpm compile          # 仅类型检查（tsc --noEmit）
 ```
 
 加载扩展：Chrome → `chrome://extensions` → 打开「开发者模式」→「加载已解压的扩展程序」→ 选择 `.output/chrome-mv3`，点击工具栏图标即打开侧边栏。
+
+> 不想本地构建？到 [Releases](../../releases) 下载打包好的 `x-md-importer-<版本>-chrome.zip`，解压后同样用「加载已解压的扩展程序」选解压目录即可。
 
 **真机使用注入功能**：需登录 X 并打开文章编辑页（`x.com/compose/articles/edit/…`）。**改动 content/injector 后务必刷新 X 页面**——扩展更新不会自动替换页面里已注入的旧脚本（面板会提示「请刷新此 X 页面」）。
 

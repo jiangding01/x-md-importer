@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-16
+
+> 首个真正可用的完整版本（`0.1.0` 为注入引擎尚是 mock 的演示版）。M1–M3 全格式导入落地 + 图片/封面/表格 + 本地图 FS Access + 设置面板诚实化 + 标题冲突询问 + 发布前 4 专项审计加固。
+
 ### 修复 · 发布前加固（审计 4 专项 + 交叉验证，13 项）
 上线前对注入引擎 / UI 状态机 / 安全合规 / 解析层做了深度审计并修复。分 4 域并行修复后与标题 ask 功能整合。
 
@@ -148,5 +152,6 @@
 - 「写入 X 文章」、预检、连接文件夹等为 **mock 时序演示**（`lib/workspace/importService.ts`、`lib/bridge/useConnection.ts` 等），真实注入引擎待 M1 接入。
 - 设计稿「演示专用」内容（模拟 X 编辑页、setTimeout 时序）未照搬进产品。
 
-[Unreleased]: https://github.com/jiangding01/x-md-importer/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/jiangding01/x-md-importer/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/jiangding01/x-md-importer/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jiangding01/x-md-importer/releases/tag/v0.1.0
