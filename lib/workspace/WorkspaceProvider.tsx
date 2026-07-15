@@ -11,7 +11,8 @@ import { useI18n } from '@/lib/i18n/useI18n';
 import { useSettings } from '@/lib/settings/SettingsProvider';
 import { useConnection } from '@/lib/bridge/useConnection';
 import { useProbe } from '@/lib/bridge/useProbe';
-import { importToXTab, setTitleOnXTab } from '@/lib/bridge/importArticle';
+import { importToXTab, probeXTabContent, setTitleOnXTab } from '@/lib/bridge/importArticle';
+import { resolveTargetXTab } from '@/lib/bridge/locateXTab';
 import { requestRemoteImagePermissions } from '@/lib/bridge/imagePermissions';
 import type { ImageBlock, ImportMode, SetTitleResponse } from '@/lib/bridge/protocol';
 import { capability, firstTitle } from '@/lib/markdown/capability';
@@ -43,6 +44,10 @@ interface WorkspaceValue {
   clearArm: boolean;
   loadSample: () => void;
   readFile: (file: File | null | undefined) => void;
+  // 载入二次确认(载入历史 / 导入 .md 会覆盖当前草稿时弹出)
+  loadConfirmOpen: boolean;
+  loadConfirm: () => void;
+  loadCancel: () => void;
   // 能力映射折叠
   capOpen: boolean;
   toggleCap: () => void;
@@ -158,6 +163,10 @@ export function WorkspaceProvider({
   // commit 覆盖 storage、复活已删条目。所有写入都经 commitHistory 同步此 ref。
   const historyRef = useRef<HistoryItem[]>(initialHistory);
   const [histClearArm, setHistClearArm] = useState(false);
+  // 载入待确认动作:非 null 时弹 LoadConfirmDialog,存的是「确认后要执行的覆盖动作」。
+  // review B3:载入(历史/文件)与清空同等破坏力(经 setMd 立即覆盖 storage、不可逆),
+  // 但此前只有清空二次确认;这里补齐载入的确认闸门。
+  const [pendingLoad, setPendingLoad] = useState<(() => void) | null>(null);
 
   const timers = useRef<Timers>({});
   // 标题冲突询问的 resolver:startImport 弹窗时存入,用户点覆盖/保留时兑现,恢复 async 流程。
@@ -238,14 +247,21 @@ export function WorkspaceProvider({
       if (!file) return;
       const reader = new FileReader();
       reader.onload = () => {
-        setMd(String(reader.result));
-        setMode('edit');
+        const incoming = String(reader.result);
+        // 拖入浮层先收起(与是否弹确认无关),避免取消时 dragging 遮罩残留。
         setDragging(false);
-        showToast(`${t.importedToast} · ${file.name}`);
+        const apply = () => {
+          setMd(incoming);
+          setMode('edit');
+          showToast(`${t.importedToast} · ${file.name}`);
+        };
+        // 当前草稿非空且内容不同 → 弹确认;否则(空/相同)直接载入。
+        if (md.trim() && incoming !== md) setPendingLoad(() => apply);
+        else apply();
       };
       reader.readAsText(file);
     },
-    [setMd, showToast, t.importedToast],
+    [md, setMd, showToast, t.importedToast],
   );
 
   // ── 预检 ──
@@ -369,12 +385,22 @@ export function WorkspaceProvider({
         // 远程图 / 封面 host 权限:必须在用户手势内、任何其它 await 之前(上面全同步)。
         await requestRemoteImagePermissions(md, coverSource ? [coverSource] : []);
 
+        // review B1:正文写入前解析目标 X 标签**一次**并全程钉死。放在权限申请(首个 await)
+        // 之后而非之前——权限申请必须是手势链首个 await(见 imagePermissions 注释),此处再解析
+        // 不消耗手势;且权限弹窗结束时焦点仍在当前 X 草稿,此刻定位即准。拿不到(切走了/非 X)
+        // → 按 disconnected 提前返回,importing 由 finally 复位。
+        const pinnedTabId = await resolveTargetXTab();
+        if (pinnedTabId === null) {
+          showToast(importErrorText('disconnected', t));
+          return;
+        }
+
         // 写入中(等待 content → injector 直写)
         setStageLabel(t.stBody);
         setStagePct(75);
         // 压缩参数:compress 开时传 { maxEdge, quality };关时 null(content 侧不压)。
         const compress = opts.compress ? { maxEdge: opts.maxEdge, quality: Number(opts.quality) } : null;
-        const res = await importToXTab(blocks, mode, coverSource, opts.scrollTop, compress);
+        const res = await importToXTab(blocks, mode, coverSource, opts.scrollTop, compress, pinnedTabId);
         if (res.ok) {
           setStagePct(100);
           // #7:所选 append 但引擎实际降级为 replace(编辑器为空)→ 明确提示,不静默。
@@ -387,18 +413,20 @@ export function WorkspaceProvider({
           if (res.coverSet) toastMsg = `${toastMsg} · ${en ? 'cover' : '封面'}`;
           // 标题流程:正文已成功,再设置标题。标题失败不推翻正文成功结论(部分成功)。
           if (extracted) {
+            // 标题 ask 询问弹窗 × B1 钉 tabId 的整合:三处 setTitleOnXTab **全部复用 pinnedTabId**,
+            // 标题绝不落到用户中途切过去的另一篇文章(尤其 ask 弹窗无限期挂起期间)。
             let titleRes: SetTitleResponse;
             if (opts.titleConflict === 'overwrite') {
-              titleRes = await setTitleOnXTab(extracted.title, 'overwrite');
+              titleRes = await setTitleOnXTab(extracted.title, 'overwrite', pinnedTabId);
             } else if (opts.titleConflict === 'keep') {
-              titleRes = await setTitleOnXTab(extracted.title, 'keep');
+              titleRes = await setTitleOnXTab(extracted.title, 'keep', pinnedTabId);
             } else {
               // ask:先以 keep 探测——编辑器本无标题则顺便设好(applied=true,无冲突不打扰);
               // 已有标题则被跳过(applied=false)→ 弹窗问用户,选覆盖才二次 overwrite。
-              titleRes = await setTitleOnXTab(extracted.title, 'keep');
+              titleRes = await setTitleOnXTab(extracted.title, 'keep', pinnedTabId);
               if (titleRes.ok && titleRes.applied === false) {
                 const overwrite = await askTitleConflict(extracted.title);
-                if (overwrite) titleRes = await setTitleOnXTab(extracted.title, 'overwrite');
+                if (overwrite) titleRes = await setTitleOnXTab(extracted.title, 'overwrite', pinnedTabId);
               }
             }
             toastMsg = `${toastMsg} · ${titleResultText(titleRes, t)}`;
@@ -426,16 +454,28 @@ export function WorkspaceProvider({
     [md, en, t, opts, finishImport, showToast, askTitleConflict],
   );
 
-  const writeX = useCallback(() => {
+  const writeX = useCallback(async () => {
     if (!md.trim() || importing || !connected) return;
-    if (opts.onExisting === 'ask' && editorHasContent) {
-      setAskOverwrite(true);
+    if (opts.onExisting === 'ask') {
+      // review #5:陈旧探针快照可能把用户刚在 X 手打的内容误判为空 → 决定 ask/replace 前
+      // 即时探一次拿新鲜 hasContent,而非依赖 useConnection 的 editorHasContent 快照。
+      // 这几个 tab-API await 不消耗手势(仅 permissions.request 消耗),后续 startImport 里
+      // 权限申请仍在手势窗口内(见其内注释)。
+      const fresh = await probeXTabContent();
+      void refreshProbe(); // 同步刷新共享状态条,与写入决策使用同一真相
+      if (!fresh.connected) return; // 新鲜探测发现已断开 → 中止,不误写
+      if (fresh.hasContent) {
+        setAskOverwrite(true);
+        return;
+      }
+      // 编辑器确为空 → 直接整体写入(与原空态行为一致:replace)。
+      void startImport('replace');
       return;
     }
     // 非询问模式:按设置直接决定模式(总是追加 / 总是覆盖)。
     const mode: ImportMode = opts.onExisting === 'append' ? 'append' : 'replace';
     void startImport(mode);
-  }, [md, importing, connected, opts.onExisting, editorHasContent, startImport]);
+  }, [md, importing, connected, opts.onExisting, startImport, refreshProbe]);
 
   const overwriteAppend = useCallback(() => {
     setAskOverwrite(false);
@@ -452,13 +492,26 @@ export function WorkspaceProvider({
   // ── 记录 ──
   const loadHistoryItem = useCallback(
     (item: HistoryItem) => {
-      setMd(item.md || '');
-      setTab('draft');
-      setMode('edit');
-      showToast(t.loadedToast);
+      const incoming = item.md || '';
+      const apply = () => {
+        setMd(incoming);
+        setTab('draft');
+        setMode('edit');
+        showToast(t.loadedToast);
+      };
+      // review B3:当前草稿非空且与将载入内容不同 → 弹确认(覆盖不可逆);否则直接载入。
+      if (md.trim() && incoming !== md) setPendingLoad(() => apply);
+      else apply();
     },
-    [setMd, showToast, t.loadedToast],
+    [md, setMd, showToast, t.loadedToast],
   );
+  // 确认:执行挂起的覆盖动作并清空 pending;取消:仅清空(什么都不覆盖)。
+  const loadConfirm = useCallback(() => {
+    const apply = pendingLoad;
+    setPendingLoad(null);
+    apply?.();
+  }, [pendingLoad]);
+  const loadCancel = useCallback(() => setPendingLoad(null), []);
   const copyHistoryItem = useCallback(
     (item: HistoryItem) => {
       try {
@@ -506,6 +559,9 @@ export function WorkspaceProvider({
       clearArm,
       loadSample,
       readFile,
+      loadConfirmOpen: pendingLoad !== null,
+      loadConfirm,
+      loadCancel,
       capOpen,
       toggleCap: () => setCapOpen((v) => !v),
       checkVisible,
@@ -541,6 +597,7 @@ export function WorkspaceProvider({
     }),
     [
       tab, toast, showToast, md, setMd, mode, dragging, save, clear, clearArm, loadSample, readFile,
+      pendingLoad, loadConfirm, loadCancel,
       capOpen, checkVisible, checkStep, runCheck, closeCheck, importing, stageIdx, stagePct, stageLabel,
       writeX, askOverwrite, overwriteAppend, overwriteConfirm, overwriteCancel,
       askTitleOverwrite, pendingTitle, titleOverwriteConfirm, titleOverwriteKeep,

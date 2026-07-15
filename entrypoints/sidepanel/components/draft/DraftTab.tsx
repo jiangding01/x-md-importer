@@ -9,8 +9,6 @@ import { AssetsCard } from './AssetsCard';
 import { CapabilityPanel } from './CapabilityPanel';
 import { PreflightCard } from './PreflightCard';
 import { ReportCard } from './ReportCard';
-import { OverwriteDialog } from './OverwriteDialog';
-import { TitleConflictDialog } from './TitleConflictDialog';
 import { Footer } from './Footer';
 
 /** X Articles 编辑器入口(新建/继续文章)。点「打开 X Articles」在新标签打开。 */
@@ -84,8 +82,7 @@ export function DraftTab() {
         <ReportCard />
       </div>
 
-      <OverwriteDialog />
-      <TitleConflictDialog />
+      {/* 覆盖 / 标题冲突 / 载入确认 三个弹窗均已提升到 App 层(修复「非草稿 Tab 隐形挂起」),此处不再挂载。 */}
       <Footer />
     </div>
   );

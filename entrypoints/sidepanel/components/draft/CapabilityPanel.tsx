@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react';
+import { useMemo, type CSSProperties } from 'react';
 import { useI18n } from '@/lib/i18n/useI18n';
 import { useWorkspace } from '@/lib/workspace/WorkspaceProvider';
 import { capability, type CapBadge } from '@/lib/markdown/capability';
@@ -17,9 +17,12 @@ export function CapabilityPanel() {
   const { md, capOpen, toggleCap } = useWorkspace();
   const en = lang === 'en';
 
+  // review B6-UI:useMemo 缓存 capability 解析(必须在任何 return 之前,遵守 Hooks 规则)。
+  // 长文时避免每次渲染重解析卡顿;解析抛错由 App 层 ErrorBoundary 兜底。
+  const items = useMemo(() => capability(md, en), [md, en]);
+
   if (!md.trim()) return null;
 
-  const items = capability(md, en);
   const count = (badge: CapBadge) =>
     items.filter((c) => c.badge === badge).reduce((a, c) => a + c.count, 0);
   const summary =

@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react';
+import { useMemo, type CSSProperties } from 'react';
 import { useI18n } from '@/lib/i18n/useI18n';
 import { useWorkspace } from '@/lib/workspace/WorkspaceProvider';
 import { capability } from '@/lib/markdown/capability';
@@ -17,9 +17,12 @@ export function ReportCard() {
   const en = lang === 'en';
   const lastRun = history[0];
 
+  // review B6-UI:useMemo 缓存 capability 解析(须在 return 之前,遵守 Hooks 规则);
+  // 解析抛错由 App 层 ErrorBoundary 兜底。
+  const items = useMemo(() => capability(md, en), [md, en]);
+
   if (!reportVisible || !lastRun) return null;
 
-  const items = capability(md, en);
   const summary = `${lastRun.ok} ${t.rOk} · ${lastRun.deg} ${t.rDeg} · ${lastRun.fail} ${t.rFail}`;
 
   return (
