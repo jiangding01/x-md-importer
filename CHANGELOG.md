@@ -7,6 +7,24 @@
 
 ## [Unreleased]
 
+### 修复 · 发布前加固（审计 4 专项 + 交叉验证，13 项）
+上线前对注入引擎 / UI 状态机 / 安全合规 / 解析层做了深度审计并修复。分 4 域并行修复后与标题 ask 功能整合。
+
+- **注入 · 标题写进别人那篇文章（P0）**：正文通道已钉死 tabId，但标题阶段每次重解析「当前活动标签」——多图导入 / ask 弹窗挂起期间用户切到另一篇 X 草稿 → 标题静默覆盖那篇。修：`startImport` 开头 `resolveTargetXTab()` 一次钉 `pinnedTabId`，正文 + 标题三处 `setTitleOnXTab` 全部复用。
+- **UI · 坏备份砖化面板（P0）**：`importBackup` 裸断言不校验字段，非法 `skin`/缺 `title` → bootstrap 崩且无 ErrorBoundary → 白屏、设置页不可达。修：逐字段白名单校验（枚举回落默认、history 项校验）+ `main.tsx` bootstrap try/catch + 新增 `ErrorBoundary` 兜底恢复 UI。
+- **UI · 载入历史/导入 .md 无确认灭当前草稿（P1）**：直接 `setMd` 立即覆盖 storage 不可逆。修：当前草稿非空时弹 `LoadConfirmDialog` 确认。
+- **注入 · `importInFlight` 护栏永久卡死（P1）**：置位后的 `blocks.filter` 在 try 外，页面伪造无 blocks 消息抛错跳过 finally → 该页导入永远报 already-in-progress。修：会抛错的语句挪进 try。
+- **注入 · verify 失败残留脏 token（P1）**：`return` 不走 catch 兜底 sweep，marker 占位留在草稿；且 X 异步 commit 下单次读易误报。修：失败前重读一轮 + `await sweepMarkers`。
+- **安全 · FS handle 暴露整文件夹（P1）**：handle 存 x.com origin IndexedDB，页面脚本可免手势遍历读用户整个文件夹。修：涉及本地图的导入结束后 `clearVaultHandle`，暴露窗口压到单次导入（代价：每篇导入重选文件夹）。
+- **UI · 陈旧探针覆盖 X 手打内容（P1）**：`writeX` 用陈旧 `hasContent` 快照决定 ask/replace，可静默 replace 掉用户在 X 编辑器刚打的字。修：`writeX` 决定前即时探测。
+- **UI · 弹窗在非草稿 Tab 隐形挂起（P1）**：覆盖/标题冲突/载入确认弹窗只挂 DraftTab，导入期切 Tab 则弹窗随 DraftTab 卸载、importing 卡住。修：三个弹窗提升到 App 层，任何 Tab 可见。
+- **解析 · 递归栈溢出白屏（P1）**：深嵌套链接 `[[[…` 让 `walkInline` 栈溢出，`AssetsCard` 渲染体内裸调 parseMarkdown → 白屏。修：`walkInline` 加 depth 上限（100，超限按纯文本）+ 消费方 `useMemo` + ErrorBoundary 兜底。
+- **解析 · 文首装饰 `---` 吞正文（P1）**：`---\n\n正文\n\n---` 被误判 frontmatter 静默吞掉正文。修：闭合 `---` 须在首个空行前，parser 与 frontmatter.ts 判定对齐。
+- **解析 · 三处 fence 状态机漂移（P1）**：frontmatter/stripFirstImageLine 各写一份简化 fence 追踪 → 代码块内 `# x` 被误取标题、`h1Handle=remove` 破坏代码块。修：抽 `forEachContentLine` 统一三处严格围栏判定。
+- **解析 · capability 计数系统性错误 + 「alt 写入图注」虚假宣称（P1）**：独立正则误计表格/H3/删除线/推文；且仍宣称已搁置的自动 ALT 功能。修：计数改为基于 `parseMarkdown` blocks，订正图片项文案（去掉「alt→caption」）。
+- **解析 · `javascript:` URL 未过滤（P1）**：`normalizeUrl` 不校验 scheme。修：白名单 http/https/mailto + 相对路径，其余降级纯文本；顺带修 `<>` 包裹截断。
+- **安全 · SSRF 尾点绕过（P2）**：`localhost.` 等带尾点 FQDN 绕过黑名单。修：`isBlockedHost` 判定前剥主机名尾点（IPv6 字面量除外）。
+
 ### 新增 · 标题冲突 `ask` 询问弹窗
 - **`titleConflict='ask'` 接真实实现**：编辑器已有标题时弹窗让用户决定覆盖/保留（此前 `ask` 保守降级为 `keep`）。机制：标题在正文写入后设置，`ask` 模式先以 `keep` 探测——编辑器本无标题则顺便设好（无冲突不打扰）、已有标题则被跳过（`applied=false`）后弹出 `TitleConflictDialog`（显示待写入的新标题 + 覆盖/保留），用户选覆盖才二次 `overwrite`。弹窗经 Promise 化 resolver 暂停/恢复 `startImport` 的 async 流程。仅在**真冲突**时打扰，无冲突静默设置。
 - 把设置面板里剩余 3 个「演示 toast」的 action 接上真实功能(纯前端,静态预览验证)：
