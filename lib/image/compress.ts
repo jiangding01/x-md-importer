@@ -3,15 +3,16 @@
  * 在图片准备阶段对准备好的 File 就地压缩,减小上传体积、更快、更抗 X 限流。
  *
  * 策略(与设置项 compress/maxEdge/quality 对应):
- *  - 仅压 jpeg/png/webp;**gif 跳过**(动图转 JPEG 会丢帧)、其它类型原样返回;
+ *  - **只压 `image/jpeg` 照片**;PNG(截图/文字/UI 图——转 JPEG 会糊、缩放让文字变小)、
+ *    WebP(本身已是压缩格式)、GIF(动图)一律**保持原样返回**,保护清晰度。这是实测
+ *    「截图压完糊掉」后的取舍:JPEG 为连续色调照片而生,对锐利边缘/文字天生不友好。
  *  - 小于阈值(150KB)不压(收益小);
- *  - 透明区**铺白底**再画(JPEG 无 alpha,否则透明变黑);
  *  - `maxEdge='orig'` 不缩放尺寸、仅按 quality 重编码;否则等比缩放到长边上限;
  *  - **压完更大 / 失败 → 返回原 File**(不帮倒忙);任何异常都吞掉、退回原图。
  */
 
-/** 可压缩的位图类型;gif(动图)与其它一律跳过。 */
-const COMPRESSIBLE = new Set(['image/jpeg', 'image/png', 'image/webp']);
+/** 只压 JPEG 照片;PNG(截图/文字,转 JPEG 会糊)/ WebP(已压)/ GIF(动图)保持原样。 */
+const COMPRESSIBLE = new Set(['image/jpeg']);
 /** 小于此体积不压(收益小、还可能越压越大)。 */
 const MIN_COMPRESS_BYTES = 150 * 1024;
 
@@ -46,9 +47,6 @@ export async function compressImage(file: File, maxEdge: string, quality: number
       bitmap.close?.();
       return file;
     }
-    // 铺白底:JPEG 无 alpha,透明区不铺白会变黑。
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, width, height);
     ctx.drawImage(bitmap, 0, 0, width, height);
     bitmap.close?.();
     const q = Math.min(1, Math.max(0, quality / 100));

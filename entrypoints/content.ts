@@ -126,7 +126,7 @@ async function compressAndLog(file: File, compress: CompressOpts, label: string)
   const kb = (n: number) => Math.round(n / 1024);
   console.info(
     `[MarkFlow] 图片压缩 ${label}(${file.name}): ${kb(before)}KB → ${kb(out.size)}KB` +
-      (out === file ? ' · 未压缩(体积过小/gif/无收益)' : ''),
+      (out === file ? ' · 未压缩(非 JPEG 照片 / 体积过小 / 无收益)' : ''),
   );
   return out;
 }
