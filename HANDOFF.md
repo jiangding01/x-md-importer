@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**：2026-07-15 · 分支 `fix/marker-sweep-retry` · **图片 marker 残留修复**（`sweepMarkers` 改 async 多轮重试，清掉多图 fallbackIndex 路径 + X 异步 commit 导致的正文残留 `__MARKFLOW_IMG_*`，待真机验证）。**B（alt→图注）方向厘清**：真机确认 markdown `![alt]` 的 alt 应写到 X 的 **ALT / Description**（无障碍描述，非可见 Caption），待用户提供 ALT 弹窗 DOM 后实现。PR #12（本地图 `<>`/封面弹窗/代码块标签/行内代码降级/打开 X/postMessage 回退）已合并 main。
+**最后更新**：2026-07-15 · 分支 `docs/fix-vault-fn-refs` · **自动填图片 ALT 尝试后搁置**：实测 ALT 不在 Draft MEDIA entity data（`data` 仅 `entityKey`+`mediaItems`）、走 X 后端 `media/edit`,无法「借 Draft 直写」;程序化打开「Edit media」弹窗永久 loading（内部 tab/textarea 不渲染）、Save 只回 Crop tab 不关窗。直写/UI 弹窗/私有接口三路皆不通,**代码已回退**(分支 `feat/image-alt-text` 弃用)。本次仅保留 3 处 `getReadableVault`→`resolveLocalImageAcrossScopes` 文档订正 + 本结论记录。PR #10~#13 已合并 main。
 
 ---
 
@@ -26,9 +26,9 @@
   - ✅ **本地图按需授权**（分支 `feat/session-vault-folder`，真机验证）：两级文件夹 `active`（素材板「本篇图片文件夹」）+ `persistent`（设置默认），读取优先级 active > persistent > 降级；素材板就地连接/更换/清除本篇专用文件夹；浏览器重启权限回落后「一键恢复」复用存量 handle（`requestPermission`，免重选文件夹）。
   - ✅ **探针自动重探**（分支 `feat/probe-auto-refresh`，真机验证）：监听标签页事件自动更新连接状态,免手动刷新;tab 定位改为跟随当前活动标签。
 - **本次刚做**：「打开 X Articles」按钮接真实 `chrome.tabs.create` 跳转（待真机验证 URL）；**修复图片 `<>` 包裹路径解析**（含空格本地图曾全失败，真机 13/13，见 §11）。
-- **还没做**：alt → 图注（`sheetDialog` 已探清）；备份/诊断/快捷键等演示项。（本地图**按需授权**已落地:素材板本篇文件夹 + 一键恢复;「导入时自动弹选文件夹」为可选进一步优化,暂不做。行内代码已确认 X 不支持、降级保留反引号。）
-- **已排除（固有限制）**：`postMessage`→MessageChannel「私有通道」——MAIN world 下 File 对页面脚本不可隐藏，已验证不可达成并回退（见 §8）。
-- **下一步**：alt→图注（caption，下一 PR）。
+- **还没做**：备份/诊断/快捷键等演示项。（本地图**按需授权**已落地:素材板本篇文件夹 + 一键恢复;行内代码已确认 X 不支持、降级保留反引号。）
+- **已排除（固有限制）**：`postMessage`→MessageChannel「私有通道」（MAIN world 下 File 对页面脚本不可隐藏，见 §8）；**自动填图片 ALT/Description**——实测 ALT 不在 Draft MEDIA entity data（`data` 只有 `mediaItems`）、走 X 后端 `media/edit`,无法「借 Draft 直写」;程序化打开「Edit media」弹窗永久 loading(内部元素不渲染)、Save 只回 Crop tab 不关窗。三路(直写/UI 弹窗/私有接口)皆不通,**自动 alt 已搁置**、代码已回退(分支 `feat/image-alt-text`),`altCaption` 开关为演示占位。详见 §11。
+- **下一步**：备份/诊断/快捷键等演示项接真实实现,任选。
 - **怎么跑**：`pnpm install && pnpm build` → Chrome 加载 `.output/chrome-mv3`。详见 §7。
 
 ---
@@ -131,7 +131,7 @@ background（开侧栏）                          injector.ts（MAIN world，�
 
 | 位置 | 现状 | 目标里程碑 |
 |---|---|---|
-| **alt → 图注（caption）** | 未做；caption 是弹窗（`data-testid="sheetDialog"` + contenteditable + Save），需逐图 UI 自动化、跳过空/垃圾 alt | 下一个 |
+| ~~alt → ALT/Description~~ | ❌ **已搁置**:ALT 不在 Draft MEDIA entity data(`data` 仅 `mediaItems`)、走 X 后端 `media/edit`,无法直写;程序开「Edit media」弹窗永久 loading、Save 不关窗。三路皆不通,代码已回退(见 §11) | **搁置**(第十一次会话) |
 | ~~本地图 File 字节经 `postMessage` 到 MAIN world~~ | 本地图/远程/封面 File 在 MAIN world 对页面脚本可读(与远程/dataURI 同面) | **固有限制,不可修**(见 §8;MessageChannel 已验证无效并回退) |
 | ~~行内代码 X 渲染~~ | ✅ 真机确认 X 正文**不支持**行内代码 → 降级保留反引号 `code`（`capability` 文案订正） | 本次(第九次会话) |
 | ~~「打开 X Articles」按钮~~ | ✅ 已接 `chrome.tabs.create`（待真机验证 URL 落点） | 本次(第九次会话) |
@@ -217,6 +217,15 @@ pnpm build              # → .output/chrome-mv3
 ---
 
 ## 11. 最近一次会话小结
+
+**2026-07-15 · 第十一次会话（本次）· 本地图按需授权(PR #11)+ 自动 alt 尝试后搁置**：
+- **本地图按需授权**（PR #11,已合并）：两级文件夹 `active`（素材板「本篇图片文件夹」)+ `persistent`（设置默认），逐文件兜底 `resolveLocalImageAcrossScopes`(active 缺某图才回落 persistent);素材板就地连接/更换/清除;浏览器重启权限回落后「一键恢复」复用存量 handle。真机全通过。
+- **自动填图片 ALT/Description —— 尝试后搁置**：目标是把 markdown `![alt]` 的 alt 写进 X 图片的 ALT 无障碍描述。实现并真机后失败,逐一排除三条路:
+  - **直写 Draft entity data 不可行**:手动填 ALT+Save 后 dump MEDIA entity,`data` 只有 `entityKey` + `mediaItems[{localMediaId, mediaCategory:"DraftTweetImage", mediaId}]`,**无 alt/description 字段**、填的文本也不在 → ALT 走 X 后端(按 mediaId 经 `/compose/articles/media/edit`),不进 Draft。
+  - **UI 弹窗自动化脆弱/卡死**:程序 `realClick`「Edit media」按钮打开弹窗后**永久 loading**,内部 `[role="tab"][aria-label="Edit image description"]` / `textarea[data-testid="altTextInput"]` 全不在 DOM(手动打开正常,疑似 media 未就绪 + ALT tab 是 `<a href="/compose/articles/media/edit">` 触发路由);且 Save(`endEditingButton`)只保存并回 Crop tab、**不关弹窗**,须点左上返回。
+  - **后端私有接口**与项目对 GraphQL/私有接口保守立场相悖,不做。
+  - **结论**:自动 alt 搁置,代码全回退(分支 `feat/image-alt-text` 弃用),`altCaption` 开关维持演示占位。若将来做只剩后端接口一条路,需先评估稳定性。
+- **附带**:3 处 `getReadableVault`→`resolveLocalImageAcrossScopes` 文档订正(PR #11 review 改名后漏同步的注释/CHANGELOG)。
 
 **2026-07-13 · 首次会话**：从零搭建工程，完成 Phase A/B/C 侧边栏 UI，`tsc`/`build` 通过，补齐 README/CHANGELOG/HANDOFF。
 

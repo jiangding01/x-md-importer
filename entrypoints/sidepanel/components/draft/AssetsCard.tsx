@@ -170,7 +170,7 @@ export function AssetsCard() {
 
   // 是否含本地图(相对路径):有才展示「本篇图片文件夹」入口 + 就绪判定才涉及文件夹连接。
   const hasLocal = imgs.some((im) => classifyImageSource(im.source) === 'local');
-  // 本地图就绪 = active(本篇)或 persistent(默认)任一已连接——与导入时 getReadableVault 优先级一致。
+  // 本地图就绪 = active(本篇)或 persistent(默认)任一已连接——与导入时 resolveLocalImageAcrossScopes 逐文件兜底一致。
   const folderReady = opts.activeFolder || opts.folder;
 
   const kindLabel: Record<ImageSourceKind, string> = { local: t.kindLocal, remote: t.kindRemote, data: t.kindData };
