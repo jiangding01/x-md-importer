@@ -312,7 +312,7 @@ export function WorkspaceProvider({
         // 都映射成 header-one,blocks 层无法区分,见 stripFirstH1 注释)。
         const extracted = opts.setTitle ? extractTitle(md) : null;
         const bodyMd = extracted?.source === 'h1' && opts.h1Handle === 'remove' ? stripFirstH1(md) : md;
-        let blocks = parseMarkdown(bodyMd);
+        let blocks = parseMarkdown(bodyMd, { obsidianImg: opts.obsidianImg, wikilink: opts.wikilink });
 
         // 封面来源:frontmatter cover > 正文首图。首图取自**已解析 blocks 的首个 ImageBlock**——
         // 与实际上传/移除同源,避免用 images() 全文正则误选到内联图 / 代码块内的图(review #1)。

@@ -96,8 +96,26 @@ export function stripFirstImageLine(md: string): string {
   return md;
 }
 
+/**
+ * 解析开关(默认与 defaultOptions 一致):
+ *  - obsidianImg:识别 `![[x]]` 内嵌图片(默认 true;关时当普通文本处理);
+ *  - wikilink:行内 `[[x]]` / `[[x|别名]]` 转纯文本(默认 true;关时保持字面 `[[x]]`)。
+ */
+export interface ParseOptions {
+  obsidianImg?: boolean;
+  wikilink?: boolean;
+}
+
+// 解析开关:parseMarkdown **同步执行**(内部无 await)、JS 单线程不会重入,故用模块级标志
+// 在入口一次性设置,免去给 walkInline / isBlockBoundary 逐层穿参。仅 parseMarkdown 写、
+// 块级/行内解析只读。
+let optObsidianImg = true;
+let optWikilink = true;
+
 /** 解析 Markdown 文本为按文档顺序排列的写入块序列。 */
-export function parseMarkdown(md: string): ImportBlock[] {
+export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[] {
+  optObsidianImg = opts.obsidianImg ?? true;
+  optWikilink = opts.wikilink ?? true;
   const lines = md.split(/\r?\n/);
   const blocks: ImportBlock[] = [];
   let i = 0;
@@ -187,7 +205,8 @@ export function parseMarkdown(md: string): ImportBlock[] {
       continue;
     }
     // Obsidian 内嵌图片 `![[path]]` / `![[path|alt]]` → ImageBlock(本地路径,content 侧 FS Access 读取)。
-    const obsidianImage = trimmed.match(RE_OBSIDIAN_IMAGE_LINE);
+    // 由 obsidianImg 开关门控:关时不识别,`![[x]]` 落到后续按普通文本段落处理。
+    const obsidianImage = optObsidianImg ? trimmed.match(RE_OBSIDIAN_IMAGE_LINE) : null;
     if (obsidianImage) {
       const inner = obsidianImage[1] ?? '';
       const pipe = inner.indexOf('|'); // `path|alt`:| 前为路径,| 后为图注/尺寸
@@ -309,7 +328,7 @@ function isBlockBoundary(line: string): boolean {
   if (RE_TWEET.test(line)) return true;
   if (matchImageLine(line.trim()) !== null) return true;
   if (RE_LINKED_IMAGE_LINE.test(line.trim())) return true;
-  if (RE_OBSIDIAN_IMAGE_LINE.test(line.trim())) return true;
+  if (optObsidianImg && RE_OBSIDIAN_IMAGE_LINE.test(line.trim())) return true;
   if (RE_HEADING.test(line)) return true;
   if (RE_BLOCKQUOTE.test(line)) return true;
   if (RE_UL.test(line)) return true;
@@ -473,6 +492,23 @@ function walkInline(src: string): InlineResult {
       out += ch;
       i += 1;
       continue;
+    }
+
+    // 行内 Wikilink `[[目标]]` / `[[目标|别名]]` → 纯文本(别名优先)。由 wikilink 开关门控:
+    // 关时不介入 → 落到下面链接 `[` 处理(matchLink 不匹配 → 保持字面 `[[...]]`)。须在链接处理
+    // **之前**,否则 `[[` 会被当作嵌套链接起始。紧跟 `!` 的 `![[` 是图片语法(块级已处理),不介入。
+    if (optWikilink && src.startsWith('[[', i) && src[i - 1] !== '!') {
+      const end = src.indexOf(']]', i + 2);
+      if (end >= 0) {
+        const inner = src.slice(i + 2, end);
+        // 内部不得再含 `[`/`]`(避免吞掉相邻链接 / 畸形)——Obsidian wikilink 内容为纯文本。
+        if (inner && !inner.includes('[') && !inner.includes(']')) {
+          const pipe = inner.indexOf('|');
+          out += (pipe >= 0 ? inner.slice(pipe + 1) : inner).trim(); // 别名优先,否则目标
+          i = end + 2;
+          continue;
+        }
+      }
     }
 
     // 链接 [text](url);紧跟在 ! 之后的 [ 属于图片语法,按普通文本保留(M1 边界)
