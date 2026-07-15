@@ -74,7 +74,6 @@ export function settingsConfig({ en, folderConnected, folderName, wipeArm }: Con
       title: T('内容转换', 'Content conversion'),
       rows: [
         { k: 'codeStrategy', t: 'select', disabled: true, label: T('代码块策略', 'Code blocks'), desc: T('原生代码块带语言标注（当前固定）。', 'Native code block with language (fixed).'), opts: [o('native', '原生代码块', 'Native')] },
-        { k: 'codeLang', t: 'select', label: T('代码块默认语言', 'Default code language'), desc: T('无语言标注的 fence 使用。', 'Used for unlabeled fences.'), opts: [o('plaintext', 'plaintext', 'plaintext'), o('javascript', 'javascript', 'javascript'), o('python', 'python', 'python'), o('bash', 'bash', 'bash')] },
         { k: 'taskList', t: 'select', disabled: true, label: T('任务列表 - [ ]', 'Task lists'), desc: T('☑/☐ 符号列表或普通列表。（规划中）', 'Symbol list or plain list. (planned)'), opts: [o('symbol', '符号列表', 'Symbol list'), o('plain', '普通列表', 'Plain list')] },
         { k: 'obsidianImg', t: 'toggle', label: T('Obsidian 图片嵌入', 'Obsidian embeds'), desc: T('识别 ![[图片]] 语法(本地文件夹解析)。', 'Recognize ![[image]] syntax.') },
         { k: 'wikilink', t: 'toggle', label: T('Wikilink 转纯文本', 'Wikilinks to text'), desc: T('[[wikilink]] 转为纯文本。', 'Convert [[wikilink]] to text.') },
@@ -137,7 +136,6 @@ export function settingsConfig({ en, folderConnected, folderName, wipeArm }: Con
       num: '09',
       title: T('高级', 'Advanced'),
       rows: [
-        { k: 'concurrency', t: 'select', label: T('图片准备并发', 'Image concurrency'), desc: T('并行准备图片的数量。', 'Parallel image preparation.'), opts: [o('1', '1', '1'), o('2', '2', '2'), o('3', '3', '3'), o('4', '4', '4'), o('5', '5', '5')] },
         { k: 'retries', t: 'select', disabled: true, label: T('重试次数', 'Retries'), desc: T('图片抓取/上传失败的重试。（规划中）', 'Retries for fetch/upload failures. (planned)'), opts: [o('0', '0', '0'), o('1', '1', '1'), o('3', '3', '3'), o('5', '5', '5')] },
         { k: 'diag', t: 'action', label: T('诊断面板', 'Diagnostics'), desc: T('探针快照查看/导出 JSON(报障用)。', 'Probe snapshot / export JSON.'), actLabel: T('导出快照', 'Export') },
       ],

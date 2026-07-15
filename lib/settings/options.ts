@@ -19,7 +19,6 @@ export interface Options {
   coverKeep: 'keep' | 'remove';
   // 04 内容转换
   codeStrategy: 'native' | 'image' | 'quote';
-  codeLang: 'plaintext' | 'javascript' | 'python' | 'bash';
   taskList: 'symbol' | 'plain';
   obsidianImg: boolean;
   wikilink: boolean;
@@ -44,7 +43,6 @@ export interface Options {
   // 07 记录与数据
   histLimit: '50' | '200' | 'inf';
   // 09 高级
-  concurrency: '1' | '2' | '3' | '4' | '5';
   retries: '0' | '1' | '3' | '5';
 }
 
@@ -60,7 +58,6 @@ export const defaultOptions: Options = {
   setCover: false,
   coverKeep: 'keep',
   codeStrategy: 'native',
-  codeLang: 'plaintext',
   taskList: 'symbol',
   obsidianImg: true,
   wikilink: true,
@@ -77,6 +74,5 @@ export const defaultOptions: Options = {
   sound: true,
   soundStyle: 'soft',
   histLimit: '200',
-  concurrency: '3',
   retries: '3',
 };
