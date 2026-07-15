@@ -72,28 +72,60 @@ export function isImageLine(line: string): boolean {
 }
 
 /**
+ * 严格围栏感知地遍历 md 行:对每个「位于代码围栏之外」的行调用 visitor(line, index)。
+ * 围栏识别与 parseMarkdown 主循环**同源**(matchFenceOpen/matchFenceClose:闭栏须裸行、
+ * 数量 ≥ 开栏、`~~~` 与 ``` 不互闭);未闭合的围栏开栏行按普通内容处理(同主循环)——
+ * 整个围栏块(开栏行 … 闭栏行)被跳过,内部的 `# x` / `![]()` 等不会被 visitor 看到。
+ * visitor 返回 true 时提前停止遍历。
+ *
+ * 抽出此 helper 是为消除「三处 fence 追踪各写一份、语义漂移」:frontmatter.findFirstH1、
+ * stripFirstImageLine 均改用它,与解析主循环保持同一套严格围栏判定。
+ */
+export function forEachContentLine(
+  lines: string[],
+  visitor: (line: string, index: number) => boolean | void,
+): void {
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i] ?? '';
+    const fence = matchFenceOpen(line);
+    if (fence) {
+      let j = i + 1;
+      let closed = false;
+      while (j < lines.length) {
+        if (matchFenceClose(lines[j] ?? '', fence)) {
+          closed = true;
+          break;
+        }
+        j += 1;
+      }
+      if (closed) {
+        i = j + 1; // 跳过整个围栏块(含开/闭栏行)
+        continue;
+      }
+      // 未闭合:开栏行按普通内容处理(与主循环一致),落到下面 visitor
+    }
+    if (visitor(line, i)) return;
+    i += 1;
+  }
+}
+
+/**
  * 删除正文中「第一张独占行图片」(裸 / 带链接皆可)——供封面取自正文首图且设为
  * 「从正文移除」时使用,避免封面图在正文重复。跳过围栏代码块(与解析一致)。
  */
 export function stripFirstImageLine(md: string): string {
   const lines = md.split(/\r?\n/);
-  let fence: string | null = null;
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i] ?? '';
-    const fenceMatch = /^(`{3,}|~{3,})/.exec(line);
-    if (fenceMatch) {
-      const marker = (fenceMatch[1] ?? '')[0] ?? '`';
-      if (fence === null) fence = marker;
-      else if (marker === fence) fence = null;
-      continue;
-    }
-    if (fence !== null) continue;
+  let target = -1;
+  forEachContentLine(lines, (line, index) => {
     if (isImageLine(line)) {
-      lines.splice(i, 1);
-      return lines.join('\n');
+      target = index;
+      return true;
     }
-  }
-  return md;
+  });
+  if (target < 0) return md;
+  lines.splice(target, 1);
+  return lines.join('\n');
 }
 
 /**
@@ -125,13 +157,17 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
   // 不进正文——否则会被误当「分割线 + 文本 + 分割线」写入(正文中间的 --- 分割线不受影响)。
   // 判定用「顶格 ^---」而非 trim,与 frontmatter.ts 的抽取正则一致——否则缩进的 `  ---`
   // 会出现「parser 剥离了但 extractTitle 抽不到 → 标题静默丢失」的不一致。
+  // 闭合 --- 必须出现在**首个空行之前**(frontmatter 体不含空行):否则文首装饰性 `---\n\n正文\n\n---`
+  // 会把中间正文当 frontmatter 静默吞掉。此判定须与 frontmatter.ts 的 frontmatterBody 完全对齐。
   const isFmDelim = (line: string) => /^---[ \t]*$/.test(line);
   if (isFmDelim(lines[0] ?? '')) {
     for (let j = 1; j < lines.length; j += 1) {
-      if (isFmDelim(lines[j] ?? '')) {
+      const l = lines[j] ?? '';
+      if (isFmDelim(l)) {
         i = j + 1;
         break;
       }
+      if (l.trim() === '') break; // 首个空行前未闭合 → 非 frontmatter,首行 --- 交后续按分割线处理
     }
   }
 
@@ -443,8 +479,16 @@ function normalizeCodeInfo(info: string): string {
 // 行内解析:递归下降,产出干净文本 + 精确区间
 // ---------------------------------------------------------------------------
 
-/** 解析一段行内文本;offset/length 均基于剥掉标记后的最终文本。 */
-function walkInline(src: string): InlineResult {
+/**
+ * 行内解析递归深度上限。粗/斜/删/链接的嵌套解析都经 walkInline 递归下降,
+ * 病理输入(如 `'['.repeat(5000)+'x'+'](u)'.repeat(5000)`、极深强调嵌套)会撑爆调用栈。
+ * 超过此深度即停止递归、当前片段按纯文本原样输出(见 walkInline 内 wrap / 链接分支)。
+ * 100 远超任何真实文档的行内嵌套层数,正常文档输出完全不受影响。
+ */
+const MAX_INLINE_DEPTH = 100;
+
+/** 解析一段行内文本;offset/length 均基于剥掉标记后的最终文本。depth 为当前递归深度(防栈溢出)。 */
+function walkInline(src: string, depth = 0): InlineResult {
   let out = '';
   const ranges: InlineStyleRange[] = [];
   const links: LinkRange[] = [];
@@ -467,6 +511,24 @@ function walkInline(src: string): InlineResult {
 
   let i = 0;
   const n = src.length;
+
+  /**
+   * 递归包裹一段强调:未超深度上限则解析内层 [innerStart,innerEnd) 并挂样式;
+   * 超限则把 [i,advanceTo) 原始子串按纯文本输出(不递归、防栈溢出)。两条路径都把指针推进到 advanceTo。
+   */
+  const wrap = (
+    innerStart: number,
+    innerEnd: number,
+    advanceTo: number,
+    styles: Array<InlineStyleRange['style']>,
+  ): void => {
+    if (depth < MAX_INLINE_DEPTH) {
+      embed(walkInline(src.slice(innerStart, innerEnd), depth + 1), styles);
+    } else {
+      out += src.slice(i, advanceTo);
+    }
+    i = advanceTo;
+  };
 
   while (i < n) {
     const ch = src[i] ?? '';
@@ -515,7 +577,14 @@ function walkInline(src: string): InlineResult {
     if (ch === '[' && src[i - 1] !== '!') {
       const link = matchLink(src, i);
       if (link) {
-        embed(walkInline(link.textRaw), [], normalizeUrl(link.url));
+        if (depth < MAX_INLINE_DEPTH) {
+          // normalizeUrl 返回 null 表示 scheme 不在白名单(如 javascript:)→ 降级为纯文本:
+          // 仍解析内层样式、可见文本照旧写入,只是**不挂 LINK entity**(url 传 undefined)。
+          const url = normalizeUrl(link.url);
+          embed(walkInline(link.textRaw, depth + 1), [], url ?? undefined);
+        } else {
+          out += src.slice(i, link.end); // 递归深度超限:整段按纯文本原样输出
+        }
         i = link.end;
         continue;
       }
@@ -525,8 +594,7 @@ function walkInline(src: string): InlineResult {
     if (src.startsWith('***', i)) {
       const close = findClosing(src, i + 3, '***');
       if (close > i + 3) {
-        embed(walkInline(src.slice(i + 3, close)), ['BOLD', 'ITALIC']);
-        i = close + 3;
+        wrap(i + 3, close, close + 3, ['BOLD', 'ITALIC']);
         continue;
       }
     }
@@ -534,8 +602,7 @@ function walkInline(src: string): InlineResult {
     if (src.startsWith('**', i)) {
       const close = findClosing(src, i + 2, '**');
       if (close > i + 2) {
-        embed(walkInline(src.slice(i + 2, close)), ['BOLD']);
-        i = close + 2;
+        wrap(i + 2, close, close + 2, ['BOLD']);
         continue;
       }
     }
@@ -543,8 +610,7 @@ function walkInline(src: string): InlineResult {
     if (src.startsWith('~~', i)) {
       const close = findClosing(src, i + 2, '~~');
       if (close > i + 2) {
-        embed(walkInline(src.slice(i + 2, close)), ['STRIKETHROUGH']);
-        i = close + 2;
+        wrap(i + 2, close, close + 2, ['STRIKETHROUGH']);
         continue;
       }
     }
@@ -552,8 +618,7 @@ function walkInline(src: string): InlineResult {
     if (ch === '*') {
       const close = findClosing(src, i + 1, '*');
       if (close > i + 1) {
-        embed(walkInline(src.slice(i + 1, close)), ['ITALIC']);
-        i = close + 1;
+        wrap(i + 1, close, close + 1, ['ITALIC']);
         continue;
       }
     }
@@ -561,8 +626,7 @@ function walkInline(src: string): InlineResult {
     if (ch === '_' && !isWordChar(src[i - 1])) {
       const close = findClosing(src, i + 1, '_');
       if (close > i + 1 && !isWordChar(src[close + 1])) {
-        embed(walkInline(src.slice(i + 1, close)), ['ITALIC']);
-        i = close + 1;
+        wrap(i + 1, close, close + 1, ['ITALIC']);
         continue;
       }
     }
@@ -680,13 +744,36 @@ function findClosing(src: string, start: number, delim: string): number {
   return -1;
 }
 
-/** 规范化链接目标:去首尾空白、剥 <>、丢弃可选标题(取第一个空白前的部分)。 */
-function normalizeUrl(raw: string): string {
+/**
+ * 规范化并**安全校验**链接目标:
+ *  - `<...>` 包裹(CommonMark)→ 取尖括号内整体(**可含空格**,仿 normalizeImageSrc),忽略 `>` 之后的可选标题;
+ *    修掉旧版「先按 endsWith('>') 判整体、再按空白截断」把 `<url with space>` 截成 `<url` 的 bug;
+ *  - 裸 destination → 截到第一个空白前(其后是可选标题);
+ *  - scheme 白名单:仅放行 http/https/mailto 与「无 scheme 的相对 URL」(`/`、`#`、`.` 开头或纯相对路径);
+ *    其余(`javascript:`、`data:`、`vbscript:`、`file:` 等)返回 **null** → 调用方据此降级为纯文本、不挂 LINK。
+ */
+function normalizeUrl(raw: string): string | null {
   let u = raw.trim();
-  if (u.startsWith('<') && u.endsWith('>')) u = u.slice(1, -1);
-  const sp = u.search(/\s/);
-  if (sp >= 0) u = u.slice(0, sp);
-  return u;
+  if (u.startsWith('<')) {
+    const end = u.indexOf('>');
+    u = end >= 0 ? u.slice(1, end) : u.slice(1); // 尖括号内原样(含空格);无闭合 `>` 则仅剥左尖括号
+  } else {
+    const sp = u.search(/\s/);
+    if (sp >= 0) u = u.slice(0, sp); // 裸 URL:截到首个空白(标题分隔)
+  }
+  u = u.trim();
+  return isSafeUrl(u) ? u : null;
+}
+
+/**
+ * 链接 scheme 安全白名单。无 scheme(相对 URL / 锚点 / 协议相对 `//host`)一律放行;
+ * 有 scheme 时仅放行 http / https / mailto。`javascript:` / `data:` / `vbscript:` 等一律拒绝。
+ */
+function isSafeUrl(u: string): boolean {
+  const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(u);
+  if (!m) return true; // 无 scheme → 相对 URL / 锚点 / `//host`,放行
+  const scheme = (m[1] ?? '').toLowerCase();
+  return scheme === 'http' || scheme === 'https' || scheme === 'mailto';
 }
 
 /** 是否为 ASCII 字母或数字(用于下划线斜体的词内规避)。 */
