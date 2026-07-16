@@ -7,6 +7,21 @@
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-16
+
+### 新增 · 导入报告失败明细(批次三,QA T6 引出)
+失败不再只有汇总数:每张失败图给出**序号 / 来源 / 阶段 / 原因**,报告卡展示、随历史记录持久化、console 同步打印。
+
+- **数据链路**:`prepareOneImage` 各失败分支带原因码(远程被拒透传 background 错误 / 本地未找到 / 超限 / 类型不符 / dataURI 无效);`uploadOneImage` 返回 `{ok, reason, detail}`——8 条互异失败路径(编辑器丢失 / 占位标记丢失 / 无上传通道 / 真超时 / **已上传但归位失败** / 异常)各有其码,不再被统一猜成「超时」;封面失败由 content 在通道层补记(`index=-1` 哨兵),prepare 与 set 失败均可见。
+- **单一事实来源**:原因码收敛为 `protocol.ts` 的 `IMAGE_FAIL_REASONS` as const 联合类型——生产端强类型(拼错即编译报错),消费端保持 string(兼容备份恢复的任意字符串,UI 对未知码原样展示)。
+- **展示与存储**:ReportCard 失败明细区块(「图 N / 封面 · 阶段 · 原因 · 来源」);`HistoryItem.imageFailures` 持久化;备份白名单逐项校验(index 须为 ≥ -1 整数,source/detail 恢复边界重截断)。
+- **序号忠实**:`coverKeep='remove'` 抽走首图当封面后,引擎回传序号 +1 还原为用户文档顺序,报告不指错图;`source/detail` 经代理对安全的 `truncateForReport` 截断(source 80 / detail 200),防超长错误文本撑爆 storage;扩展更新后旧脚本场景有专属码 `prepare-missing`(提示刷新页面)。
+
+### 修复 · marker 清扫「假干净」+ 残留静默(QA 批次三真机暴露)
+- **清扫可靠性**:`sweepMarkers` 旧逻辑「某一轮没读到残留就收工」——X 的 onChange 异步 commit 下,一次陈旧的"干净"读取即终止清扫,fallbackIndex 路径的 marker 可躲过全部 4 轮、静默残留正文(真机实测写入后约 24s 仍有 4 个 marker 未 commit)。改为**连续两轮读到干净才收工**(上限 6 轮),读不到状态节点不再当"干净"。
+- **报告盲区**:清扫仍未确认干净时,封面阶段后做残留审计——本次 run 的 marker 按尾部序号映射回「第几张图」,以 `marker-residue` 计入失败明细(只进明细、不计 imageFail:图已落地,残留是需手动删除的占位文本);历史前缀残留 console 告警。残留从「完全静默」变为「必然可见」。
+- 真机回归:T6 大文档 replace/append 各 ×3 全零残留;偶发上传超时被如实报为「图 2 · 上传超时」(本功能目标的实战验证)。
+
 ## [0.2.1] - 2026-07-16
 
 ### 修复 · 真机回归两处「UI 撒谎」（QA T2/T5）

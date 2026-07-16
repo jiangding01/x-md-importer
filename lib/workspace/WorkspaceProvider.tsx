@@ -14,7 +14,7 @@ import { useProbe } from '@/lib/bridge/useProbe';
 import { getFolderStatus, importToXTab, probeXTabContent, setTitleOnXTab } from '@/lib/bridge/importArticle';
 import { resolveTargetXTab } from '@/lib/bridge/locateXTab';
 import { requestRemoteImagePermissions } from '@/lib/bridge/imagePermissions';
-import { classifyImageSource, type ImageBlock, type ImportMode, type SetTitleResponse } from '@/lib/bridge/protocol';
+import { classifyImageSource, type ImageBlock, type ImageFailure, type ImportMode, type SetTitleResponse } from '@/lib/bridge/protocol';
 import { capability, firstTitle } from '@/lib/markdown/capability';
 import { extractCover, extractTitle, stripFirstH1 } from '@/lib/markdown/frontmatter';
 import { parseMarkdown } from '@/lib/markdown/parser';
@@ -308,7 +308,12 @@ export function WorkspaceProvider({
   // 纯文本段落任何类目都不计,导致「实际写入成功、报告 0 成功」(真机回归 T5)。
   // 口径:成功 = 实际写入块数 - 图片失败数(失败图已降级为文本块,不重复计);
   // 降级 = capability 的格式降级项计数(H4+/行内代码等,写入成功但格式打折,单位是「处」)。
-  const finishImport = useCallback((toastMsg: string = t.writtenToast, imageFail = 0, blockCount = 0) => {
+  const finishImport = useCallback((
+    toastMsg: string = t.writtenToast,
+    imageFail = 0,
+    blockCount = 0,
+    imageFailures?: ImageFailure[],
+  ) => {
     const cap = capability(md, en);
     const ok = Math.max(0, blockCount - imageFail);
     const deg = cap.filter((c) => c.badge === 'warn').reduce((a, c) => a + c.count, 0);
@@ -322,6 +327,8 @@ export function WorkspaceProvider({
       // 图片上传失败计入 fail(记录/报告如实反映),其余降级仍归 deg。
       fail: imageFail,
       md,
+      // 失败明细(序号/来源/阶段/原因)随记录持久化,供报告卡展示与事后排查。
+      imageFailures,
     };
 
     setImporting(false);
@@ -389,6 +396,9 @@ export function WorkspaceProvider({
         // 封面来源:frontmatter cover > 正文首图。首图取自**已解析 blocks 的首个 ImageBlock**——
         // 与实际上传/移除同源,避免用 images() 全文正则误选到内联图 / 代码块内的图(review #1)。
         let coverSource: string | null = null;
+        // 正文首图被抽走当封面时置真:引擎看到的图片序列比用户文档少第一张,回传的失败明细
+        // index 需 +1 还原成「文档里的第 N 张图」,否则报告指错图(review 批次三)。
+        let coverRemovedBodyImage = false;
         if (opts.setCover) {
           const fmCover = extractCover(md);
           if (fmCover) {
@@ -399,7 +409,10 @@ export function WorkspaceProvider({
               coverSource = (blocks[firstImgIdx] as ImageBlock).source;
               // coverKeep=remove:直接删掉这个作封面的图片块,避免封面在正文重复(删的正是
               // 拿去当封面的同一块,不再有「选 A 删 B」的错位)。
-              if (opts.coverKeep === 'remove') blocks = blocks.filter((_, i) => i !== firstImgIdx);
+              if (opts.coverKeep === 'remove') {
+                blocks = blocks.filter((_, i) => i !== firstImgIdx);
+                coverRemovedBodyImage = true;
+              }
             }
           }
         }
@@ -467,7 +480,12 @@ export function WorkspaceProvider({
             if (opts.activeFolder || opts.folder) toastMsg = `${toastMsg} · ${t.folderAutoCleared}`;
             void recalibrateFolders();
           }
-          finishImport(toastMsg, res.imageFail, res.blockCount);
+          // 序号还原:首图被抽走当封面(coverKeep=remove)后,引擎回传的正文图 index 整体 +1
+          // 才对应用户文档顺序;封面哨兵(index=-1)不动。
+          const imageFailures = coverRemovedBodyImage
+            ? res.imageFailures?.map((f) => (f.index >= 0 ? { ...f, index: f.index + 1 } : f))
+            : res.imageFailures;
+          finishImport(toastMsg, res.imageFail, res.blockCount, imageFailures);
         } else {
           // 失败:不写成功记录,以可读中文/英文提示错误(复位在 finally 统一处理)。
           showToast(importErrorText(res.error, t));

@@ -132,6 +132,67 @@ export function classifyImageSource(src: string): ImageSourceKind {
  */
 export interface PreparedImage {
   file: File | null;
+  /**
+   * file 为 null 时的失败原因码;file 非 null 时缺省。
+   * failDetail 为自由文本补充(如 background 代理回传的具体错误),仅诊断/报告展示用。
+   */
+  failReason?: ImageFailReason;
+  failDetail?: string;
+}
+
+/**
+ * 失败原因码的**单一事实来源**——content/injector 生产端用 ImageFailReason 联合类型收紧
+ * (拼错编译即报);ImageFailure.reason 消费端保持 string(备份恢复可能带回任意字符串,
+ * UI 对未知码原样展示)。「生产端强类型、消费端宽松」。
+ */
+export const IMAGE_FAIL_REASONS = [
+  // prepare 阶段(content 字节准备)
+  'remote-fetch-failed',
+  'local-not-found',
+  'local-too-large',
+  'local-bad-type',
+  'data-uri-invalid',
+  'prepare-exception',
+  'prepare-missing', // images[] 缺该项(典型:扩展更新后旧 content 未刷新,import 消息无 images)
+  // upload 阶段(injector 借 X 上传管线 + 归位)
+  'upload-no-editor', // Draft 节点丢失
+  'upload-marker-lost', // marker 占位块定位失败(如用户中途手动删除)
+  'upload-no-callback', // 页面 onFilesAdded 回调缺失
+  'upload-timeout', // 超时:预算内未见新 MEDIA 确认
+  'upload-relocate-failed', // 图已上传成功(MEDIA 已确认)但归位失败——图可能已在 X 媒体库
+  'upload-exception',
+  'marker-residue', // 图已落地但占位 marker 清扫未果、残留正文(需手动删除;不计入 imageFail)
+
+  // 封面
+  'cover-set-failed', // 封面 File 已备好但 setCoverImage 未落地
+] as const;
+export type ImageFailReason = (typeof IMAGE_FAIL_REASONS)[number];
+
+/**
+ * 报告/持久化用的展示截断:代理对安全(不产生孤立代理项),防超长 detail/dataURI
+ * 撑爆 storage 配额与报告卡。content 与 injector 生产端、backup 恢复边界共用同一实现。
+ */
+export function truncateForReport(s: string, max: number): string {
+  if (s.length <= max) return s;
+  let cut = s.slice(0, max - 1);
+  // 末位若是高位代理项(代理对被从中间切开)则一并去掉,避免孤立代理项进入存储/JSON。
+  if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1);
+  return `${cut}…`;
+}
+
+/**
+ * 单张图片的失败明细(导入报告/诊断用)。injector 在图片阶段收集,随 ImportResult 回传;
+ * 封面失败由 content 在通道层补记。reason 约定码见 IMAGE_FAIL_REASONS。
+ */
+export interface ImageFailure {
+  /** 第几张图(**用户文档顺序**,0 起;UI 展示 +1)。**-1 = 封面**(非正文图)。 */
+  index: number;
+  /** 图片来源(经 truncateForReport 截断,只用于展示定位,不可回放)。 */
+  source: string;
+  /** 失败阶段:prepare=字节准备(content 侧);upload=X 上传/归位(injector 侧)。 */
+  stage: 'prepare' | 'upload';
+  reason: string;
+  detail?: string;
 }
 
 /** 写入模式:replace 整体替换编辑器内容;append 在现有内容之后追加。 */
@@ -151,6 +212,8 @@ export type ImportResult =
       imageFail: number;
       /** 封面是否已设置(未请求封面时 undefined)。 */
       coverSet?: boolean;
+      /** 图片失败明细(imageFail=0 时缺省)。可选字段,旧 injector 不回传时 UI 自然不展示。 */
+      imageFailures?: ImageFailure[];
     }
   | { ok: false; error: string };
 
@@ -264,6 +327,8 @@ export type ImportResponse =
       imageFail: number;
       /** 封面是否已设置(未请求封面时为 undefined)。 */
       coverSet?: boolean;
+      /** 图片失败明细(与 ImportResult 同源透传,imageFail=0 时缺省)。 */
+      imageFailures?: ImageFailure[];
     }
   | { ok: false; error: 'no-injector' | 'timeout' | string };
 

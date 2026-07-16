@@ -12,6 +12,7 @@ import { loadHistory, saveHistory, type HistoryItem } from './historyStore';
 import { loadDraft, saveDraft } from './draftStore';
 import { defaultOptions, type Options } from '@/lib/settings/options';
 import { SKINS } from '@/lib/theme/themes';
+import { truncateForReport, type ImageFailure } from '@/lib/bridge/protocol';
 
 /** 备份文件结构(带 app/kind/version 标识,便于恢复时校验来源与兼容)。 */
 export interface BackupData {
@@ -114,6 +115,39 @@ function validateOptions(raw: unknown): Options {
 }
 
 /**
+ * 校验图片失败明细:逐项校验字段类型,任一项不合格则整个数组**丢弃**(返回 undefined)——
+ * 明细只用于展示,坏数据宁缺毋滥;缺省与旧备份自然兼容。stage 枚举、reason 任意字符串
+ * (原因码约定见 protocol.ts ImageFailure,UI 对未知码原样展示)。
+ * 生产端不变量在恢复边界重建:index 必须是 ≥ -1 的整数(-1=封面哨兵,负数/小数拒收);
+ * source/detail 经 truncateForReport 重截——生产端的截断约束对手工构造/篡改的备份不生效,
+ * 不重截则数 MB 字符串可直接持久化进 storage 并整段渲染进报告卡。
+ */
+function validateImageFailures(raw: unknown): ImageFailure[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const out: ImageFailure[] = [];
+  for (const f of raw) {
+    if (
+      !isObj(f) ||
+      typeof f.index !== 'number' || !Number.isInteger(f.index) || f.index < -1 ||
+      typeof f.source !== 'string' ||
+      (f.stage !== 'prepare' && f.stage !== 'upload') ||
+      typeof f.reason !== 'string' ||
+      (f.detail !== undefined && typeof f.detail !== 'string')
+    ) {
+      return undefined;
+    }
+    out.push({
+      index: f.index,
+      source: truncateForReport(f.source, 80),
+      stage: f.stage,
+      reason: truncateForReport(f.reason, 60),
+      detail: f.detail === undefined ? undefined : truncateForReport(f.detail, 200),
+    });
+  }
+  return out;
+}
+
+/**
  * 校验历史记录:逐项校验必需字段,合格项规整为标准 HistoryItem,不合格的项**丢弃**。
  * id(number)是主键 / React key / 删除依据,缺失即无法安全承载 → 丢弃;title/md/date/数值
  * 缺失则补默认(不丢整项),保证下游 toLowerCase / 渲染不再抛。
@@ -131,6 +165,7 @@ function validateHistory(raw: unknown): HistoryItem[] {
       deg: pickNum(it.deg, 0),
       fail: pickNum(it.fail, 0),
       md: typeof it.md === 'string' ? it.md : '',
+      imageFailures: validateImageFailures(it.imageFailures),
     });
   }
   return out;
