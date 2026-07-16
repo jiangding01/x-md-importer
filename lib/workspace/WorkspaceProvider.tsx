@@ -11,10 +11,10 @@ import { useI18n } from '@/lib/i18n/useI18n';
 import { useSettings } from '@/lib/settings/SettingsProvider';
 import { useConnection } from '@/lib/bridge/useConnection';
 import { useProbe } from '@/lib/bridge/useProbe';
-import { importToXTab, probeXTabContent, setTitleOnXTab } from '@/lib/bridge/importArticle';
+import { getFolderStatus, importToXTab, probeXTabContent, setTitleOnXTab } from '@/lib/bridge/importArticle';
 import { resolveTargetXTab } from '@/lib/bridge/locateXTab';
 import { requestRemoteImagePermissions } from '@/lib/bridge/imagePermissions';
-import type { ImageBlock, ImportMode, SetTitleResponse } from '@/lib/bridge/protocol';
+import { classifyImageSource, type ImageBlock, type ImportMode, type SetTitleResponse } from '@/lib/bridge/protocol';
 import { capability, firstTitle } from '@/lib/markdown/capability';
 import { extractCover, extractTitle, stripFirstH1 } from '@/lib/markdown/frontmatter';
 import { parseMarkdown } from '@/lib/markdown/parser';
@@ -131,7 +131,7 @@ export function WorkspaceProvider({
   children,
 }: WorkspaceProviderProps) {
   const { t, lang } = useI18n();
-  const { opts } = useSettings();
+  const { opts, setOpt } = useSettings();
   // review #6:editorHasContent 改为真实探针派生值(hasContent),不再是写死的 mock。
   const { connected, hasContent: editorHasContent } = useConnection();
   // 写入成功后需重探,让 hasContent 反映「编辑器现在有内容了」(探针默认只挂载探一次)。
@@ -285,10 +285,32 @@ export function WorkspaceProvider({
   }, []);
 
   // ── 导入 ──
+  // B5 的 UI 后半程:content 在「涉本地图的导入」结束后清 vault handle,但 sidepanel 的
+  // opts 缓存(activeFolder/folder)没人通知——素材板/设置会一直显示「已连接」直到组件
+  // 重新挂载(真机回归 T2 的「UI 撒谎」)。导入收尾时调用本函数向 content 重新校准两级状态。
+  const recalibrateFolders = useCallback(async () => {
+    const [active, persistent] = await Promise.all([
+      getFolderStatus('active'),
+      getFolderStatus('persistent'),
+    ]);
+    if (active.ok) {
+      setOpt('activeFolder', active.connected);
+      setOpt('activeFolderName', active.folderName);
+    }
+    if (persistent.ok) {
+      setOpt('folder', persistent.connected);
+      setOpt('folderName', persistent.folderName);
+    }
+  }, [setOpt]);
+
   // toastMsg:成功收尾提示,默认「已写入」;标题/空替换场景由 startImport 组合后传入。
-  const finishImport = useCallback((toastMsg: string = t.writtenToast, imageFail = 0) => {
+  // ok 用注入引擎回传的真实写入块数(blockCount)——此前拿 capability 的格式计数凑数,
+  // 纯文本段落任何类目都不计,导致「实际写入成功、报告 0 成功」(真机回归 T5)。
+  // 口径:成功 = 实际写入块数 - 图片失败数(失败图已降级为文本块,不重复计);
+  // 降级 = capability 的格式降级项计数(H4+/行内代码等,写入成功但格式打折,单位是「处」)。
+  const finishImport = useCallback((toastMsg: string = t.writtenToast, imageFail = 0, blockCount = 0) => {
     const cap = capability(md, en);
-    const ok = cap.filter((c) => c.badge !== 'warn').reduce((a, c) => a + c.count, 0);
+    const ok = Math.max(0, blockCount - imageFail);
     const deg = cap.filter((c) => c.badge === 'warn').reduce((a, c) => a + c.count, 0);
     const now = new Date();
     const item: HistoryItem = {
@@ -382,6 +404,13 @@ export function WorkspaceProvider({
           }
         }
 
+        // 本次导入是否涉及本地图——谓词与 content 的 usesLocalImage 完全一致(blocks 里的
+        // local 图,或本地路径封面)。涉及则 content 会在导入结束后清 vault handle(B5),
+        // 成功收尾时需同步校准文件夹 UI 并提示用户(真机回归 T2)。
+        const usesLocalImage =
+          blocks.some((b) => b.kind === 'image' && classifyImageSource(b.source) === 'local') ||
+          (coverSource !== null && classifyImageSource(coverSource) === 'local');
+
         // 远程图 / 封面 host 权限:必须在用户手势内、任何其它 await 之前(上面全同步)。
         await requestRemoteImagePermissions(md, coverSource ? [coverSource] : []);
 
@@ -431,7 +460,14 @@ export function WorkspaceProvider({
             }
             toastMsg = `${toastMsg} · ${titleResultText(titleRes, t)}`;
           }
-          finishImport(toastMsg, res.imageFail);
+          // B5 的 UI 同步:content 已在导入尾声清掉用过的 vault handle,这里(a)就地重新校准
+          // 素材板/设置的文件夹状态(否则要等组件重新挂载才刷新,UI 撒谎),(b)若确有文件夹
+          // 曾处于连接态,toast 里明确告知已断开——安全清理是既定代价,但不能默默变化。
+          if (usesLocalImage) {
+            if (opts.activeFolder || opts.folder) toastMsg = `${toastMsg} · ${t.folderAutoCleared}`;
+            void recalibrateFolders();
+          }
+          finishImport(toastMsg, res.imageFail, res.blockCount);
         } else {
           // 失败:不写成功记录,以可读中文/英文提示错误(复位在 finally 统一处理)。
           showToast(importErrorText(res.error, t));
@@ -451,7 +487,7 @@ export function WorkspaceProvider({
     // setCover/coverKeep/scrollTop/obsidianImg/wikilink…),逐列极易漏(漏了会 stale-closure
     // 读到旧值——切开关后不改 md 就点写入即失效)。setOpt 每次产生新 opts 引用,依赖整个 opts
     // 让任一设置切换都重建回调,正确且防再漏。
-    [md, en, t, opts, finishImport, showToast, askTitleConflict],
+    [md, en, t, opts, finishImport, showToast, askTitleConflict, recalibrateFolders],
   );
 
   const writeX = useCallback(async () => {
