@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**：2026-07-16 · 分支 `fix/pre-release-hardening` · **发布前全面审计 + 13 项加固**（4 专项审查：注入/UI/安全/解析；P0×2：标题写错文章 pinnedTabId、坏备份砖化 ErrorBoundary）。**并修复跨机器分支分叉**：标题 ask 弹窗（PR #21）内容曾掉出 main，已 rebase 整合回来（见 §11）。tsc/build/zip 全绿，**待真机回归**。〔历史〕上一轮 · 标题冲突 `ask` 询问弹窗（`TitleConflictDialog` + Promise 化 resolver：编辑器已有标题时弹「覆盖/保留」，真冲突才弹、无冲突静默设，待真机验证）。上一轮:**设置 action 接真实实现(A 组)**：快捷键跳转 `chrome://extensions/shortcuts`、诊断快照导出 JSON、备份/恢复(新模块 `lib/storage/backup.ts`,导出 prefs+options+history+draft、恢复宽松写回)。纯前端,静态预览验证(tabs.create URL / 诊断备份 JSON 结构 / 恢复写回 4 key、无效拒绝)。剩:标题 `ask` 弹窗(B 组,需真机)。上一轮:**批次 C:图片压缩（智能保护 PNG）+ 探针「需刷新」文案（真机验证）**——设置面板诚实化(批次 A/B/C)收官。图片压缩**只压 JPEG 照片**、PNG 截图/文字图保持原样清晰（实测截图压完糊掉后的取舍),压缩打 console 日志;探针 `needs-refresh` 态(当前是 X 页但 content 不应答→提示刷新页面)。上一轮:**全面刷新 README + HANDOFF 文档**（此前停在 M2 早期,严重落后）。上一轮:**批次 B2:scrollTop 接真实实现 + 修 stale-closure / 探针刷新重探**(真机验证):`startImport` useCallback 依赖改为整个 `opts`;探针 `onUpdated` 加 `status==='complete'`。上一轮:**批次 B1:Obsidian 图片 / Wikilink 开关接真实实现**：parser 加 `parseMarkdown(md, opts)`(模块级标志);`obsidianImg` 关时 `![[x]]` 不当图片、`wikilink` 开时行内 `[[x]]`→纯文本(默认开)。8 条 node 用例验证。批次 B 剩 scrollTop(B2,需真机)。设置精简 PR #15 已合并。上一轮:**设置面板诚实化(精简 + 置灰,批次 A,PR #15)**：盘点发现设置里近 2/3 开关「改了不生效」。批次 A **删除 14 个无意义/不可行的项**(altCaption/graphql/tableStrategy/h4Plus/inlineCode/tweetUrl/divider/imgFail/strict/pace/htmlBlock/footnote/codeLang/concurrency,config 行+options 字段一并移除)+ **置灰保留**未接的(codeStrategy/taskList/punct/zhConvert/retries,标「规划中」/「当前固定」);`SettingsTab` 加 disabled 渲染。纯 UI,静态预览验证(删除项消失、保留项置灰、批次 B/C 项保持可交互)。批次 B(低成本接:scrollTop/wikilink/obsidianImg)、批次 C(图片压缩)随后。上一轮:自动填图片 ALT 尝试后搁置(三路皆不通,代码已回退)。PR #10~#14 已合并 main。
+**最后更新**：2026-07-16 · 分支 `fix/qa-regression-t2-t5` · **全量真机回归(14 用例,QA 文档 `docs/qa/真机回归测试-v0.2.0加固批.md`)+ 修 2 处 UI 撒谎**:T2 本地图导入后文件夹状态不刷新(`recalibrateFolders` 就地校准 + 断开提示 toast,补上 B5 的 UX 待办)、T5 导入报告虚报计数(改用引擎回传真实 `blockCount`)。历史载入弹窗 FAIL 证实为误报(内容全等静默载入是设计行为);append 1 图片失败未复现记偶发。修复已真机复测通过(1 成功/0 降级 · 大文档 174 成功 · 文件夹即时未连接)。〔历史〕上一轮 · **发布前全面审计 + 13 项加固**（4 专项审查：注入/UI/安全/解析；P0×2：标题写错文章 pinnedTabId、坏备份砖化 ErrorBoundary）。**并修复跨机器分支分叉**：标题 ask 弹窗（PR #21）内容曾掉出 main，已 rebase 整合回来（见 §11）。tsc/build/zip 全绿，**待真机回归**。〔历史〕上一轮 · 标题冲突 `ask` 询问弹窗（`TitleConflictDialog` + Promise 化 resolver：编辑器已有标题时弹「覆盖/保留」，真冲突才弹、无冲突静默设，待真机验证）。上一轮:**设置 action 接真实实现(A 组)**：快捷键跳转 `chrome://extensions/shortcuts`、诊断快照导出 JSON、备份/恢复(新模块 `lib/storage/backup.ts`,导出 prefs+options+history+draft、恢复宽松写回)。纯前端,静态预览验证(tabs.create URL / 诊断备份 JSON 结构 / 恢复写回 4 key、无效拒绝)。剩:标题 `ask` 弹窗(B 组,需真机)。上一轮:**批次 C:图片压缩（智能保护 PNG）+ 探针「需刷新」文案（真机验证）**——设置面板诚实化(批次 A/B/C)收官。图片压缩**只压 JPEG 照片**、PNG 截图/文字图保持原样清晰（实测截图压完糊掉后的取舍),压缩打 console 日志;探针 `needs-refresh` 态(当前是 X 页但 content 不应答→提示刷新页面)。上一轮:**全面刷新 README + HANDOFF 文档**（此前停在 M2 早期,严重落后）。上一轮:**批次 B2:scrollTop 接真实实现 + 修 stale-closure / 探针刷新重探**(真机验证):`startImport` useCallback 依赖改为整个 `opts`;探针 `onUpdated` 加 `status==='complete'`。上一轮:**批次 B1:Obsidian 图片 / Wikilink 开关接真实实现**：parser 加 `parseMarkdown(md, opts)`(模块级标志);`obsidianImg` 关时 `![[x]]` 不当图片、`wikilink` 开时行内 `[[x]]`→纯文本(默认开)。8 条 node 用例验证。批次 B 剩 scrollTop(B2,需真机)。设置精简 PR #15 已合并。上一轮:**设置面板诚实化(精简 + 置灰,批次 A,PR #15)**：盘点发现设置里近 2/3 开关「改了不生效」。批次 A **删除 14 个无意义/不可行的项**(altCaption/graphql/tableStrategy/h4Plus/inlineCode/tweetUrl/divider/imgFail/strict/pace/htmlBlock/footnote/codeLang/concurrency,config 行+options 字段一并移除)+ **置灰保留**未接的(codeStrategy/taskList/punct/zhConvert/retries,标「规划中」/「当前固定」);`SettingsTab` 加 disabled 渲染。纯 UI,静态预览验证(删除项消失、保留项置灰、批次 B/C 项保持可交互)。批次 B(低成本接:scrollTop/wikilink/obsidianImg)、批次 C(图片压缩)随后。上一轮:自动填图片 ALT 尝试后搁置(三路皆不通,代码已回退)。PR #10~#14 已合并 main。
 
 ---
 
@@ -26,10 +26,10 @@
   - ✅ **本地图按需授权**（分支 `feat/session-vault-folder`，真机验证）：两级文件夹 `active`（素材板「本篇图片文件夹」）+ `persistent`（设置默认），读取优先级 active > persistent > 降级；素材板就地连接/更换/清除本篇专用文件夹；浏览器重启权限回落后「一键恢复」复用存量 handle（`requestPermission`，免重选文件夹）。
   - ✅ **探针自动重探**（PR #10，真机验证）：监听标签页事件自动更新连接状态,免手动刷新;tab 定位改为跟随当前活动标签。
   - ✅ **设置面板诚实化**（PR #15/#16/#17，批次 A/B）：盘点发现近 2/3 开关「改了不生效」→ 删 14 个无意义/不可行项 + 置灰未接项;`obsidianImg`/`wikilink`/`scrollTop` 接真实实现;修 stale-closure（切开关不改 md 即时生效）+ 探针刷新后自动重探。
-- **本次刚做**：**设置 action 接真实实现(A 组)**——快捷键跳转 / 诊断快照导出 / 备份恢复(`lib/storage/backup.ts`),纯前端静态预览验证。剩标题 `ask` 弹窗(B 组,需真机)。上一轮批次 C(图片压缩智能保护 PNG)已合并。
-- **还没做**：标题 `ask` 独立询问弹窗;备份导出/恢复、诊断快照、快捷键跳转（设置里 3 个 action 仍是 toast 演示）。
+- **本次刚做**：**v0.2.0 后全量真机回归(14 用例)+ 修 2 处 UI 撒谎**——T2 本地图导入后文件夹状态就地校准 + 断开 toast;T5 导入报告改用引擎真实 `blockCount`(不再拿 capability 格式计数凑「成功」数)。QA 文档:`docs/qa/真机回归测试-v0.2.0加固批.md`。
+- **还没做**：导入报告失败明细(失败只有 `imageFail` 汇总,无序号/URL/阶段/原因);T3 砖化兜底(手动写坏 `chrome.storage`)未跑。
 - **已排除（固有限制）**：`postMessage`→MessageChannel「私有通道」（MAIN world 下 File 对页面脚本不可隐藏，见 §8）；**自动填图片 ALT/Description**——实测 ALT 不在 Draft MEDIA entity data（`data` 只有 `mediaItems`）、走 X 后端 `media/edit`,无法「借 Draft 直写」;程序化打开「Edit media」弹窗永久 loading(内部元素不渲染)、Save 只回 Crop tab 不关窗。三路(直写/UI 弹窗/私有接口)皆不通,**自动 alt 已搁置**、代码已回退(分支 `feat/image-alt-text`),`altCaption` 开关为演示占位。详见 §11。
-- **下一步**：批次 C 真机验证通过后提 PR;之后标题 ask 弹窗 / 备份导出 / 诊断 / 快捷键任选。
+- **下一步**：导入报告失败明细(批次三);远期「文章 → Markdown 反向导出」。
 - **怎么跑**：`pnpm install && pnpm build` → Chrome 加载 `.output/chrome-mv3`。详见 §7。
 
 ---
@@ -142,8 +142,9 @@ background（开侧栏）                          injector.ts（MAIN world，�
 | ~~本地图 File 字节经 `postMessage` 到 MAIN world~~ | 本地图/远程/封面 File 在 MAIN world 对页面脚本可读(与远程/dataURI 同面) | **固有限制,不可修**(见 §8;MessageChannel 已验证无效并回退) |
 | ~~行内代码 X 渲染~~ | ✅ 真机确认 X 正文**不支持**行内代码 → 降级保留反引号 `code`（`capability` 文案订正） | 本次(第九次会话) |
 | ~~「打开 X Articles」按钮~~ | ✅ 已接 `chrome.tabs.create`（待真机验证 URL 落点） | 本次(第九次会话) |
-| ~~标题冲突 `titleConflict='ask'`~~ | ✅ 已接询问弹窗（`TitleConflictDialog`，真冲突时问覆盖/保留） | 本次 |
-| 备份/导出、诊断快照、快捷键跳转 | toast 演示 | M4 |
+| ~~标题冲突 `titleConflict='ask'`~~ | ✅ 已接询问弹窗（`TitleConflictDialog`，真冲突时问覆盖/保留），真机验证 | 第十二/十三次会话 |
+| ~~备份/导出、诊断快照、快捷键跳转~~ | ✅ 已接真实实现（PR #20 `lib/storage/backup.ts` 等），备份往返/非法拒绝真机验证 | 第十二次会话 |
+| 导入报告失败明细 | 失败只有 `imageFail` 汇总数,无图片序号/URL/失败阶段/原因（QA T6 引出） | 待办 |
 
 > 图片上传（远程/dataURI）、封面、原生表格均已完成并真机验证合并（PR #4/#5/#7）。
 
@@ -199,8 +200,11 @@ pnpm build              # → .output/chrome-mv3
 **设置面板诚实化（批次 A/B/C）已收官**——每个能点的开关都真实生效。图片压缩为「智能保护 PNG」：只压 JPEG 照片、PNG 截图保持清晰（批次 C，`feat/batch-c-compress`，真机验证，待提 PR）。
 
 **待办（体验/数据类，任选）**
-- [x] ~~标题冲突 `titleConflict='ask'` 独立询问弹窗~~ ✅ 已实现（`feat/title-ask-dialog`：`TitleConflictDialog` + Promise 化 resolver，真冲突时才弹，待真机验证）。
-- [x] ~~备份导出 / 恢复、诊断面板、快捷键跳转~~ ✅ 已接真实实现（A 组，`feat/settings-actions`，静态预览验证，待合并）。
+- [x] ~~标题冲突 `titleConflict='ask'` 独立询问弹窗~~ ✅ 已实现并真机验证（QA T1 五子用例全过，含 pinnedTabId 挂起切标签场景）。
+- [x] ~~备份导出 / 恢复、诊断面板、快捷键跳转~~ ✅ 已接真实实现并真机验证（QA T3:合法往返 + 3 类非法文件拒绝）。
+- [x] ~~B5 清 handle 后的断开提示 toast~~ ✅ 已补（真机回归 T2 修复的一部分）。
+- [ ] **导入报告失败明细**（QA T6 引出）:失败只有 `imageFail` 汇总,应补图片序号/URL/失败阶段/原因(协议 `ImportResult` 加失败明细数组 + ReportCard 展示)。
+- [ ] QA 未跑项:T3 砖化兜底(手动 `chrome.storage.local.set({markflow_prefs:"corrupted"})` 后面板不白屏)。
 
 **远期**：文章 → Markdown 反向导出（xposter 有范本，§8.1 导出器）。
 
@@ -220,11 +224,20 @@ pnpm build              # → .output/chrome-mv3
 
 ## 11. 最近一次会话小结
 
-**2026-07-16 · 第十三次会话（本次）· 发布前全面审计 + 加固（4 专项）+ 分支分叉修复**：
+**2026-07-16 · 第十四次会话（本次）· 全量真机回归 + 修 2 处 UI 撒谎**：
+- **QA 文档化回归**：产出 `docs/qa/真机回归测试-v0.2.0加固批.md`（T1 标题 ask ×5 / T2 handle 清除 / T3 备份 / T4 载入确认 / T5 解析加固 / T6 全格式冒烟,含「已知非 bug 勿误报」清单）,交自动化测试 Agent 真机执行,14 用例覆盖发布前加固全部改动。
+- **T2 修复（UI 撒谎）**：B5 清 handle 后素材板/设置仍显示「已连接」直到组件重新挂载。`WorkspaceProvider` 新增 `recalibrateFolders`(涉本地图导入成功收尾时向 content 重查两级文件夹状态、回写 opts)+ 成功 toast 追加「文件夹已安全断开,下篇导入需重新连接」(补上第十三次会话记的 UX 待办)。谓词 `usesLocalImage` 与 content 侧完全一致(blocks local 图或本地路径封面)。
+- **T5 修复（报告撒谎）**：`finishImport` 的「成功」数从 `capability(md)` 格式计数改为引擎回传真实 `blockCount - imageFail`(纯文本段落此前 0 成功、大文档虚高 192 vs 174);「降级」保持格式降级项口径(单位「处」,与块数不同单位,已注释说明)。
+- **两项悬案定向复测**：T4 历史载入弹窗——上次 FAIL 为误报,根因是「载入内容与当前草稿全等 → 按设计静默载入」,哨兵文本复测弹窗正常;「载入示例」按钮只在空草稿引导态渲染,天然无需闸门。T6 append 的 1 图片失败干净基线未复现 → 记偶发,待报告失败明细落地后再观察。
+- **文档漂移修正**：§0/§6 仍把标题 ask、备份/诊断/快捷键标「还没做/toast 演示」(第十三次会话只更新了 §5/§9/§11)——本次一并订正。**教训重申**:每轮改动 §0 TL;DR 和 §6 表格也要过一遍,不只 §5/§9/§11。
+- **环境附带**（与仓库无关,本机）:`packageManager` pin 曾致本机 pnpm 全崩(npmmirror 镜像 pnpm 元数据缺 `dist` 字段 × pnpm 自管版本切换),已用 corepack shim 接管 `/usr/local/bin/pnpm` 解决,pin 保留。
+- 待办:导入报告失败明细(批次三);QA 未跑项 T3 砖化兜底。
+
+**2026-07-16 · 第十三次会话 · 发布前全面审计 + 加固（4 专项）+ 分支分叉修复**：
 - **4 专项深度审计**：注入引擎 / UI 状态机 / 安全合规 / 解析层并行审查 + 交叉验证，产出 6 阻断 + 7 强烈建议 + ~25 跟进 + 3 商店合规。综合就绪度 6.8→修完必修/强烈建议批。
 - **13 项修复（4 域并行 subAgent，文件集不重叠免冲突）**：见 CHANGELOG「发布前加固」。P0 两个：标题写进别人那篇（`pinnedTabId` 钉死）、坏备份砖化（白名单校验 + `ErrorBoundary`）。
 - **⚠️ 跨机器分支分叉修复（重要教训）**：标题 ask 弹窗（PR #21，本机真机验证过）虽 `gh` 标 MERGED，但**内容不在 origin/main**——另一台电脑把 main 推进到 4a9c24b（PR #14-#20）时把它顶掉了，孤悬在 `feat/title-ask-dialog`（`a666f9c`）。审计发现 fix 分支（从 main 建）缺标题 ask。**处理**：fix 分支 `git rebase --onto feat/title-ask-dialog 4a9c24b`，手工整合标题阶段冲突（ask 逻辑 × B1 pinnedTabId：三处 setTitle 全复用 pinnedTabId）+ 把 TitleConflictDialog 也提升到 App 层。最终 main 拿到标题 ask + 13 加固。**教训**：跨机器多分支并行时，`gh` 的 MERGED 状态 ≠ 内容在当前 main；合并前必须 `git merge-base --is-ancestor` 验证功能 commit 真在 main。
-- **安全 UX 待补**：涉及本地图的导入后文件夹变「未连接」、下篇需重选（B5 清 handle 的既定代价）——建议加一句 toast 提示，暂记待办（未做，避免扩大本批 scope）。
+- ~~**安全 UX 待补**：涉及本地图的导入后文件夹变「未连接」、下篇需重选（B5 清 handle 的既定代价）——建议加一句 toast 提示，暂记待办~~ ✅ 第十四次会话已补（连同文件夹状态就地校准一起,见 T2 修复）。
 - 待真机回归：标题 ask（覆盖/保留）+ 本地图导入后文件夹清除 + 备份恢复非法文件不砖化 + 载入历史确认弹窗。
 
 **2026-07-15 · 第十二次会话· 标题冲突 `ask` 询问弹窗**：
