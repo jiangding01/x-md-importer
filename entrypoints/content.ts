@@ -11,9 +11,11 @@ import {
   isProbeRequest,
   isSetTitleRequest,
   messageScope,
+  truncateForReport,
   type FetchImageResponse,
   type FolderResponse,
   type ImageBlock,
+  type ImageFailure,
   type ImportBlock,
   type ImportMode,
   type ImportResponse,
@@ -83,11 +85,18 @@ function dataUriToFile(uri: string): File | null {
   }
 }
 
-/** 准备单张图片的字节:dataURI 就地解析,远程委托 background 代理,本地暂不支持(降级)。 */
+/**
+ * 准备单张图片的字节:dataURI 就地解析,远程委托 background 代理,本地从已授权文件夹读取。
+ * 失败时带 failReason 原因码(+ failDetail 自由文本),injector 收集进导入报告的失败明细
+ * ——此前各失败分支静默返回 `{file:null}`,原因当场就知道却被丢掉,报告只能给汇总数。
+ */
 async function prepareOneImage(block: ImageBlock): Promise<PreparedImage> {
   try {
     const kind = classifyImageSource(block.source);
-    if (kind === 'data') return { file: dataUriToFile(block.source) };
+    if (kind === 'data') {
+      const file = dataUriToFile(block.source);
+      return file ? { file } : { file: null, failReason: 'data-uri-invalid' };
+    }
     if (kind === 'remote') {
       const resp = (await browser.runtime.sendMessage({ type: FETCH_IMAGE_TYPE, url: block.source })) as
         | FetchImageResponse
@@ -95,19 +104,19 @@ async function prepareOneImage(block: ImageBlock): Promise<PreparedImage> {
       if (resp?.ok) {
         return { file: new File([base64ToBytes(resp.base64)], resp.fileName, { type: resp.mime }) };
       }
-      return { file: null };
+      return { file: null, failReason: 'remote-fetch-failed', failDetail: resp && !resp.ok ? resp.error : undefined };
     }
     // local(本地相对路径):从已连接的文件夹读取,逐文件兜底优先级 active(素材板「本篇」)>
     // persistent(设置默认)——active 里没有该文件时继续到 persistent 找;两级都读不到 → file:null,
     // injector 降级为 fallbackText 写回原文。
     const file = await resolveLocalImageAcrossScopes(block.source);
+    if (!file) return { file: null, failReason: 'local-not-found' };
     // 与远程/dataURI 对齐:大小上限 + MIME 白名单(本地文件可能是非图或超大文件)。
-    if (!file || file.size > MAX_LOCAL_IMAGE_BYTES || !ALLOWED_IMAGE_MIME.has(file.type)) {
-      return { file: null };
-    }
+    if (file.size > MAX_LOCAL_IMAGE_BYTES) return { file: null, failReason: 'local-too-large' };
+    if (!ALLOWED_IMAGE_MIME.has(file.type)) return { file: null, failReason: 'local-bad-type' };
     return { file };
-  } catch {
-    return { file: null };
+  } catch (err) {
+    return { file: null, failReason: 'prepare-exception', failDetail: String(err) };
   }
 }
 
@@ -324,22 +333,44 @@ export default defineContentScript({
       // 然后随 import 消息把 File 交给 injector——File 经结构化克隆跨 world 传递。
       const images = await prepareImages(blocks, compress);
       // 封面同样在 content 准备好 File 再交给 injector(injector 在 MAIN world 设到封面 fileInput,
-      // File 同世界赋值更稳);封面也走同一压缩。
-      let cover = coverSource
-        ? (await prepareOneImage({ kind: 'image', source: coverSource, alt: '', fallbackText: '' })).file
+      // File 同世界赋值更稳);封面也走同一压缩。保留整个 PreparedImage——准备失败的原因码
+      // 要补进失败明细,不能只取 .file 把原因原地丢掉(review 批次三)。
+      const coverPrep = coverSource
+        ? await prepareOneImage({ kind: 'image', source: coverSource, alt: '', fallbackText: '' })
         : null;
+      let cover = coverPrep?.file ?? null;
       if (cover) cover = await compressAndLog(cover, compress, '封面');
       // 通道超时必须显著大于「图片数 × injector 单图 30s 预算」,否则慢图/多图会先在通道超时,
       // 报失败并丢弃 injector 事后回来的成功结果(而 injector 仍在后台改写编辑器)。基础 45s +
       // 每图 40s(单图 30s 预算 + 归位/清理冗余)+ 封面 20s。
       const timeoutMs = 45_000 + images.length * 40_000 + (cover ? 20_000 : 0);
-      const response = await bridge.request<ImportResult, ImportResponse>(
+      let response = await bridge.request<ImportResult, ImportResponse>(
         'import-result',
         (id) => post({ source: ISO_SOURCE, kind: 'import', nonce, id, blocks, mode, images, cover }),
         timeoutMs,
         (result) => result,
         () => ({ ok: false, error: 'timeout' }),
       );
+      // 封面失败补记(index=-1 约定为封面,见 protocol.ts ImageFailure):injector 的明细只覆盖
+      // 正文图,封面的 prepare 失败只有 content 知道(coverPrep 带原因码)、set 失败由 coverSet===false
+      // 体现——两者互斥(prepare 失败时 cover 为 null,injector 根本不尝试,coverSet 保持 undefined)。
+      if (response.ok && coverSource) {
+        let coverFailure: ImageFailure | null = null;
+        if (!cover) {
+          coverFailure = {
+            index: -1,
+            source: truncateForReport(coverSource, 80),
+            stage: 'prepare',
+            reason: coverPrep?.failReason ?? 'prepare-exception',
+            detail: coverPrep?.failDetail === undefined ? undefined : truncateForReport(coverPrep.failDetail, 200),
+          };
+        } else if (response.coverSet === false) {
+          coverFailure = { index: -1, source: truncateForReport(coverSource, 80), stage: 'upload', reason: 'cover-set-failed' };
+        }
+        if (coverFailure) {
+          response = { ...response, imageFailures: [...(response.imageFailures ?? []), coverFailure] };
+        }
+      }
       // 写入成功且用户勾选「完成后滚动到顶部」→ 把 X 编辑器滚回文章开头,方便从头检查。
       // content 在 ISOLATED world 但与页面共享 DOM,可直接操作滚动(无需经 injector)。
       if (response.ok && scrollTop) scrollEditorToTop();

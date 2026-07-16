@@ -1,6 +1,9 @@
 import {
   MAIN_SOURCE,
   isIsoMessage,
+  truncateForReport,
+  type ImageFailReason,
+  type ImageFailure,
   type ImportBlock,
   type ImportMode,
   type ImportResult,
@@ -518,21 +521,35 @@ export default defineUnlistedScript(() => {
 
   /**
    * 兜底清扫:把任何残留的 __MARKFLOW_IMG_ marker 块清空删除,防中断后正文留脏占位符。
-   * **多轮重试**:X 的 onChange 是异步 commit,fallbackIndex 路径挪动 marker 后单次读 fiber
-   * state 可能读到中间态、漏掉刚移动的 marker 块(真机见最后一张图的 `_4_` 残留)。故每轮前留
-   * 时间让 X commit,读最新 state 删残留,直到某轮已无残留(或达上限)——单次删不干净就再来一轮。
+   * **多轮重试 + 连续两轮确认**:X 的 onChange 是异步 commit,单次读 fiber state 可能读到
+   * 中间态、漏掉刚移动的 marker 块。旧实现「某轮没读到残留就收工」——一次陈旧的"干净"读取
+   * 会直接终止清扫,残留静默留在正文(真机回归批次三 T6 复现:fallbackIndex 路径的 marker
+   * 躲过全部 4 轮)。现在必须**连续两轮**读到干净(两轮间留 X commit 时间)才确认收工;
+   * 读不到状态节点不再当"干净"。返回「结束时是否确认无残留」,false 交调用方审计上报。
    */
-  const sweepMarkers = async (prefix: string): Promise<void> => {
-    for (let round = 0; round < 4; round += 1) {
+  const sweepMarkers = async (prefix: string): Promise<boolean> => {
+    let cleanStreak = 0;
+    for (let round = 0; round < 6; round += 1) {
       await delay(round === 0 ? 120 : 220); // 首轮短等,后续留足 X commit 时间
-      if (!sweepMarkersOnce(prefix)) return; // 本轮已无残留 → 收工
+      const r = sweepMarkersOnce(prefix);
+      if (r === 'clean') {
+        cleanStreak += 1;
+        if (cleanStreak >= 2) return true; // 连续两轮确认干净 → 收工
+      } else {
+        cleanStreak = 0; // 本轮扫掉了残留 / 读不到节点 → 重新累计确认
+      }
     }
+    return false;
   };
 
-  /** 单轮清扫:读最新 state,删掉所有含 prefix 的非 atomic 块。返回「本轮是否发现并处理了残留」。 */
-  const sweepMarkersOnce = (prefix: string): boolean => {
+  /**
+   * 单轮清扫:读最新 state,删掉所有含 prefix 的非 atomic 块。
+   * 'clean'=读到最新 state 且无残留;'swept'=发现并处理了残留;'no-node'=读不到状态节点
+   * (不可当"干净"——那只是没读到,不是没有)。
+   */
+  const sweepMarkersOnce = (prefix: string): 'clean' | 'swept' | 'no-node' => {
     const node = findDraftStateNode();
-    if (!node) return false;
+    if (!node) return 'no-node';
     const es = readEditorState(node);
     const content = es.getCurrentContent();
     const blockMap = content.getBlockMap();
@@ -541,7 +558,7 @@ export default defineUnlistedScript(() => {
       if (block.getType() === 'atomic') return;
       if (block.getText().includes(prefix)) toDelete.push(key);
     });
-    if (!toDelete.length) return false;
+    if (!toDelete.length) return 'clean';
     // Draft 不接受空 blockMap:若待删覆盖全部块(如纯单图文档 + 上传与降级都失败),
     // 保留第一个待删块、把它清空为普通空段落,只删其余——避免空 map + 指向已删块的 selection 崩。
     let survivorCount = 0;
@@ -571,44 +588,50 @@ export default defineUnlistedScript(() => {
     let ns = ESStatic.push(es, nc, 'remove-range');
     ns = ESStatic.forceSelection(ns, sel);
     (node.props?.onChange as (s: DraftEditorState) => void)(ns);
-    return true; // 本轮处理了残留 → 交外层再验一轮(确认 X commit 后是否还有漏网的)
+    return 'swept'; // 本轮处理了残留 → 交外层再验(须此后连续两轮 clean 才算收工)
   };
+
+  /** uploadOneImage 的结果:失败时带原因码(在知道原因的这一层产生,调用方只透传进失败明细)。 */
+  type UploadOutcome = { ok: true } | { ok: false; reason: ImageFailReason; detail?: string };
 
   /**
    * 上传单张图:钉光标到 marker → 找 onFilesAdded → 交 File → 轮询新 MEDIA → 归位 + 清 marker。
-   * 成功 true;失败(无回调/超时)false——由调用方写回 fallbackText。
+   * 失败按路径回具体原因码——此前只回 boolean,8 条互异失败路径在调用点被统一猜成「超时」,
+   * 失败明细的诊断价值在最复杂的 upload 阶段归零(review 批次三)。失败均由调用方写回 fallbackText。
    */
-  const uploadOneImage = async (marker: string, file: File, budgetMs: number): Promise<boolean> => {
+  const uploadOneImage = async (marker: string, file: File, budgetMs: number): Promise<UploadOutcome> => {
     let node = findDraftStateNode();
-    if (!node) return false;
-    if (!placeSelectionAtMarker(node, marker)) return false;
+    if (!node) return { ok: false, reason: 'upload-no-editor' };
+    if (!placeSelectionAtMarker(node, marker)) return { ok: false, reason: 'upload-marker-lost' };
     await delay(80);
 
     node = findDraftStateNode();
-    if (!node) return false;
+    if (!node) return { ok: false, reason: 'upload-no-editor' };
     const onFilesAdded = findOnFilesAdded();
-    if (!onFilesAdded) return false;
+    if (!onFilesAdded) return { ok: false, reason: 'upload-no-callback' };
     const before = snapshotMediaKeys(node);
 
     try {
       onFilesAdded([file]);
     } catch (err) {
       console.warn('[MarkFlow] onFilesAdded 调用失败', err);
-      return false;
+      return { ok: false, reason: 'upload-exception', detail: String(err) };
     }
 
     const media = await waitForNewMedia(before, budgetMs);
     // 无新 MEDIA 块,或有块但未确认(无 mediaId 且稳定性未达标)→ 未确认成功,交调用方降级。
-    if (!media || !media.confirmed) return false;
+    if (!media || !media.confirmed) return { ok: false, reason: 'upload-timeout' };
 
     await delay(120);
     node = findDraftStateNode();
-    if (!node) return false;
+    // MEDIA 已确认后的失败一律归「归位失败」:图大概率已进 X 媒体库,只是没落进正文——
+    // 与「超时」的排查方向完全不同(不该去查网络/重试,而该看正文结构)。
+    if (!node) return { ok: false, reason: 'upload-relocate-failed' };
     // 归位:优先精确顶替 marker 位置;失败则走 §3.3 fallbackIndex 兜底;仍失败(MEDIA 块丢失)才算失败。
-    if (relocateMediaToMarker(node, marker, media.key)) return true;
+    if (relocateMediaToMarker(node, marker, media.key)) return { ok: true };
     node = findDraftStateNode();
-    if (node && relocateMediaByFallbackIndex(node, media.key)) return true;
-    return false;
+    if (node && relocateMediaByFallbackIndex(node, media.key)) return { ok: true };
+    return { ok: false, reason: 'upload-relocate-failed' };
   };
 
   /**
@@ -732,8 +755,9 @@ export default defineUnlistedScript(() => {
     // 清扫用**通用**前缀:不仅清本次,也清掉「历史遗留」——同一草稿反复导入时,之前某次
     // 走 fallbackIndex 未删、又因随机 prefix 不匹配而漏清的残留 marker(否则永远赖在正文里)。
     const MARKER_SWEEP_PREFIX = '__MARKFLOW_IMG_';
-    // 记录每个图片 marker、其在 images[] 中的下标(按文档顺序 = 第几个 ImageBlock)、及失败兜底原文。
-    const imageMarkers: Array<{ marker: string; imageIndex: number; fallbackText: string }> = [];
+    // 记录每个图片 marker、其在 images[] 中的下标(按文档顺序 = 第几个 ImageBlock)、失败兜底原文
+    // 及来源(仅供失败明细展示定位)。
+    const imageMarkers: Array<{ marker: string; imageIndex: number; fallbackText: string; source: string }> = [];
     try {
       // 触碰 blocks 的语句必须在 try 内:页面可伪造无 blocks 字段的 import 消息,
       // blocks.filter / blocks.length 会抛 TypeError——放 try 外会跳过 finally 的
@@ -861,7 +885,7 @@ export default defineUnlistedScript(() => {
           // 图片上传是异步的,必须占位 + 事后归位(见 uploadOneImage)。
           const imageIndex = imageMarkers.length;
           const marker = `${markerPrefix}${imageIndex}__`;
-          imageMarkers.push({ marker, imageIndex, fallbackText: block.fallbackText });
+          imageMarkers.push({ marker, imageIndex, fallbackText: block.fallbackText, source: block.source });
           let characterList = emptyCharList;
           const plain = sample.set('style', emptyStyle).set('entity', null);
           for (let ci = 0; ci < marker.length; ci += 1) characterList = characterList.push(plain);
@@ -939,34 +963,64 @@ export default defineUnlistedScript(() => {
       // --- 图片上传阶段(marker 占位已随正文提交;逐图异步上传 + 归位 + 清 marker)------
       stage = 'images';
       let imageOk = 0;
-      let imageFail = 0;
-      for (const { marker, imageIndex, fallbackText } of imageMarkers) {
-        const file = images[imageIndex]?.file ?? null;
+      // 失败明细:序号/来源/阶段/原因,随 ImportResult 回传供报告展示——此前只有 imageFail
+      // 汇总数,失败了不知道是哪张、哪步(QA T6 引出)。imageFail 由明细长度**派生**(见循环后),
+      // 不再记两份手工账。source/detail 经 truncateForReport 截断(代理对安全)再持久化。
+      const imageFailures: ImageFailure[] = [];
+      const pushFailure = (
+        imageIndex: number,
+        source: string,
+        failStage: 'prepare' | 'upload',
+        reason: ImageFailReason,
+        detail?: string,
+      ): void => {
+        imageFailures.push({
+          index: imageIndex,
+          source: truncateForReport(source, 80),
+          stage: failStage,
+          reason,
+          detail: detail === undefined ? undefined : truncateForReport(detail, 200),
+        });
+      };
+      for (const { marker, imageIndex, fallbackText, source } of imageMarkers) {
+        const prep = images[imageIndex];
+        const file = prep?.file ?? null;
         if (!file) {
-          // 准备失败(远程被拒/权限未授/本地暂不支持):写回原文,不静默丢内容。
+          // 准备失败(远程被拒/本地读不到/超限/类型不符):写回原文,不静默丢内容。
+          // 原因码由 content 的 prepareOneImage 随 PreparedImage 带来;prep 整项缺失
+          // (典型:扩展更新后旧 content 未刷新,消息无 images)→ 'prepare-missing',
+          // 提示刷新页面,不误报成崩溃类异常。
           const node = findDraftStateNode();
           if (node) replaceMarkerWithText(node, marker, fallbackText);
-          imageFail += 1;
+          if (prep) pushFailure(imageIndex, source, 'prepare', prep.failReason ?? 'prepare-exception', prep.failDetail);
+          else pushFailure(imageIndex, source, 'prepare', 'prepare-missing');
           continue;
         }
-        let uploaded = false;
+        let outcome: UploadOutcome;
         try {
           // budget 需 ≥ PENDING_CAP_MS(32s),否则 pending 封顶放行分支永不触发。留足余量取 40s。
-          uploaded = await uploadOneImage(marker, file, 40_000);
+          outcome = await uploadOneImage(marker, file, 40_000);
         } catch (e) {
           console.warn('[MarkFlow] 图片上传异常', e);
+          outcome = { ok: false, reason: 'upload-exception', detail: String(e) };
         }
-        if (uploaded) {
+        if (outcome.ok) {
           imageOk += 1;
         } else {
-          imageFail += 1;
+          pushFailure(imageIndex, source, 'upload', outcome.reason, outcome.detail);
           const node = findDraftStateNode();
           if (node) replaceMarkerWithText(node, marker, fallbackText);
         }
       }
+      // 同一事实只记一份账:失败数从明细派生,天然不会与明细条数漂移。
+      // 必须在 marker 残留审计**之前**取值:残留条目(marker-residue)只进明细、不计 imageFail
+      // ——图本身多已落地(imageOk 已计),残留的是需手动删除的占位文本,计入会让
+      // 「成功 = blockCount - imageFail」误减、toast「图片 N/M」分母虚高。
+      const imageFail = imageFailures.length;
       // 兜底清扫:任何残留 marker(本次走 fallbackIndex 未删的 + 历史遗留的)一并清掉。
       // 用通用前缀而非本次随机 prefix——否则清不掉之前导入残留的其它 prefix 的 marker。
-      if (imageMarkers.length) await sweepMarkers(MARKER_SWEEP_PREFIX);
+      let sweepConfirmedClean = true;
+      if (imageMarkers.length) sweepConfirmedClean = await sweepMarkers(MARKER_SWEEP_PREFIX);
 
       // --- 封面(如有):把 File 塞进封面 fileInput,X 自行上传;失败不影响正文成功结论 ---
       // 契约(D4,见 protocol.ts):未请求封面时 coverSet 为 undefined(而非 false);
@@ -978,8 +1032,43 @@ export default defineUnlistedScript(() => {
         console.info('[MarkFlow] 封面设置', { coverSet });
       }
 
+      // --- marker 残留审计:sweep 未能确认干净时,读最终 state 如实上报,不再静默 ---
+      // 此前残留完全不可见:报告 0 失败、console 无 error(真机回归批次三 T6)。本次 run 的
+      // marker 能从尾部序号映射回第几张图 → 计入明细(reason 'marker-residue');历史前缀的
+      // 残留映射不回本次图,仅 console 告警。放在封面阶段之后审计,多留 X 异步 commit 的时间。
+      if (!sweepConfirmedClean) {
+        const node = findDraftStateNode();
+        if (node) {
+          const auditMap = readEditorState(node).getCurrentContent().getBlockMap();
+          const re = new RegExp(`${markerPrefix}(\\d+)__`, 'g'); // markerPrefix 仅含字母数字下划线,无需转义
+          const residueIdx = new Set<number>();
+          let foreignResidue = false;
+          auditMap.forEach((block) => {
+            if (block.getType() === 'atomic') return;
+            const text = block.getText();
+            let m: RegExpExecArray | null;
+            re.lastIndex = 0;
+            while ((m = re.exec(text))) residueIdx.add(Number(m[1]));
+            if (text.includes(MARKER_SWEEP_PREFIX) && !text.includes(markerPrefix)) foreignResidue = true;
+          });
+          for (const idx of residueIdx) {
+            pushFailure(idx, imageMarkers[idx]?.source ?? '', 'upload', 'marker-residue');
+          }
+          if (foreignResidue) console.warn('[MarkFlow] 检测到历史导入残留的 marker(非本次),清扫未果,请在正文手动删除');
+        }
+      }
+
       console.info('[MarkFlow] 写入成功', { blockCount: blocks.length, effectiveMode, imageOk, imageFail, coverSet });
-      return { ok: true, blockCount: blocks.length, effectiveMode, imageOk, imageFail, coverSet };
+      if (imageFailures.length) console.warn('[MarkFlow] 图片失败明细', imageFailures);
+      return {
+        ok: true,
+        blockCount: blocks.length,
+        effectiveMode,
+        imageOk,
+        imageFail,
+        coverSet,
+        imageFailures: imageFailures.length ? imageFailures : undefined,
+      };
     } catch (err) {
       // 打完整 err 对象(含堆栈),便于定位崩在 Draft 内部的哪一步
       console.error(`[MarkFlow] 写入异常 @${stage}`, err);
