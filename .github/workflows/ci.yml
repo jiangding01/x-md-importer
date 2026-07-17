@@ -1,0 +1,39 @@
+# CI:每次 push / PR 跑 类型检查 + 单测 + 构建。
+# 单测覆盖纯函数层(parser/frontmatter/capability/backup validate/localVault 路径器/protocol);
+# injector/content 无诚实单测缝隙(依赖页面 Draft.js fiber),回归靠 docs/qa/ 真机用例。
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4 # 从 package.json 的 packageManager 字段读取 pnpm 版本
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          # 必须 ≥ 22.13:pnpm 11.12 用到 node:sqlite(Node 22.5+ 内置),Node 20 会崩
+          # (v0.2.0 发版翻过的车,见 release.yml 同款注释)。
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm compile
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Build (Chrome MV3)
+        run: pnpm build

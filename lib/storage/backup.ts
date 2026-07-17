@@ -68,7 +68,7 @@ const THEME_MODES = ['light', 'dark', 'system'] as const;
 const LANGS = ['auto', 'zh', 'en'] as const;
 
 /** 校验界面偏好:每字段过白名单,非法回落 defaultPrefs。accent 保留任意字符串(仅极简主题用作色值)。 */
-function validatePrefs(raw: unknown): Prefs {
+export function validatePrefs(raw: unknown): Prefs {
   const p = isObj(raw) ? raw : {};
   return {
     skin: pickEnum(p.skin, SKINS, defaultPrefs.skin),
@@ -79,7 +79,7 @@ function validatePrefs(raw: unknown): Prefs {
 }
 
 /** 校验导入设置:每字段过白名单(取值集参照 options.ts),非法回落 defaultOptions。 */
-function validateOptions(raw: unknown): Options {
+export function validateOptions(raw: unknown): Options {
   const o = isObj(raw) ? raw : {};
   const D = defaultOptions;
   return {
@@ -122,7 +122,7 @@ function validateOptions(raw: unknown): Options {
  * source/detail 经 truncateForReport 重截——生产端的截断约束对手工构造/篡改的备份不生效,
  * 不重截则数 MB 字符串可直接持久化进 storage 并整段渲染进报告卡。
  */
-function validateImageFailures(raw: unknown): ImageFailure[] | undefined {
+export function validateImageFailures(raw: unknown): ImageFailure[] | undefined {
   if (!Array.isArray(raw) || raw.length === 0) return undefined;
   const out: ImageFailure[] = [];
   for (const f of raw) {
@@ -152,7 +152,7 @@ function validateImageFailures(raw: unknown): ImageFailure[] | undefined {
  * id(number)是主键 / React key / 删除依据,缺失即无法安全承载 → 丢弃;title/md/date/数值
  * 缺失则补默认(不丢整项),保证下游 toLowerCase / 渲染不再抛。
  */
-function validateHistory(raw: unknown): HistoryItem[] {
+export function validateHistory(raw: unknown): HistoryItem[] {
   if (!Array.isArray(raw)) return [];
   const out: HistoryItem[] = [];
   for (const it of raw) {

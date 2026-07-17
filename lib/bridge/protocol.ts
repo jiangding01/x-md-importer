@@ -119,7 +119,9 @@ export type ImageSourceKind = 'remote' | 'data' | 'local';
  * background 代理,故归 'remote'(而非误判为 'local' 走本地读取路径)。
  */
 export function classifyImageSource(src: string): ImageSourceKind {
-  if (src.startsWith('data:')) return 'data';
+  // data: 判定与 http(s) 一致地大小写不敏感——URL scheme 本就不分大小写,
+  // 否则大写 `DATA:image/...` 会穿透误判为 local(单测钉出的不对称)。
+  if (/^data:/i.test(src)) return 'data';
   if (/^https?:\/\//i.test(src) || src.startsWith('//')) return 'remote';
   return 'local';
 }
