@@ -198,14 +198,11 @@ describe('firstTitle()', () => {
     expect(firstTitle('no title body', true)).toBe('Untitled draft');
   });
 
-  it('疑似生产 bug:firstTitle 不跳过代码围栏,与 frontmatter.extractTitle 行为不一致', () => {
-    // frontmatter.ts 的 findFirstH1 特意用 forEachContentLine 跳过围栏代码块(见其函数注释),
-    // 但 capability.ts 的 firstTitle 用裸正则 `/^#\s+(.+)$/m` 逐行匹配,未做围栏感知。
-    // 结果:同一份文档,firstTitle() 会把代码块里的 "# fake" 误当标题,而 extractTitle() 不会。
-    // 两个「抽取正文首个 H1」的函数在此产生行为分裂,建议后续复用 frontmatter.ts 的
-    // findFirstH1 / forEachContentLine 统一逻辑(与模块顶部注释里提到的"历史修复统一"精神一致)。
+  it('firstTitle 跳过代码围栏,与 frontmatter.extractTitle 行为一致(历史 bug 回归)', () => {
+    // 曾经的分裂:firstTitle 用裸正则 `/^#\s+(.+)$/m`,代码块里的 "# fake" 被误当历史条目标题,
+    // 而 extractTitle 经 forEachContentLine 正确跳过。现 firstTitle 复用同一 helper,行为统一。
     const md = '```\n# fake title in code\n```\n\n# Real Title\n';
-    expect(firstTitle(md, false)).toBe('fake title in code'); // 当前实际行为(疑似 bug)
-    expect(extractTitle(md)).toEqual({ title: 'Real Title', source: 'h1' }); // 对照:frontmatter.ts 的正确行为
+    expect(firstTitle(md, false)).toBe('Real Title');
+    expect(extractTitle(md)).toEqual({ title: 'Real Title', source: 'h1' }); // 与 frontmatter.ts 一致
   });
 });

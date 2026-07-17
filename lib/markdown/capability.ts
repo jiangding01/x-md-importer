@@ -8,7 +8,7 @@
  * 导出签名与 CapItem 结构保持不变(消费方 CapabilityPanel / ReportCard / AssetsCard 不改)。
  */
 
-import { parseMarkdown } from './parser';
+import { forEachContentLine, parseMarkdown } from './parser';
 
 export type CapBadge = 'native' | 'special' | 'image' | 'warn';
 
@@ -154,6 +154,18 @@ export function images(md: string): ImageRef[] {
 }
 
 export function firstTitle(md: string, en: boolean): string {
-  const m = md.match(/^#\s+(.+)$/m);
-  return m ? (m[1] ?? '').trim() : en ? 'Untitled draft' : '未命名草稿';
+  // 用 forEachContentLine 跳过围栏代码块——否则代码块内的 `# 注释` 会被当历史条目标题,
+  // 与 extractTitle/stripFirstH1 的判定分裂(它们经同一 helper,历史修复点;单测钉出)。
+  let title: string | null = null;
+  forEachContentLine(md.split(/\r?\n/), (line) => {
+    const m = /^#\s+(.+)$/.exec(line);
+    if (m) {
+      const t = (m[1] ?? '').trim();
+      if (t.length > 0) {
+        title = t;
+        return true;
+      }
+    }
+  });
+  return title ?? (en ? 'Untitled draft' : '未命名草稿');
 }

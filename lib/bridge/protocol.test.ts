@@ -43,11 +43,9 @@ describe('classifyImageSource', () => {
     expect(classifyImageSource('HTTPS://example.com/a.png')).toBe('remote');
   });
 
-  // 疑似 bug:data: 前缀判定用 startsWith('data:'),大小写敏感;与 http(s) 分支的
-  // 大小写不敏感(/i 正则)不一致。大写 `DATA:` 前缀的数据 URI 会被误判为 'local'
-  // (穿透两个判断均不命中,落到最终 return 'local')而非 'data'。按当前实际行为写死。
-  it('[疑似 bug] 大写 `DATA:` 前缀不被识别为 data,误判为 local', () => {
-    expect(classifyImageSource('DATA:image/png;base64,AAAA')).toBe('local');
+  it('data: 前缀大小写不敏感(与 http(s) 一致;历史 bug 回归:大写 DATA: 曾误判 local)', () => {
+    expect(classifyImageSource('DATA:image/png;base64,AAAA')).toBe('data');
+    expect(classifyImageSource('Data:image/png;base64,AAAA')).toBe('data');
   });
 });
 
