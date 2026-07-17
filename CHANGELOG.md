@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+### 新增 · 单测体系 + CI(225 用例)
+- **Vitest 单测覆盖纯函数层**:parser(85,块级/行内 offset/代理对/对抗输入/全部历史修复回归)、frontmatter+capability(55,fence 统一/计数回归)、backup validate(36,坏备份砖化 P0 防线:非法枚举回落/代理对截断/`__proto__` 不污染)、localVault `splitLocalPath`(20,路径逃逸/编码绕过)、protocol 纯函数+守卫(28)。`pnpm test` 150ms 跑完。
+- **CI workflow**(`.github/workflows/ci.yml`):push/PR 跑 tsc + 单测 + Chrome 构建(Node 22,pnpm 版本从 packageManager 读取)。
+- **明确不在单测范围**:injector/content(依赖页面 Draft.js fiber,无诚实单测缝隙,硬 mock 是空心绿灯)——回归靠 docs/qa/ 真机用例,已在 vitest.config 注释与 CI 注释声明。
+- **测试顺带钉出 2 个生产小 bug(本 PR 不修,测试按现状固化+标注)**:`classifyImageSource` 对大写 `DATA:` 前缀误判 local(http 判定不敏感、data 判定敏感,不对称);`firstTitle()` 不跳围栏代码块(与 `extractTitle` 行为分裂,审计 P2-15 现被测试钉住)。
+- backup.ts 的 4 个 validate 函数导出供单测(行为零变化)。
+
 ## [0.2.2] - 2026-07-16
 
 ### 新增 · 导入报告失败明细(批次三,QA T6 引出)
