@@ -27,7 +27,8 @@
   - ✅ **探针自动重探**（PR #10，真机验证）：监听标签页事件自动更新连接状态,免手动刷新;tab 定位改为跟随当前活动标签。
   - ✅ **设置面板诚实化**（PR #15/#16/#17，批次 A/B）：盘点发现近 2/3 开关「改了不生效」→ 删 14 个无意义/不可行项 + 置灰未接项;`obsidianImg`/`wikilink`/`scrollTop` 接真实实现;修 stale-closure（切开关不改 md 即时生效）+ 探针刷新后自动重探。
 - **本次刚做**：**数学块 `$$` → X 原生 LaTeX**——真机 dump 确认 X 有原生 `LATEX` atomic 块（`data:{}`、公式在块 `text`、逐字符挂同一 entity key）。① parser 新增块级 `$$…$$` 识别（`matchMathOpen`：单行 `$$ x $$` / 多行 `$$\n…\n$$` / 未闭合回退当文本 / `$$100` 行内双美元假阳性防线 / 围栏内不误判 / 空公式回退）；② injector atomic 分支支持 LATEX 真实文本 + 逐字符挂 entity（与 LINK entity 逐字符挂法同理）；③ 能力面板「数学公式」从 warn「未接」改 **native「原生 LaTeX 块」**，新增「未闭合公式」warn 条目（收窄 `RE_MATH_RESIDUE` 只认裸 `$$` 行，消除 `$$100` 假阳性）。行内 `$…$` 本批不做（X 无行内原生承载，与行内代码/图片同策略）。单测 293→307。**已真机验证**：`$$\nE = mc^2\n$$` 导入后 X 原生渲染出 LaTeX 公式块（带原生 Edit/Close 控件）。〔上一轮 v0.3.0〕**列表语义补齐 + 能力面板诚实化 + Toast 溢出修复**——① **嵌套列表**接 Draft 原生 `depth`；② **任务列表** `- [ ]` 接通 `taskList` 设置；③ **能力面板补 7 类语法告知**；④ Toast 溢出修复；⑤ **setext 标题**解析 + 标题抽取全通。
-- **还没做**：QA 未跑项 T3 砖化兜底(手动写坏 `chrome.storage`);行内数学 `$…$` / 行内图片(需 Draft 行内 atomic,成本较高,已在能力面板如实告知)。**多行公式已验证无问题**(见 §8,`\n` 链路正常、无需修复)。
+- **还没做**：无阻塞项。**多行公式已验证无问题**(见 §8);**T3 砖化兜底已由加载校验 + 63 例单测覆盖**(见 §5,真机只剩确认「面板可用 + 数据保全」)。
+- **明确不做(产品决策)**：**行内数学 `$…$`** 与 **行内图片**——X 的 LaTeX / 媒体都是**块级** Insert 项,无行内原生承载,与「行内代码」同策略:保留原文、能力面板如实告知。不再列为候选,勿再评估。
 - **真机验证(本轮,已通过)**：setext 标题两种下划线均成标题且不多出分割线 · 任务列表 ☐/☑ 正确、加粗精确落在文字上未被符号带偏 · `[x]无空格` 原样保留 · 全角空格列表项正常 · emoji/CJK 后的加粗 offset 精确 · 远程图上传 + 封面设置成功（含带查询参数的 `pbs.twimg.com` URL）· 推文嵌入 / 表格 / 代码块 / 分割线均原生。
   - 期间一次图片上传失败经排查为**该 Wikimedia URL 本身不可达**，非代码问题；降级链路如实把 markdown 原文写回正文、未丢内容，行为符合设计。样例已改用 `pbs.twimg.com`。
 - **真机结论(本轮)**：**X 忽略 Draft `ContentBlock.depth`**——嵌套列表渲染成扁平列表,有序列表还会被连续重编号。能力面板「多级列表」据此从暂定的 `special` 落为 `warn`、文案改为确定的「X 不支持列表层级 · 已扁平化(内容不丢)」。**depth 保留照写**:语义正确、零成本,X 日后支持即自动生效。
@@ -139,6 +140,12 @@ background（开侧栏）                          injector.ts（MAIN world，�
   - **能力面板**：补 7 类此前**静默或撒谎**的语法告知（任务列表此前被标绿「原生列表」但正文实际留着 `[ ]` 字面量）；并给 `capability()` 加 `parseOpts` 透传，修掉「面板按默认开关计数、与实际写入不一致」的既存隐患。
   - **Toast 溢出**：长文案限宽换行，图标防压扁；圆角 99→18 在单行下渲染逐字节相同（截图比对验证）。
 
+- ✅ **storage 加载路径校验**（本轮）：此前**恢复备份时逐字段校验、日常加载却裸信任**，是一处不对称。后果不只是崩——**恢复手段过重**:一个坏 `skin` 字段就抛错、把用户推到「清空全部本地数据」的恢复卡片，草稿与历史一并陪葬。
+  - 校验器（`validatePrefs/Options/History`，已有 36 例测试）下沉到新模块 `lib/storage/schema.ts` 并接入四个 loader。**零新逻辑**。
+  - 下沉是为破环：`backup.ts` 自身 import 四个 loader（导出要读当前数据），若 loader 反向 import 它复用校验器即成 `prefs → backup → prefs` 运行时循环。`Prefs`/`defaultPrefs`/`HistoryItem` 一并迁入 schema，原模块 re-export，既有导入点零改动。
+  - 行为转变：坏字段**静默回落默认、面板照常可用、用户数据保全**；坏历史项**只丢该项**、其余历史保留。bootstrap 的 try/catch 与 ErrorBoundary 保留为**最后一道防线**，不再是第一道。
+  - 新增 63 例单测（`loadValidation.test.ts`）：13 种损坏形态 × 四个加载器，含**端到端接线测试**（塞脏 JSON 进 localStorage 驱动真实 `loadX()`）——只测校验器而不测接线的话，漏接了照样全绿。已用「拆掉校验 → 测试变红」反证。
+
 `tsc --noEmit` 全绿；`pnpm build` 正常出包。
 
 ---
@@ -208,6 +215,8 @@ pnpm build              # → .output/chrome-mv3
 - **列表缩进有门槛,别去掉**（`canBeListItem`）：已在列表 run 中 → 任意缩进算嵌套项；不在列表中 → 仅 ≤3 列才起列表（CommonMark 规则，≥4 列属缩进代码块领域）。去掉门槛后，正文里**粘贴的 4 空格缩进代码/日志**中的 `- x` 会被拆成列表项、丢掉原始缩进语境。
 - **给块文本加前缀必须整体平移 offset**（任务列表 ☐/☑ 前缀，见 `shiftInline`）：`inlineStyleRanges`/`links` 的 offset 是相对「加前缀之前的文本」算的，直接字符串拼接会让 `- [ ] **粗体**` 的加粗区间砸到前缀符号上。offset 单位是 UTF-16 码元（见下条）。
 - **LATEX 块的多行公式:链路正常,`\n` 不需要处理**（2026-07-25 真机验证，`docs/qa/测试样例-多行公式.md`）：多行公式体会让 `AtomicBlock.text` 带 `\n`，X **原样传给 LaTeX 渲染器**，`aligned` / 矩阵 / 分段函数（含多个 `\n` + `\\`）全部正确渲染换行与对齐。**「两行独立公式连排」是标准 LaTeX 语义、不是缺陷**——数学模式下换行符即空白（KaTeX/MathJax 同理），要换行须用 `\\` 且在支持换行的环境里。**曾考虑把 `\n` 换成空格，已否决**：既是 no-op（渲染器本就当空白），若进一步改成插真换行更有害——同一 markdown 在 Obsidian/GitHub 里也是连排，我们单独换行反而与用户本地预览不一致。忠实搬运即正确。
+- **storage 读出必须先校验,别再加「裸信任」的加载路径**（`lib/storage/schema.ts`）：四个 loader 已统一走 `validateX()`。新增持久化切片时**照此接上**，别退回 `{...默认, ...存储}` 的裸展开——`getItem` 只在值为 `undefined` 时用 fallback，`null`/字符串/数字/数组都会被原样返回。**校验器与结构定义必须留在 `schema.ts`**（不能挪回 `backup.ts`）：`backup.ts` 自身 import 四个 loader，loader 反向依赖它就成运行时循环。
+- **别用「面板没白屏」当砖化测试的通过标准**：坏数据分两类——① 触发抛错（→ 兜底 UI）；② **静默回落默认值**（面板看起来完全正常）。旧 QA T3 用 `{markflow_prefs:"corrupted"}` 两头都没打到（key 名写错 + 字符串展开不覆盖任何字段），跑出来是「面板正常」→ 记 PASS，实则 ErrorBoundary 与 RecoveryScreen **一次都没执行到**。要打到校验路径必须让**字段本身非法**（如 `{skin:'bogus'}`）。
 - **标题打分（setTitle）**：关键词（title/标题）是**硬门槛**，否则会误命中正文大 contenteditable，overwrite 时清空正文。别放宽。
 - **frontmatter**：parser 跳过与 `extractTitle` 抽取的边界判定必须一致（都用**顶格 `^---`**）；H1 抽取/移除都要**跳过代码块**。
 - **content script 更新不自动生效**：改 content/injector 后必须刷新 X 页面；症状①「三灯绿但写入报未连接」= 页面跑旧 content；症状②「正文写入了却报 `images undefined` 崩溃 / 图片不上传」= 新 injector + 旧 content（旧 content 注入新 injector 但自己不带 images 字段）。injector 已对 images 默认 `[]` 防御（崩溃→降级），但**真正上传图片必须刷新页面**加载新 content。
@@ -233,12 +242,11 @@ pnpm build              # → .output/chrome-mv3
 - [x] ~~**导入报告失败明细**（QA T6 引出）~~ ✅ 已实现并真机验证(v0.2.2,QA T7;含 marker 残留审计上报)。
 - [x] ~~**嵌套列表 / 任务列表 / 能力面板静默降级**~~ ✅ 本轮实现（离线单测验证）。
 - [x] ~~**真机确认 X 对 Draft `depth` 的缩进渲染**~~ ✅ **已确认：X 忽略 Draft `depth`，嵌套列表渲染为扁平**（有序列表还会被连续重编号），层级确实丢失。能力面板「多级列表」据此保持 `warn`、文案定为「X 不支持列表层级 · 已扁平化(内容不丢)」。`depth` 仍照写（语义正确、零成本，X 日后支持即自动生效）。即便扁平也远优于此前的字面量 `- 二级` 段落。
-- [ ] QA 未跑项:T3 砖化兜底(手动 `chrome.storage.local.set({markflow_prefs:"corrupted"})` 后面板不白屏)。
+- [x] ~~QA T3 砖化兜底~~ ✅ 已由**加载路径校验**+ 63 例单测覆盖(`lib/storage/loadValidation.test.ts`)。⚠️ 旧版 QA 步骤写错两处(key 名 `markflow_prefs` 应为 `markflow:prefs`;payload `"corrupted"` 触发不到任何防护),照旧版做会得到**假通过** —— 已在 QA 文档订正。
 
 **下一批候选（本轮盘点发现、已在能力面板如实告知但尚未支持）**
 - [x] ~~**数学块 `$$`**~~ ✅ 本轮实现并真机验证：真机 dump 确认 X 原生 `LATEX` atomic 块（`data:{}`、公式在块 `text`、逐字符挂 entity），parser 识别块级 `$$…$$` → injector 直写 → 能力面板标 native。真机导入 `$$\nE = mc^2\n$$` 后 X 原生渲染出 LaTeX 公式块。
 - [ ] 行内数学 `$…$`：X 的 LaTeX 是块级 Insert 项，无行内原生承载，暂只如实告知（与行内代码/行内图片同策略）。
-- [ ] 行内图片（段落中的 `![](x)`）：需要 Draft 行内 atomic，成本较高，暂只如实告知。
 
 **远期**：文章 → Markdown 反向导出（xposter 有范本，§8.1 导出器）。
 
