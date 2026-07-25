@@ -8,7 +8,7 @@
  * 导出签名与 CapItem 结构保持不变(消费方 CapabilityPanel / ReportCard / AssetsCard 不改)。
  */
 
-import { forEachContentLine, parseMarkdown, type ParseOptions } from './parser';
+import { forEachContentLine, frontmatterBodyStart, parseMarkdown, type ParseOptions } from './parser';
 
 export type CapBadge = 'native' | 'special' | 'image' | 'warn';
 
@@ -51,6 +51,7 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions): C
   const RE_INLINE_IMAGE = /!\[[^\]]*\]\([^)]*\)/g;
   const RE_FOOTNOTE = /\[\^[^\]]+\]/g;
   const RE_HTML_BLOCK_START = /^<[A-Za-z]/;
+  const RE_MATH_BLOCK = /^\$\$/m;
 
   for (const b of blocks) {
     if (b.kind === 'image') {
@@ -89,7 +90,9 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions): C
     inlineImages += (b.text.match(RE_INLINE_IMAGE) || []).length;
     footnotes += (b.text.match(RE_FOOTNOTE) || []).length;
     if (RE_HTML_BLOCK_START.test(b.text.trim())) htmlBlocks += 1;
-    if (b.text.includes('$$')) mathBlocks += 1;
+    // `$$` 须在**行首**才算数学块:行中的 `$$` 多是口语化的双美元符(如「$$100」),
+    // 用 includes 会误报。块级公式 `$$\n…\n$$` 的文本恒以 `$$` 起行,不受影响。
+    if (RE_MATH_BLOCK.test(b.text)) mathBlocks += 1;
   }
 
   const setextHeadings = countSetextHeadings(md);
@@ -235,7 +238,12 @@ function isOtherBlockLine(line: string): boolean {
 }
 
 function countSetextHeadings(md: string): number {
-  const lines = md.split(/\r?\n/);
+  // 必须与 parseMarkdown 一样先跳过 frontmatter:`forEachContentLine` 只跳围栏、不跳 frontmatter,
+  // 直接扫原文会把 frontmatter 体的末行 + 闭合 `---` 当成「文字 + --- 下划线」= setext 标题,
+  // 于是**任何带 frontmatter 的文档**都凭空多一条「setext 标题未识别」假告警(review 揪出)。
+  // frontmatter 是本项目的招牌用法(title/cover 都靠它),这条假告警会命中绝大多数真实文档。
+  const allLines = md.split(/\r?\n/);
+  const lines = allLines.slice(frontmatterBodyStart(allLines));
   let count = 0;
   forEachContentLine(lines, (line, index) => {
     if (line.trim() === '' || isOtherBlockLine(line)) return;

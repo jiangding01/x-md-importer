@@ -202,6 +202,26 @@ describe('嵌套列表 depth', () => {
     ]);
   });
 
+  it('不在列表中时 ≥4 空格缩进不算列表项(review 修复:粘贴的缩进代码不被拆解)', () => {
+    // CommonMark:列表最多缩进 3 格,≥4 格属缩进代码块领域。放开缩进匹配后若无此门槛,
+    // 正文里粘贴的 4 空格缩进代码/日志会被硬拆成列表项、丢掉原始缩进语境。
+    const blocks = parseMarkdown('前面一段话\n    - 粘贴代码里的破折号行\n    - 第二行');
+    expect(blocks).toHaveLength(1);
+    const only = asText(blocks[0]);
+    expect(only.type).toBe('unstyled');
+    expect(only.text).toContain('- 粘贴代码里的破折号行');
+  });
+
+  it('已在列表中时 ≥4 空格照常算嵌套项(门槛只对「起头」生效)', () => {
+    expect(shape('- 一级\n    - 四空格二级')).toEqual(['ul:0', 'ul:1']);
+  });
+
+  it('≤3 空格缩进仍可打断段落起列表(与 CommonMark 一致)', () => {
+    const blocks = parseMarkdown('前面一段话\n  - 两空格列表');
+    expect(blocks).toHaveLength(2);
+    expect(asText(blocks[1]).type).toBe('unordered-list-item');
+  });
+
   it('整体缩进的列表首层即 depth 0', () => {
     expect(shape('  - a\n  - b')).toEqual(['ul:0', 'ul:0']);
   });

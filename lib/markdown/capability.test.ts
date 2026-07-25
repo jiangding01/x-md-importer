@@ -4,6 +4,7 @@
 // 以注释标注(不修改生产代码),并在最终报告汇总。
 import { describe, expect, it } from 'vitest';
 import { capability, images, firstTitle } from './capability';
+import { parseMarkdown } from './parser';
 import { extractTitle } from './frontmatter';
 
 const find = (items: ReturnType<typeof capability>, label: string) => items.find((it) => it.label === label);
@@ -314,6 +315,10 @@ describe('capability · 数学公式', () => {
     expect(find(items, '数学公式')).toBeUndefined();
   });
 
+  it('行中的 $$ 不算数学块(review 修复:「$$100」这类口语双美元符的假阳性)', () => {
+    expect(find(capability('价格从 $$100 涨到 $$200', false), '数学公式')).toBeUndefined();
+  });
+
   it('围栏代码块内的 $$ 不计入数学公式(已成 atomic 块)', () => {
     const md = '```\n$$\nx\n$$\n```\n';
     const items = capability(md, false);
@@ -322,6 +327,22 @@ describe('capability · 数学公式', () => {
 });
 
 describe('capability · setext 标题(唯一扫原始 md 的一项)', () => {
+  it('frontmatter 的闭合 --- 不被误计为 setext 标题(review 修复的假告警)', () => {
+    // 此前 countSetextHeadings 直接扫原文(forEachContentLine 只跳围栏、不跳 frontmatter),
+    // 把 frontmatter 体末行 + 闭合 `---` 当成「文字 + 下划线」= setext 标题。
+    // frontmatter 是本项目招牌用法(title/cover 都靠它),这条假告警会命中绝大多数真实文档。
+    const md = '---\ntitle: 标题\ntags: x\n---\n真正的正文\n';
+    const items = capability(md, false);
+    expect(find(items, 'setext 标题')).toBeUndefined();
+    // 交叉验证:parseMarkdown 确实把整个 frontmatter 剥掉了,面板不该报「保留原文」的降级
+    expect(parseMarkdown(md)).toHaveLength(1);
+  });
+
+  it('frontmatter 之后真正的 setext 标题仍被计入(别把门槛开太大)', () => {
+    const md = '---\ntitle: T\n---\n真 setext\n===\n';
+    expect(find(capability(md, false), 'setext 标题')?.count).toBe(1);
+  });
+
   it('=== 下划线的一级 setext 标题被计入', () => {
     const md = '标题一\n===\n\n正文\n';
     const items = capability(md, false);

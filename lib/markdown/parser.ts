@@ -85,6 +85,30 @@ export function isImageLine(line: string): boolean {
 }
 
 /**
+ * 文首 YAML frontmatter 之后第一行的下标;无 frontmatter 返回 0(即从头解析)。
+ *
+ * 判定:仅当**第一行即为顶格 `---`** 且后续存在顶格闭合 `---` 时触发。用「顶格 `^---`」
+ * 而非 trim,与 frontmatter.ts 的抽取正则一致——否则缩进的 `  ---` 会出现「parser 剥离了
+ * 但 extractTitle 抽不到 → 标题静默丢失」的不一致。闭合 `---` 必须出现在**首个空行之前**
+ * (frontmatter 体不含空行),否则文首装饰性 `---\n\n正文\n\n---` 会把中间正文当 frontmatter
+ * 静默吞掉。此判定须与 frontmatter.ts 的 frontmatterBody 完全对齐。
+ *
+ * **导出是为了消除第二套实现**:capability 的 setext 计数此前直接扫原始 md(只跳围栏、
+ * 不跳 frontmatter),把 frontmatter 体末行 + 闭合 `---` 误当成 setext 标题,任何带
+ * frontmatter 的文档都凭空多一条「setext 标题未识别」假告警(review 揪出)。
+ */
+export function frontmatterBodyStart(lines: string[]): number {
+  const isFmDelim = (line: string) => /^---[ \t]*$/.test(line);
+  if (!isFmDelim(lines[0] ?? '')) return 0;
+  for (let j = 1; j < lines.length; j += 1) {
+    const l = lines[j] ?? '';
+    if (isFmDelim(l)) return j + 1;
+    if (l.trim() === '') break; // 首个空行前未闭合 → 非 frontmatter,首行 --- 交后续按分割线处理
+  }
+  return 0;
+}
+
+/**
  * 严格围栏感知地遍历 md 行:对每个「位于代码围栏之外」的行调用 visitor(line, index)。
  * 围栏识别与 parseMarkdown 主循环**同源**(matchFenceOpen/matchFenceClose:闭栏须裸行、
  * 数量 ≥ 开栏、`~~~` 与 ``` 不互闭);未闭合的围栏开栏行按普通内容处理(同主循环)——
@@ -167,28 +191,10 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
   optTaskList = opts.taskList ?? 'symbol';
   const lines = md.split(/\r?\n/);
   const blocks: ImportBlock[] = [];
-  let i = 0;
+  // 跳过文首 YAML frontmatter(判定见 frontmatterBodyStart)。
+  let i = frontmatterBodyStart(lines);
   // 当前列表 run 的缩进栈(每层的缩进宽度),由 listDepth 就地维护、离开列表时清空。
   const listIndents: number[] = [];
-
-  // 跳过文首 YAML frontmatter(--- … ---):仅当**第一行即为顶格 ---** 且后续存在顶格闭合 --- 时触发,
-  // 从闭合行之后开始正文解析。frontmatter 的 title/cover 由 lib/markdown/frontmatter.ts 单独抽取,
-  // 不进正文——否则会被误当「分割线 + 文本 + 分割线」写入(正文中间的 --- 分割线不受影响)。
-  // 判定用「顶格 ^---」而非 trim,与 frontmatter.ts 的抽取正则一致——否则缩进的 `  ---`
-  // 会出现「parser 剥离了但 extractTitle 抽不到 → 标题静默丢失」的不一致。
-  // 闭合 --- 必须出现在**首个空行之前**(frontmatter 体不含空行):否则文首装饰性 `---\n\n正文\n\n---`
-  // 会把中间正文当 frontmatter 静默吞掉。此判定须与 frontmatter.ts 的 frontmatterBody 完全对齐。
-  const isFmDelim = (line: string) => /^---[ \t]*$/.test(line);
-  if (isFmDelim(lines[0] ?? '')) {
-    for (let j = 1; j < lines.length; j += 1) {
-      const l = lines[j] ?? '';
-      if (isFmDelim(l)) {
-        i = j + 1;
-        break;
-      }
-      if (l.trim() === '') break; // 首个空行前未闭合 → 非 frontmatter,首行 --- 交后续按分割线处理
-    }
-  }
 
   while (i < lines.length) {
     const line = lines[i] ?? '';
@@ -337,9 +343,9 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
       continue;
     }
 
-    // 7. 无序列表(支持嵌套:前导缩进 → depth)
+    // 7. 无序列表(支持嵌套:前导缩进 → depth;缩进门槛见 canBeListItem)
     const ul = line.match(RE_UL);
-    if (ul) {
+    if (ul && canBeListItem(listIndents, ul[1] ?? '')) {
       const depth = listDepth(listIndents, indentWidth(ul[1] ?? ''));
       blocks.push(taskAwareListBlock('unordered-list-item', ul[2] ?? '', depth));
       i += 1;
@@ -348,7 +354,7 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
 
     // 8. 有序列表(支持嵌套,与无序共用同一缩进栈——混合嵌套 `- 一级 / 1. 二级` 层级正确)
     const ol = line.match(RE_OL);
-    if (ol) {
+    if (ol && canBeListItem(listIndents, ol[1] ?? '')) {
       const depth = listDepth(listIndents, indentWidth(ol[1] ?? ''));
       blocks.push(taskAwareListBlock('ordered-list-item', ol[2] ?? '', depth));
       i += 1;
@@ -440,6 +446,25 @@ function taskAwareListBlock(type: TextBlockType, content: string, depth: number)
   return textBlock(type, shaped, depth, task.checked ? 'done' : 'todo');
 }
 
+/**
+ * 缩进的列表标记是否真的算列表项。
+ *  - **已在列表 run 中**(缩进栈非空)→ 任意缩进都算,这正是嵌套项的入口;
+ *  - **不在列表中** → 仅允许缩进 ≤3 列(CommonMark:列表最多缩进 3 格,≥4 格属缩进代码块领域)。
+ *
+ * 没有这道门槛时,粘进正文的 4 空格缩进代码/日志里的 `- x`、`1. x` 会被拆成独立列表项、
+ * 丢掉原始缩进语境(review 揪出:放开缩进匹配的副作用,`isBlockBoundary` 复用同一正则会
+ * 把本应连续的段落硬切开)。2 空格的情形保持「可打断段落」——那与 CommonMark 一致。
+ */
+function canBeListItem(stack: number[], indent: string): boolean {
+  return stack.length > 0 || indentWidth(indent) <= 3;
+}
+
+/** 顶层语境下该行是否为列表项起始——段落边界判定用(收集段落时定义上不在列表 run 内)。 */
+function isTopLevelListLine(line: string): boolean {
+  const m = RE_UL.exec(line) ?? RE_OL.exec(line);
+  return m !== null && indentWidth(m[1] ?? '') <= 3;
+}
+
 /** 缩进宽度(列):Tab 记 4 列,空格记 1 列——与主流编辑器/CommonMark 的 Tab 展开一致。 */
 function indentWidth(ws: string): number {
   let w = 0;
@@ -475,8 +500,7 @@ function isBlockBoundary(line: string): boolean {
   if (optObsidianImg && RE_OBSIDIAN_IMAGE_LINE.test(line.trim())) return true;
   if (RE_HEADING.test(line)) return true;
   if (RE_BLOCKQUOTE.test(line)) return true;
-  if (RE_UL.test(line)) return true;
-  if (RE_OL.test(line)) return true;
+  if (isTopLevelListLine(line)) return true;
   return false;
 }
 

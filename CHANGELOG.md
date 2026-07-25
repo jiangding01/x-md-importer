@@ -24,6 +24,11 @@
 - 计数**严格从 `parseMarkdown` 的产出块**取（沿用本文件既有 doctrine，不另起一套正则）：独占一行的图片已是 `ImageBlock`，天然不会与「行内图片」重复计数；围栏代码块内的 `![]()`/`$$`/`<div>` 是 atomic 块，不会误计。仅 setext 标题因解析后语义已丢失而必须扫原文，用围栏感知的 `forEachContentLine` 保持判定同源。
 - **顺带修一个既存隐患**：`capability()` 此前调 `parseMarkdown(md)` **不带任何开关**，用户关掉 `obsidianImg`/`wikilink` 后面板按「默认开」统计、与实际写入不一致（又一次 UI 撒谎）。现加 `parseOpts` 第三参并从 3 个调用方透传真实设置。
 
+### 修复 · 上批 code review 揪出的 3 条(均已复现 + 回归测试钉住)
+- **frontmatter 闭合 `---` 被误计为 setext 标题**（最要命）：`countSetextHeadings` 直接扫原始 md，而 `forEachContentLine` 只跳围栏、**不跳 frontmatter**，于是「frontmatter 体末行 + 闭合 `---`」被当成「文字 + 下划线」。frontmatter 是本项目的招牌用法（title/cover 都靠它），**任何带 frontmatter 的文档**都会凭空多一条「setext 标题未识别」假告警并污染「降级」求和。修法是把 frontmatter 判定抽成 `frontmatterBodyStart()` 导出、与 `parseMarkdown` 共用同一口径——避免「第二套实现」漂移（本项目历史上栽过同样的跟头）。
+- **放开缩进匹配的副作用**：`RE_UL`/`RE_OL` 允许前导缩进后，`isBlockBoundary` 复用同一正则，导致正文里粘贴的 **4 空格缩进代码/日志**中的 `- x` 被硬拆成列表项、丢掉原始缩进语境。按 CommonMark 加门槛（`canBeListItem`）：**已在列表 run 中**时任意缩进都算嵌套项；**不在列表中**时仅允许 ≤3 列（≥4 列属缩进代码块领域）。2 空格打断段落起列表的行为保留——那与 CommonMark 一致。
+- **`$$` 行中假阳性**：`text.includes('$$')` 会把「价格从 $$100 涨到 $$200」当数学块，改为要求 `$$` 位于**行首**（块级公式的文本恒以 `$$` 起行，不受影响）。
+
 ### 修复 · Toast 长文案溢出侧边栏
 成功提示最多可拼 5 段(空替换 + 图片 N/M + 封面 + 标题 + 文件夹断开),而 Toast 是 `whiteSpace:nowrap` 且无宽度上限;它 `position:absolute` 而 `#root` 为 `position:static`,包含块是视口而非面板,故长文案会向两侧溢出侧边栏被切掉。改为限宽换行(`maxWidth: calc(100vw - 32px)` + `overflowWrap:anywhere`,兼顾中文与长 URL/文件名),图标加 `flexShrink:0` 防换行时被压扁。`borderRadius` 99→18:单行高约 35px、半高 17.7px < 18,浏览器按半高钳制后**渲染与原胶囊逐字节相同**(短文案截图比对验证零回归),多行时不再侵入首尾行文字。
 
