@@ -154,17 +154,17 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions): C
     'warn',
     en ? 'X unsupported → keep `backticks`' : 'X 不支持·保留反引号 `code`',
   );
-  // badge 用 'special'(经特殊原生机制写入,同表格/代码块/DIVIDER)而**非** 'warn':
-  // 嵌套走的是 Draft 原生 `ContentBlock.depth` 字段,不是降级路径;而 X 究竟渲不渲染这层缩进
-  // **尚未真机验证**——标 'warn' 等于断言「已降级」,是我们此刻并不知道的事,且会让报告的
-  // 「降级 N 处」凭空膨胀(warn 项求和)。真机确认后再定:渲染 → 可升 'native';忽略 → 降 'warn'。
+  // **真机已确认**(2026-07-25):X 忽略 Draft 的 `ContentBlock.depth`,嵌套项渲染成扁平列表
+  // (有序列表还会被连续重编号)。层级信息确实丢失 → badge 从暂定的 'special' 落为 'warn',
+  // 文案也从「以实际为准」改成确定的结论。depth 仍照写(语义正确、零成本,X 日后支持即生效)。
+  // 注:即便扁平,也远好于本特性引入前——那时缩进项根本不是列表项,而是带字面量 `- x` 的段落。
   add(
     en ? 'Nested lists' : '多级列表',
     multiLevelList,
-    'special',
+    'warn',
     en
-      ? 'Written via native Draft depth · X rendering to be confirmed'
-      : 'Draft 原生 depth 写入 · X 是否渲染层级以实际为准',
+      ? 'X ignores list nesting · flattened (content preserved)'
+      : 'X 不支持列表层级 · 已扁平化(内容不丢)',
   );
   add(
     en ? 'Task lists' : '任务列表',

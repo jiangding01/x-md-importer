@@ -202,13 +202,15 @@ describe('capability · 多级列表(depth > 0)', () => {
     expect(find(items, '多级列表')).toBeUndefined();
   });
 
-  it('多级列表标 special 而非 warn,不计入报告的「降级」数', () => {
-    // depth 走 Draft 原生字段、非降级路径,且 X 是否渲染层级尚未真机验证——
-    // 标 warn 等于断言「已降级」(我们并不知道),还会让 `降级 N 处` 凭空膨胀。
+  it('多级列表标 warn 并计入「降级」(真机确认 X 忽略 depth、渲染为扁平)', () => {
+    // 2026-07-25 真机:X 不渲染 Draft 的 depth,嵌套项显示成扁平列表、有序列表还会连续重编号。
+    // 层级信息确实丢失,故如实标 warn 并计入降级——此前暂标 special 是因为尚未验证,
+    // 不该在不知情时断言「已降级」;现在知情了,就该如实说。
     const items = capability('- a\n  - b\n    - c\n', false);
-    expect(find(items, '多级列表')?.badge).toBe('special');
+    expect(find(items, '多级列表')?.badge).toBe('warn');
+    expect(find(items, '多级列表')?.count).toBe(2);
     const deg = items.filter((c) => c.badge === 'warn').reduce((a, c) => a + c.count, 0);
-    expect(deg).toBe(0);
+    expect(deg).toBe(2);
   });
 });
 
