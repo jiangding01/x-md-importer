@@ -326,58 +326,20 @@ describe('capability · 数学公式', () => {
   });
 });
 
-describe('capability · setext 标题(唯一扫原始 md 的一项)', () => {
-  it('frontmatter 的闭合 --- 不被误计为 setext 标题(review 修复的假告警)', () => {
-    // 此前 countSetextHeadings 直接扫原文(forEachContentLine 只跳围栏、不跳 frontmatter),
-    // 把 frontmatter 体末行 + 闭合 `---` 当成「文字 + 下划线」= setext 标题。
-    // frontmatter 是本项目招牌用法(title/cover 都靠它),这条假告警会命中绝大多数真实文档。
-    const md = '---\ntitle: 标题\ntags: x\n---\n真正的正文\n';
-    const items = capability(md, false);
+describe('capability · setext 标题(已支持,不再是降级项)', () => {
+  it('setext 标题被解析成真标题、计入 Heading,不再有「未识别」告警条目', () => {
+    // 本项功能落地前:setext 标题退化成普通段落(=== 字面量进正文),能力面板以 warn 告知;
+    // 落地后它就是 header-one,告警条目随之移除——面板不该再报一个已经支持的语法。
+    const items = capability('我的标题\n===\n\n正文', false);
     expect(find(items, 'setext 标题')).toBeUndefined();
-    // 交叉验证:parseMarkdown 确实把整个 frontmatter 剥掉了,面板不该报「保留原文」的降级
-    expect(parseMarkdown(md)).toHaveLength(1);
+    expect(find(items, '二级标题 → Heading')?.count).toBe(1);
   });
 
-  it('frontmatter 之后真正的 setext 标题仍被计入(别把门槛开太大)', () => {
-    const md = '---\ntitle: T\n---\n真 setext\n===\n';
-    expect(find(capability(md, false), 'setext 标题')?.count).toBe(1);
-  });
-
-  it('=== 下划线的一级 setext 标题被计入', () => {
-    const md = '标题一\n===\n\n正文\n';
-    const items = capability(md, false);
-    expect(find(items, 'setext 标题')?.count).toBe(1);
-  });
-
-  it('短划线下划线(不足 3 个,不触发 DIVIDER)的二级 setext 标题被计入', () => {
-    const md = '标题二\n--\n\n正文\n';
-    const items = capability(md, false);
-    expect(find(items, 'setext 标题')?.count).toBe(1);
-  });
-
-  it('3+ 个短划线的下划线会先被 parser 识别成 DIVIDER(段落+分割线,标题语义丢失)——仍计入 setext 标题', () => {
-    const md = '标题三\n---\n\n正文\n';
-    const items = capability(md, false);
-    expect(find(items, '分割线 → DIVIDER')?.count).toBe(1); // parser 侧确实产出了 DIVIDER
-    expect(find(items, 'setext 标题')?.count).toBe(1); // 但标题语义已丢,面板须如实告知
-  });
-
-  it('ATX 标题(# 开头)不误判为 setext 标题正文', () => {
-    const md = '# 正常标题\n\n正文\n';
-    const items = capability(md, false);
+  it('带 frontmatter 的文档不产生任何幽灵标题条目(review 假告警的最终归宿)', () => {
+    const items = capability('---\ntitle: T\ntags: x\n---\n真正的正文', false);
     expect(find(items, 'setext 标题')).toBeUndefined();
-  });
-
-  it('无 setext 语法的普通文档不出现该条目', () => {
-    const md = '普通段落一。\n\n普通段落二。\n';
-    const items = capability(md, false);
-    expect(find(items, 'setext 标题')).toBeUndefined();
-  });
-
-  it('围栏代码块内的「文字 + ===」不误计(forEachContentLine 跳过围栏)', () => {
-    const md = '```\n标题\n===\n```\n';
-    const items = capability(md, false);
-    expect(find(items, 'setext 标题')).toBeUndefined();
+    expect(find(items, '二级标题 → Heading')).toBeUndefined();
+    expect(parseMarkdown('---\ntitle: T\ntags: x\n---\n真正的正文')).toHaveLength(1);
   });
 });
 

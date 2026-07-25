@@ -24,6 +24,16 @@
 - 计数**严格从 `parseMarkdown` 的产出块**取（沿用本文件既有 doctrine，不另起一套正则）：独占一行的图片已是 `ImageBlock`，天然不会与「行内图片」重复计数；围栏代码块内的 `![]()`/`$$`/`<div>` 是 atomic 块，不会误计。仅 setext 标题因解析后语义已丢失而必须扫原文，用围栏感知的 `forEachContentLine` 保持判定同源。
 - **顺带修一个既存隐患**：`capability()` 此前调 `parseMarkdown(md)` **不带任何开关**，用户关掉 `obsidianImg`/`wikilink` 后面板按「默认开」统计、与实际写入不一致（又一次 UI 撒谎）。现加 `parseOpts` 第三参并从 3 个调用方透传真实设置。
 
+### 新增 · setext 标题(`标题\n===` / `标题\n---`)
+CommonMark 标准语法，此前**完全不识别**：整段退化成普通段落，`===` 字面量进正文；下划线是 `---` 时还会额外产出一条分割线，标题语义彻底丢失。
+
+- 解析：段落收集完毕后若下一行是下划线，整段升格为 `header-one`（与 ATX 的 `#`/`##` 同归——X 只有两级标题）。放在段落收集**之后**判定，天然支持多行 setext 正文，也天然让紧邻段落的 `---` 优先当下划线而非分割线（与 CommonMark 同序）。**空行隔开的 `---` 仍是分割线**，列表/ATX 标题/引用下方的 `---` 也仍是分割线（setext 正文必须是段落行）。下划线要求**顶格**，与既有 `RE_DIVIDER` 同样严格。
+- 标题抽取：`extractTitle` 现在也认 setext **一级**标题（`===`；`---` 是二级，与 `## ` 一样不作文章标题）。`findFirstH1` 随之回传 `lineCount`，`stripFirstH1` 按行数删——setext 占两行，只删一行会把 `===` 孤零零留在正文。判定复用 parser 导出的 `setextUnderlineLevel`/`isParagraphLine`，不另写一套。
+- 保守边界：多行段落上方的 setext **不作标题**（整段才是标题、取末行会截断，按固定行数删会留孤儿行；这类写法极罕见，宁可不认也不误伤）。
+- 能力面板的「setext 标题未识别」告警条目随之**移除**——面板不该再报一个已经支持的语法。
+
+**历史行为翻转**：`a | b` 紧跟 `---` 此前产出「段落 + DIVIDER」，现为标题（2 单元格表头 vs 1 单元格分隔行本就不构成 GFM 表格，CommonMark 判定为 setext）。相关断言已同步翻转并注明。
+
 ### 修复 · 上批 code review 揪出的 3 条(均已复现 + 回归测试钉住)
 - **frontmatter 闭合 `---` 被误计为 setext 标题**（最要命）：`countSetextHeadings` 直接扫原始 md，而 `forEachContentLine` 只跳围栏、**不跳 frontmatter**，于是「frontmatter 体末行 + 闭合 `---`」被当成「文字 + 下划线」。frontmatter 是本项目的招牌用法（title/cover 都靠它），**任何带 frontmatter 的文档**都会凭空多一条「setext 标题未识别」假告警并污染「降级」求和。修法是把 frontmatter 判定抽成 `frontmatterBodyStart()` 导出、与 `parseMarkdown` 共用同一口径——避免「第二套实现」漂移（本项目历史上栽过同样的跟头）。
 - **放开缩进匹配的副作用**：`RE_UL`/`RE_OL` 允许前导缩进后，`isBlockBoundary` 复用同一正则，导致正文里粘贴的 **4 空格缩进代码/日志**中的 `- x` 被硬拆成列表项、丢掉原始缩进语境。按 CommonMark 加门槛（`canBeListItem`）：**已在列表 run 中**时任意缩进都算嵌套项；**不在列表中**时仅允许 ≤3 列（≥4 列属缩进代码块领域）。2 空格打断段落起列表的行为保留——那与 CommonMark 一致。

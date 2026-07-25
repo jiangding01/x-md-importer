@@ -71,6 +71,13 @@ const RE_TABLE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
 const isTableSeparator = (line: string): boolean =>
   line.includes('|') && line.includes('-') && RE_TABLE_SEP.test(line);
 
+/**
+ * setext 标题的下划线行:`===`(一级)/ `---`(二级),数量任意 ≥1,其后仅允许空白。
+ * **顶格,不允许前导空白**——与 RE_DIVIDER 同样严格,免得列表项下方缩进的 `---` 被误判。
+ */
+const RE_SETEXT_EQ = /^=+[ \t]*$/;
+const RE_SETEXT_DASH = /^-+[ \t]*$/;
+
 /** ASCII 标点集合:反斜杠转义仅在其后紧跟 ASCII 标点时生效(字母/CJK 前的反斜杠保留原样)。 */
 const RE_PUNCT = /[!-/:-@[-`{-~]/;
 
@@ -82,6 +89,27 @@ const RE_PUNCT = /[!-/:-@[-`{-~]/;
 export function isImageLine(line: string): boolean {
   const t = line.trim();
   return matchImageLine(t) !== null || RE_LINKED_IMAGE_LINE.test(t) || RE_OBSIDIAN_IMAGE_LINE.test(t);
+}
+
+/**
+ * setext 标题下划线的级别:`===` → 1、`---` → 2;不是下划线返回 null。
+ * 导出供 frontmatter.ts 的 H1 抽取复用——标题抽取与正文解析必须用**同一套**判定,
+ * 否则会出现「parser 认成标题、extractTitle 抽不到」的分裂(本项目在 frontmatter/围栏
+ * 判定上已栽过两次「第二套实现漂移」,见 HANDOFF §8)。
+ */
+export function setextUnderlineLevel(line: string): 1 | 2 | null {
+  if (RE_SETEXT_EQ.test(line)) return 1;
+  if (RE_SETEXT_DASH.test(line)) return 2;
+  return null;
+}
+
+/**
+ * 该行是否为「普通段落文本行」——即不是任何块级语法的起始、也不是空行。
+ * setext 标题的正文行必须满足它(`# x` / `- x` / `> x` 等下方跟 `===` 不构成 setext)。
+ * 导出同样是为了让 frontmatter.ts 复用同一判定。
+ */
+export function isParagraphLine(line: string): boolean {
+  return !isBlockBoundary(line);
 }
 
 /**
@@ -367,12 +395,26 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
     while (k < lines.length) {
       const next = lines[k] ?? '';
       if (isBlockBoundary(next)) break;
+      // setext 下划线终止段落收集,交下面判定升格为标题。`---` 已被 isBlockBoundary 的
+      // 分割线规则拦下,这里主要拦 `===`(它不匹配任何块级规则,否则会被吸进段落文本)。
+      if (setextUnderlineLevel(next) !== null) break;
       // 表格开始(当前行含 `|` 且下一行是分隔行):停止段落收集,交主循环的表格分支处理,
       // 否则紧跟正文段落后、无空行分隔的表格会被段落吞掉。
       if (next.includes('|') && isTableSeparator(lines[k + 1] ?? '')) break;
       para.push(next);
       k += 1;
     }
+
+    // setext 标题:段落正下方紧跟 `===` / `---` → 整段升格为标题,并吃掉下划线行。
+    // 放在段落收集**之后**判定,天然支持多行 setext 正文;也天然让 `---` 在此处
+    // 优先当下划线而非分割线(CommonMark 同序:有前置段落时 setext 胜出)。
+    // 级别映射与 ATX 一致:一级/二级同归 header-one(X 只有两级标题,见 TextBlockType)。
+    if (k < lines.length && setextUnderlineLevel(lines[k] ?? '') !== null) {
+      blocks.push(textBlock('header-one', walkInline(para.join('\n'))));
+      i = k + 1;
+      continue;
+    }
+
     blocks.push(textBlock('unstyled', walkInline(para.join('\n'))));
     i = k;
   }

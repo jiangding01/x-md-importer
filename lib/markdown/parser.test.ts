@@ -362,6 +362,58 @@ describe('任务列表', () => {
   });
 });
 
+describe('setext 标题', () => {
+  it('=== 下划线 → header-one,下划线行被吃掉', () => {
+    const blocks = parseMarkdown('我的标题\n===\n\n正文');
+    expect(asText(blocks[0]).type).toBe('header-one');
+    expect(asText(blocks[0]).text).toBe('我的标题');
+    expect(asText(blocks[1]).text).toBe('正文');
+  });
+
+  it('--- 下划线 → header-one(与 ATX 的 ## 同归 header-one)', () => {
+    const blocks = parseMarkdown('我的标题\n---\n\n正文');
+    expect(blocks).toHaveLength(2);
+    expect(asText(blocks[0]).type).toBe('header-one');
+    expect(asText(blocks[0]).text).toBe('我的标题');
+  });
+
+  it('下划线长度不限(单个 = 或 - 也算)', () => {
+    expect(asText(parseMarkdown('A\n=')[0]).type).toBe('header-one');
+    expect(asText(parseMarkdown('B\n-')[0]).type).toBe('header-one');
+  });
+
+  it('setext 正文必须是段落行:列表/ATX 标题/引用下方的 --- 仍是 DIVIDER', () => {
+    for (const md of ['- 列表项\n---', '# ATX\n---', '> 引用\n---']) {
+      const blocks = parseMarkdown(md);
+      expect([md, asAtomic(blocks[1]).entityType]).toEqual([md, 'DIVIDER']);
+    }
+  });
+
+  it('缩进的下划线不算 setext(与 DIVIDER 同样严格要求顶格)', () => {
+    const blocks = parseMarkdown('标题\n  ---');
+    expect(blocks).toHaveLength(1);
+    expect(asText(blocks[0]).type).toBe('unstyled');
+  });
+
+  it('多行段落 + 下划线 → 整段升格为标题', () => {
+    const b = asText(parseMarkdown('第一行\n第二行\n===')[0]);
+    expect(b.type).toBe('header-one');
+    expect(b.text).toBe('第一行\n第二行');
+  });
+
+  it('真表格不受影响(分隔行含竖线,不是 setext 下划线)', () => {
+    expect(asAtomic(parseMarkdown('| A | B |\n| --- | --- |\n| 1 | 2 |')[0]).entityType).toBe('MARKDOWN');
+    expect(asAtomic(parseMarkdown('| A |\n| --- |\n| 1 |')[0]).entityType).toBe('MARKDOWN');
+  });
+
+  it('行内样式在 setext 标题内正常解析', () => {
+    const b = asText(parseMarkdown('带**粗体**的标题\n===')[0]);
+    expect(b.text).toBe('带粗体的标题');
+    const r = req(b.inlineStyleRanges[0]);
+    expect(b.text.slice(r.offset, r.offset + r.length)).toBe('粗体');
+  });
+});
+
 describe('推文 URL', () => {
   it('x.com 独占行推文转 TWEET 并归一 url', () => {
     const b = asAtomic(parseMarkdown('https://x.com/user/status/12345')[0]);
@@ -409,10 +461,21 @@ describe('GFM 表格', () => {
   });
 
   it('纯连字符行不含竖线,不误判为表格分隔', () => {
-    // 'a | b' 后接纯 '---'(无竖线)→ 上行不是表头,'---' 是 DIVIDER
+    // 'a | b' 后接纯 '---'(无竖线)→ 上行不是表头。
+    // **历史行为翻转**:此前产出「段落 + DIVIDER」;setext 支持落地后,紧邻段落的 `---`
+    // 按 CommonMark 是 setext 下划线(且 2 单元格表头 vs 1 单元格分隔行本就不构成 GFM 表格),
+    // 故整体升格为标题。空行隔开的 `---` 仍是 DIVIDER(见下一条)。
     const blocks = parseMarkdown('a | b\n---');
+    expect(blocks).toHaveLength(1);
+    expect(asText(blocks[0]).type).toBe('header-one');
     expect(asText(blocks[0]).text).toBe('a | b');
+  });
+
+  it('空行隔开的连字符行仍是 DIVIDER(setext 只吃紧邻段落的下划线)', () => {
+    const blocks = parseMarkdown('一段话\n\n---\n\n另一段');
+    expect(asText(blocks[0]).type).toBe('unstyled');
     expect(asAtomic(blocks[1]).entityType).toBe('DIVIDER');
+    expect(asText(blocks[2]).text).toBe('另一段');
   });
 
   it('表格遇空行结束,后续正文另起一块', () => {

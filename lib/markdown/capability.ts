@@ -8,7 +8,7 @@
  * 导出签名与 CapItem 结构保持不变(消费方 CapabilityPanel / ReportCard / AssetsCard 不改)。
  */
 
-import { forEachContentLine, frontmatterBodyStart, parseMarkdown, type ParseOptions } from './parser';
+import { forEachContentLine, parseMarkdown, type ParseOptions } from './parser';
 
 export type CapBadge = 'native' | 'special' | 'image' | 'warn';
 
@@ -95,7 +95,6 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions): C
     if (RE_MATH_BLOCK.test(b.text)) mathBlocks += 1;
   }
 
-  const setextHeadings = countSetextHeadings(md);
 
   const items: CapItem[] = [];
   const add = (label: string, count: number, badge: CapBadge, note: string) => {
@@ -201,57 +200,8 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions): C
     'warn',
     en ? 'X has no LaTeX support · kept as-is' : 'X LaTeX 块未接 · 保留原文',
   );
-  add(
-    en ? 'Setext headings' : 'setext 标题',
-    setextHeadings,
-    'warn',
-    en ? 'Not recognized · kept as-is (use # headings instead)' : '未识别 · 保留原文(请改用 # 标题)',
-  );
 
   return items;
-}
-
-// ---------------------------------------------------------------------------
-// setext 标题计数:唯一必须扫原始 md 的一项——parser 把 setext 标题解析成普通段落
-// (下划线是 `---` 时甚至变成「段落 + DIVIDER」),标题语义在产出块里已经丢失,无法从块反推,
-// 只能退回扫原文。用 forEachContentLine 保持与主解析同一套围栏跳过逻辑(围栏内的
-// `文字\n===` 不是 setext)。
-// ---------------------------------------------------------------------------
-
-/** 块级起始行判定(setext 专用最小集):这些行本身有明确语义,不应被当成 setext 标题正文。 */
-const RE_SETEXT_HEADING_LINE = /^#{1,6}\s+/;
-const RE_SETEXT_BLOCKQUOTE_LINE = /^>/;
-const RE_SETEXT_UL_LINE = /^[ \t]*[-*+]\s+/;
-const RE_SETEXT_OL_LINE = /^[ \t]*\d+\.\s+/;
-const RE_SETEXT_DIVIDER_LINE = /^(-{3,}|\*{3,})$/;
-const RE_SETEXT_EQ_UNDERLINE = /^=+\s*$/;
-const RE_SETEXT_DASH_UNDERLINE = /^-+\s*$/;
-
-function isOtherBlockLine(line: string): boolean {
-  return (
-    RE_SETEXT_HEADING_LINE.test(line) ||
-    RE_SETEXT_BLOCKQUOTE_LINE.test(line) ||
-    RE_SETEXT_UL_LINE.test(line) ||
-    RE_SETEXT_OL_LINE.test(line) ||
-    RE_SETEXT_DIVIDER_LINE.test(line)
-  );
-}
-
-function countSetextHeadings(md: string): number {
-  // 必须与 parseMarkdown 一样先跳过 frontmatter:`forEachContentLine` 只跳围栏、不跳 frontmatter,
-  // 直接扫原文会把 frontmatter 体的末行 + 闭合 `---` 当成「文字 + --- 下划线」= setext 标题,
-  // 于是**任何带 frontmatter 的文档**都凭空多一条「setext 标题未识别」假告警(review 揪出)。
-  // frontmatter 是本项目的招牌用法(title/cover 都靠它),这条假告警会命中绝大多数真实文档。
-  const allLines = md.split(/\r?\n/);
-  const lines = allLines.slice(frontmatterBodyStart(allLines));
-  let count = 0;
-  forEachContentLine(lines, (line, index) => {
-    if (line.trim() === '' || isOtherBlockLine(line)) return;
-    const next = lines[index + 1];
-    if (next === undefined) return;
-    if (RE_SETEXT_EQ_UNDERLINE.test(next) || RE_SETEXT_DASH_UNDERLINE.test(next)) count += 1;
-  });
-  return count;
 }
 
 export type ImageKind = 'local' | 'remote' | 'data';

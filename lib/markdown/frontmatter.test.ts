@@ -3,6 +3,7 @@
 // 若发现疑似生产 bug,以注释标注(不修改生产代码),并在最终报告汇总。
 import { describe, expect, it } from 'vitest';
 import { extractCover, extractTitle, stripFirstH1 } from './frontmatter';
+import { parseMarkdown } from './parser';
 
 describe('extractTitle · frontmatter 三键', () => {
   it('title: 命中', () => {
@@ -124,6 +125,46 @@ describe('stripFirstH1', () => {
     expect(stripped).toBe('\n正文一\n\n正文二'); // 实际输出已无 \r
     expect(stripped).not.toContain('\r');
     expect(stripped.split('\n')).toEqual(['', '正文一', '', '正文二']);
+  });
+});
+
+describe('setext 一级标题的抽取与移除', () => {
+  it('setext H1(===)可作文章标题,source 仍为 h1', () => {
+    expect(extractTitle('我的标题\n===\n\n正文')).toEqual({ title: '我的标题', source: 'h1' });
+  });
+
+  it('setext H2(---)不作标题(与 ATX 的 ## 一致)', () => {
+    expect(extractTitle('我的标题\n---\n\n正文')).toBeNull();
+  });
+
+  it('stripFirstH1 删掉 setext 的两行(正文行 + 下划线)', () => {
+    // 只删 1 行会把 `===` 孤零零留在正文,再被解析成段落/分割线。
+    expect(stripFirstH1('我的标题\n===\n\n正文')).toBe('\n正文');
+    expect(parseMarkdown(stripFirstH1('我的标题\n===\n\n正文'))).toHaveLength(1);
+  });
+
+  it('frontmatter title 优先于 setext H1(优先级不变)', () => {
+    expect(extractTitle('---\ntitle: FM\n---\n正文标题\n===')).toEqual({
+      title: 'FM',
+      source: 'frontmatter',
+    });
+  });
+
+  it('ATX H1 在前时仍取 ATX(先到先得,不因 setext 支持而改变顺序)', () => {
+    expect(extractTitle('# ATX 标题\n\nsetext 标题\n===')).toEqual({
+      title: 'ATX 标题',
+      source: 'h1',
+    });
+  });
+
+  it('代码围栏内的 setext 不被误抽为标题', () => {
+    expect(extractTitle('```\n假标题\n===\n```\n\n正文')).toBeNull();
+  });
+
+  it('多行段落上方的 setext 不认(避免 stripFirstH1 按固定行数删错)', () => {
+    // 「第一行 / 第二行 / ===」整段才是标题,取末行会截断、删 2 行会留下孤儿行,
+    // 这类写法极罕见,宁可不认(标题留在正文)也不误伤。
+    expect(extractTitle('第一行\n第二行\n===')).toBeNull();
   });
 });
 
