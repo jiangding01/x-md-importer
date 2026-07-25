@@ -8,7 +8,7 @@
  * 导出签名与 CapItem 结构保持不变(消费方 CapabilityPanel / ReportCard / AssetsCard 不改)。
  */
 
-import { forEachContentLine, parseMarkdown } from './parser';
+import { forEachContentLine, parseMarkdown, type ParseOptions } from './parser';
 
 export type CapBadge = 'native' | 'special' | 'image' | 'warn';
 
@@ -19,8 +19,13 @@ export interface CapItem {
   note: string;
 }
 
-export function capability(md: string, en: boolean): CapItem[] {
-  const blocks = parseMarkdown(md);
+/**
+ * parseOpts 透传给 parseMarkdown——面板必须与「实际会写入的内容」同一份解析开关下产出,
+ * 否则用户关掉 obsidianImg/wikilink/taskList 后,面板仍按默认开的口径统计,又是一次
+ * 「UI 撒谎」(计数与真实写入不一致)。调用方拿不到 opts 时不传,退回 parseMarkdown 的默认值。
+ */
+export function capability(md: string, en: boolean, parseOpts?: ParseOptions): CapItem[] {
+  const blocks = parseMarkdown(md, parseOpts);
 
   let headers = 0; // header-one(源 H1/H2)
   let subheaders = 0; // header-two(源 H3)
@@ -35,8 +40,17 @@ export function capability(md: string, en: boolean): CapItem[] {
   let tweets = 0;
   let imageCount = 0;
   let inlineCode = 0; // 保留反引号的行内代码(扫文本块内 `...`,代码块已单独成块不误计)
+  let multiLevelList = 0; // 嵌套列表项(depth > 0)
+  let taskListItems = 0; // 任务列表项(task 字段非空)
+  let inlineImages = 0; // 文本块残留的行内图片(独占一行的已被解析成 ImageBlock,不在此列)
+  let footnotes = 0; // 文本块内的脚注标记 [^xxx]
+  let htmlBlocks = 0; // 以 `<字母` 开头、被当普通段落写入的 HTML 块
+  let mathBlocks = 0; // 含 $$ 的文本块(LaTeX 块级公式)
 
   const RE_INLINE_CODE = /`[^`]+`/g;
+  const RE_INLINE_IMAGE = /!\[[^\]]*\]\([^)]*\)/g;
+  const RE_FOOTNOTE = /\[\^[^\]]+\]/g;
+  const RE_HTML_BLOCK_START = /^<[A-Za-z]/;
 
   for (const b of blocks) {
     if (b.kind === 'image') {
@@ -70,7 +84,15 @@ export function capability(md: string, en: boolean): CapItem[] {
     }
     links += b.links.length;
     inlineCode += (b.text.match(RE_INLINE_CODE) || []).length;
+    if (b.depth !== undefined && b.depth > 0) multiLevelList += 1;
+    if (b.task) taskListItems += 1;
+    inlineImages += (b.text.match(RE_INLINE_IMAGE) || []).length;
+    footnotes += (b.text.match(RE_FOOTNOTE) || []).length;
+    if (RE_HTML_BLOCK_START.test(b.text.trim())) htmlBlocks += 1;
+    if (b.text.includes('$$')) mathBlocks += 1;
   }
+
+  const setextHeadings = countSetextHeadings(md);
 
   const items: CapItem[] = [];
   const add = (label: string, count: number, badge: CapBadge, note: string) => {
@@ -130,8 +152,98 @@ export function capability(md: string, en: boolean): CapItem[] {
     'warn',
     en ? 'X unsupported → keep `backticks`' : 'X 不支持·保留反引号 `code`',
   );
+  // badge 用 'special'(经特殊原生机制写入,同表格/代码块/DIVIDER)而**非** 'warn':
+  // 嵌套走的是 Draft 原生 `ContentBlock.depth` 字段,不是降级路径;而 X 究竟渲不渲染这层缩进
+  // **尚未真机验证**——标 'warn' 等于断言「已降级」,是我们此刻并不知道的事,且会让报告的
+  // 「降级 N 处」凭空膨胀(warn 项求和)。真机确认后再定:渲染 → 可升 'native';忽略 → 降 'warn'。
+  add(
+    en ? 'Nested lists' : '多级列表',
+    multiLevelList,
+    'special',
+    en
+      ? 'Written via native Draft depth · X rendering to be confirmed'
+      : 'Draft 原生 depth 写入 · X 是否渲染层级以实际为准',
+  );
+  add(
+    en ? 'Task lists' : '任务列表',
+    taskListItems,
+    'warn',
+    (parseOpts?.taskList ?? 'symbol') === 'symbol'
+      ? (en ? 'X has no task lists · rendered as ☑/☐ symbols' : 'X 无任务列表 · 转 ☑/☐ 符号')
+      : (en ? 'X has no task lists · rendered as plain list items' : 'X 无任务列表 · 转普通列表项'),
+  );
+  add(
+    en ? 'Inline images' : '行内图片',
+    inlineImages,
+    'warn',
+    en
+      ? 'Inline images kept as raw text · only images on their own line upload'
+      : '行内图片保留原文 · 仅独占一行的图片可上传',
+  );
+  add(
+    en ? 'Footnotes' : '脚注',
+    footnotes,
+    'warn',
+    en ? 'X has no footnotes · marker kept as-is' : 'X 无脚注 · 保留原文标记',
+  );
+  add(
+    en ? 'HTML blocks' : 'HTML 块',
+    htmlBlocks,
+    'warn',
+    en ? "X doesn't support HTML · kept as-is" : 'X 不支持 HTML · 保留原文',
+  );
+  add(
+    en ? 'Math blocks' : '数学公式',
+    mathBlocks,
+    'warn',
+    en ? 'X has no LaTeX support · kept as-is' : 'X LaTeX 块未接 · 保留原文',
+  );
+  add(
+    en ? 'Setext headings' : 'setext 标题',
+    setextHeadings,
+    'warn',
+    en ? 'Not recognized · kept as-is (use # headings instead)' : '未识别 · 保留原文(请改用 # 标题)',
+  );
 
   return items;
+}
+
+// ---------------------------------------------------------------------------
+// setext 标题计数:唯一必须扫原始 md 的一项——parser 把 setext 标题解析成普通段落
+// (下划线是 `---` 时甚至变成「段落 + DIVIDER」),标题语义在产出块里已经丢失,无法从块反推,
+// 只能退回扫原文。用 forEachContentLine 保持与主解析同一套围栏跳过逻辑(围栏内的
+// `文字\n===` 不是 setext)。
+// ---------------------------------------------------------------------------
+
+/** 块级起始行判定(setext 专用最小集):这些行本身有明确语义,不应被当成 setext 标题正文。 */
+const RE_SETEXT_HEADING_LINE = /^#{1,6}\s+/;
+const RE_SETEXT_BLOCKQUOTE_LINE = /^>/;
+const RE_SETEXT_UL_LINE = /^[ \t]*[-*+]\s+/;
+const RE_SETEXT_OL_LINE = /^[ \t]*\d+\.\s+/;
+const RE_SETEXT_DIVIDER_LINE = /^(-{3,}|\*{3,})$/;
+const RE_SETEXT_EQ_UNDERLINE = /^=+\s*$/;
+const RE_SETEXT_DASH_UNDERLINE = /^-+\s*$/;
+
+function isOtherBlockLine(line: string): boolean {
+  return (
+    RE_SETEXT_HEADING_LINE.test(line) ||
+    RE_SETEXT_BLOCKQUOTE_LINE.test(line) ||
+    RE_SETEXT_UL_LINE.test(line) ||
+    RE_SETEXT_OL_LINE.test(line) ||
+    RE_SETEXT_DIVIDER_LINE.test(line)
+  );
+}
+
+function countSetextHeadings(md: string): number {
+  const lines = md.split(/\r?\n/);
+  let count = 0;
+  forEachContentLine(lines, (line, index) => {
+    if (line.trim() === '' || isOtherBlockLine(line)) return;
+    const next = lines[index + 1];
+    if (next === undefined) return;
+    if (RE_SETEXT_EQ_UNDERLINE.test(next) || RE_SETEXT_DASH_UNDERLINE.test(next)) count += 1;
+  });
+  return count;
 }
 
 export type ImageKind = 'local' | 'remote' | 'data';

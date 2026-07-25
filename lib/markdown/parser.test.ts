@@ -144,6 +144,204 @@ describe('块级映射', () => {
   });
 });
 
+describe('嵌套列表 depth', () => {
+  /** 把解析结果压成 `type简写:depth` 序列,便于一行断言整段列表的层级形状。 */
+  const shape = (md: string): string[] =>
+    parseMarkdown(md).map((b) => {
+      const t = asText(b);
+      const tag = t.type === 'unordered-list-item' ? 'ul' : t.type === 'ordered-list-item' ? 'ol' : t.type;
+      return `${tag}:${t.depth ?? 0}`;
+    });
+
+  it('2 空格为一级缩进', () => {
+    expect(shape('- 一级\n  - 二级\n    - 三级')).toEqual(['ul:0', 'ul:1', 'ul:2']);
+  });
+
+  it('4 空格为一级缩进(栈式换算,不假定固定单位)', () => {
+    expect(shape('- 一级\n    - 二级\n        - 三级')).toEqual(['ul:0', 'ul:1', 'ul:2']);
+  });
+
+  it('Tab 缩进按 4 列计,与空格等效', () => {
+    expect(shape('- 一级\n\t- 二级\n\t\t- 三级')).toEqual(['ul:0', 'ul:1', 'ul:2']);
+  });
+
+  it('缩进回退时层级正确回落', () => {
+    expect(shape('- a\n  - b\n    - c\n  - d\n- e')).toEqual(['ul:0', 'ul:1', 'ul:2', 'ul:1', 'ul:0']);
+  });
+
+  it('有序/无序混合嵌套共用同一缩进栈', () => {
+    expect(shape('- 一级\n  1. 二级\n  2. 二级第二项\n- 回到一级')).toEqual([
+      'ul:0',
+      'ol:1',
+      'ol:1',
+      'ul:0',
+    ]);
+  });
+
+  it('顶层项不写 depth 字段(产出形状与本特性引入前一致)', () => {
+    const b = asText(parseMarkdown('- 顶层')[0]);
+    expect(b.depth).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(b, 'depth')).toBe(false);
+  });
+
+  it('depth 截顶到 4(Draft 默认样式只到 depth4)', () => {
+    const md = '- 1\n  - 2\n    - 3\n      - 4\n        - 5\n          - 6';
+    expect(shape(md)).toEqual(['ul:0', 'ul:1', 'ul:2', 'ul:3', 'ul:4', 'ul:4']);
+  });
+
+  it('列表间的空行不重置层级(松散列表)', () => {
+    expect(shape('- a\n\n  - b')).toEqual(['ul:0', 'ul:1']);
+  });
+
+  it('非列表块结束列表,后续列表从 depth 0 重新起算', () => {
+    expect(shape('- a\n  - b\n\n普通段落\n\n- 新列表')).toEqual([
+      'ul:0',
+      'ul:1',
+      'unstyled:0',
+      'ul:0',
+    ]);
+  });
+
+  it('整体缩进的列表首层即 depth 0', () => {
+    expect(shape('  - a\n  - b')).toEqual(['ul:0', 'ul:0']);
+  });
+
+  it('嵌套项的行内样式与文本正常解析(缩进不污染内容)', () => {
+    const b = asText(parseMarkdown('- 一级\n  - **粗**二级')[1]);
+    expect(b.depth).toBe(1);
+    expect(b.text).toBe('粗二级');
+    expect(b.inlineStyleRanges).toEqual([{ offset: 0, length: 1, style: 'BOLD' }]);
+  });
+
+  it('标记后为全角空格/NBSP 仍是列表项(中文输入法常见,勿收窄分隔符)', () => {
+    // 分隔符必须保持 `\s`:收窄成 `[ \t]` 会让 `-　项目` 掉进段落分支、
+    // 正文留下字面量「-　项目」——正是本次迭代要消灭的那类内容错乱。
+    const full = asText(parseMarkdown('-　项目')[0]); // 全角空格
+    expect(full.type).toBe('unordered-list-item');
+    expect(full.text).toBe('项目');
+    const nbsp = asText(parseMarkdown('1. 项目')[0]); // NBSP + 有序列表
+    expect(nbsp.type).toBe('ordered-list-item');
+    expect(nbsp.text).toBe('项目');
+    // 缩进 + 全角空格组合:层级与内容都要对
+    const nested = asText(parseMarkdown('- 一级\n  -　二级')[1]);
+    expect(nested.type).toBe('unordered-list-item');
+    expect(nested.depth).toBe(1);
+    expect(nested.text).toBe('二级');
+  });
+
+  it('历史行为翻转:缩进列表项此前退化为含字面量的段落,现为嵌套列表项', () => {
+    // 引入 depth 前 `  - 二级` 不匹配顶格列表正则,落到段落分支、
+    // 正文里留下字面量 "  - 二级"(内容错乱)。此断言钉住修复后的正确行为。
+    const blocks = parseMarkdown('- 一级\n  - 二级');
+    expect(blocks).toHaveLength(2);
+    const second = asText(blocks[1]);
+    expect(second.type).toBe('unordered-list-item');
+    expect(second.text).toBe('二级');
+    expect(second.text).not.toContain('-');
+  });
+});
+
+describe('任务列表', () => {
+  it('symbol 模式(默认):未勾选 [ ] 转 ☐ 前缀', () => {
+    const b = asText(parseMarkdown('- [ ] 任务')[0]);
+    expect(b.text).toBe('☐ 任务');
+    expect(b.task).toBe('todo');
+  });
+
+  it('symbol 模式:已勾选 [x] 转 ☑ 前缀', () => {
+    const b = asText(parseMarkdown('- [x] 任务')[0]);
+    expect(b.text).toBe('☑ 任务');
+    expect(b.task).toBe('done');
+  });
+
+  it('symbol 模式:大写 [X] 同样识别为已勾选', () => {
+    const b = asText(parseMarkdown('- [X] 任务')[0]);
+    expect(b.text).toBe('☑ 任务');
+    expect(b.task).toBe('done');
+  });
+
+  it('plain 模式:不加符号,标记被剥掉', () => {
+    const b = asText(parseMarkdown('- [ ] 任务', { taskList: 'plain' })[0]);
+    expect(b.text).toBe('任务');
+    expect(b.task).toBe('todo');
+  });
+
+  it('plain 模式:已勾选同样剥掉标记、不加符号', () => {
+    const b = asText(parseMarkdown('- [x] 任务', { taskList: 'plain' })[0]);
+    expect(b.text).toBe('任务');
+    expect(b.task).toBe('done');
+  });
+
+  it('offset 平移:symbol 前缀不破坏加粗区间(- [ ] **粗**尾巴)', () => {
+    const b = asText(parseMarkdown('- [ ] **粗**尾巴')[0]);
+    expect(b.text).toBe('☐ 粗尾巴');
+    const bold = req(b.inlineStyleRanges.find((r) => r.style === 'BOLD'));
+    expect(b.text.slice(bold.offset, bold.offset + bold.length)).toBe('粗');
+  });
+
+  it('有序任务项 1. [ ] xxx 同样生效', () => {
+    const b = asText(parseMarkdown('1. [ ] 待办')[0]);
+    expect(b.type).toBe('ordered-list-item');
+    expect(b.text).toBe('☐ 待办');
+    expect(b.task).toBe('todo');
+  });
+
+  it('嵌套任务项:depth 与 task 同时正确', () => {
+    const blocks = parseMarkdown('- [ ] a\n  - [x] b');
+    const a = asText(blocks[0]);
+    const bb = asText(blocks[1]);
+    expect(a.depth).toBeUndefined();
+    expect(a.task).toBe('todo');
+    expect(bb.depth).toBe(1);
+    expect(bb.task).toBe('done');
+  });
+
+  it('非任务项不受影响:无 task 字段、文本无符号', () => {
+    const b = asText(parseMarkdown('- 普通项')[0]);
+    expect(b.text).toBe('普通项');
+    expect(b.task).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(b, 'task')).toBe(false);
+  });
+
+  it('边界:[x] 后无空格不算任务项,原样保留字面量', () => {
+    const b = asText(parseMarkdown('- [x]没有空格')[0]);
+    expect(b.text).toBe('[x]没有空格');
+    expect(b.task).toBeUndefined();
+  });
+
+  it('加 ☐/☑ 前缀后 offset 在 emoji/代理对/CJK 下仍精确', () => {
+    // offset 单位是 UTF-16 码元(见 HANDOFF §8):emoji/𝄞 等 BMP 外字符占 2 码元,
+    // 前缀平移若按「字符数」而非码元算,这些场景会整体错位。用 text 切片反证区间落点。
+    const cases: Array<[string, string]> = [
+      ['- [ ] **粗**尾', '粗'],
+      ['- [x] 🎉🎉**粗体**尾', '粗体'],
+      ['- [ ] 中文**强调**中文', '强调'],
+      ['- [x] 👨‍👩‍👧‍👦家庭**abc**', 'abc'],
+      ['- [x] 𝄞乐**音**符', '音'],
+    ];
+    for (const [md, expected] of cases) {
+      const b = asText(parseMarkdown(md)[0]);
+      const r = req(b.inlineStyleRanges[0]);
+      expect([md, b.text.slice(r.offset, r.offset + r.length)]).toEqual([md, expected]);
+    }
+  });
+
+  it('加前缀后链接区间同样精确平移', () => {
+    const b = asText(parseMarkdown('- [ ] 前缀[链接文字](https://a.com)后缀')[0]);
+    const l = req(b.links[0]);
+    expect(b.text.slice(l.offset, l.offset + l.length)).toBe('链接文字');
+    expect(l.url).toBe('https://a.com');
+  });
+
+  it('任务标记后为全角空格仍生效(中文输入法常见)', () => {
+    // 与列表标记的分隔符同理:收窄成 `[ \t]` 会让 `- [x]　完成` 退化成
+    // 带字面量 `[x]` 的普通列表项。
+    const b = asText(parseMarkdown('- [x]　完成')[0]);
+    expect(b.task).toBe('done');
+    expect(b.text).toBe('☑ 完成');
+  });
+});
+
 describe('推文 URL', () => {
   it('x.com 独占行推文转 TWEET 并归一 url', () => {
     const b = asAtomic(parseMarkdown('https://x.com/user/status/12345')[0]);

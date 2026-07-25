@@ -1,6 +1,7 @@
 import { useMemo, type CSSProperties } from 'react';
 import { useI18n } from '@/lib/i18n/useI18n';
 import { useWorkspace } from '@/lib/workspace/WorkspaceProvider';
+import { useSettings } from '@/lib/settings/SettingsProvider';
 import { capability, type CapBadge } from '@/lib/markdown/capability';
 
 const badgeVar: Record<CapBadge, string> = { native: 'ok', special: 'acc', image: 'accInk', warn: 'warn' };
@@ -15,11 +16,17 @@ const card: CSSProperties = {
 export function CapabilityPanel() {
   const { t, lang } = useI18n();
   const { md, capOpen, toggleCap } = useWorkspace();
+  const { opts } = useSettings();
   const en = lang === 'en';
 
   // review B6-UI:useMemo 缓存 capability 解析(必须在任何 return 之前,遵守 Hooks 规则)。
   // 长文时避免每次渲染重解析卡顿;解析抛错由 App 层 ErrorBoundary 兜底。
-  const items = useMemo(() => capability(md, en), [md, en]);
+  // 传入 parseOpts:面板计数须与「实际会写入的内容」同一套解析开关,否则关掉
+  // obsidianImg/wikilink/taskList 后面板仍按默认口径统计,与真实写入不一致。
+  const items = useMemo(
+    () => capability(md, en, { obsidianImg: opts.obsidianImg, wikilink: opts.wikilink, taskList: opts.taskList }),
+    [md, en, opts.obsidianImg, opts.wikilink, opts.taskList],
+  );
 
   if (!md.trim()) return null;
 

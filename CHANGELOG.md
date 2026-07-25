@@ -7,6 +7,26 @@
 
 ## [Unreleased]
 
+### 新增 · 列表语义补齐(嵌套 + 任务列表)
+此前 parser 的列表只认**顶格单层**,两类日常高频写法会**内容错乱**(不是降级):
+
+- **嵌套列表**:`  - 二级` 不匹配顶格列表正则 → 掉进段落分支,正文里留下字面量 `  - 二级`。现按前导缩进算 `depth` 写入 Draft 原生的 `ContentBlock.depth`(`TextBlock.depth`,上限 4 —— Draft 默认样式表只到 `depth4`)。
+  - 缩进→层级用**栈式**换算而非「缩进 ÷ 固定单位」:后者必须假定每级固定 2 或 4 空格,遇到另一种或混用 Tab 就整体算错;栈式只看相对深浅,故 2 空格 / 4 空格 / Tab / 混合缩进都正确,有序无序共用一个栈(`- 一级` + `1. 二级` 层级正确)。
+  - `depth` 是**可选字段且仅 > 0 时写入**:顶层项产出形状与本特性引入前逐字节一致;旧版 injector(用户未刷新 X 页面)读不到它只会退化成扁平列表,仍优于此前的字面量段落。
+- **任务列表**:`- [ ] / - [x]` 此前留字面量 `[ ]` 在正文里。现接通早已存在却被置灰的 `taskList` 设置——`symbol`(默认)转 ☐/☑ 符号、`plain` 剥掉标记;`TextBlock.task` 记勾选态供能力面板计数。加符号前缀时**整体平移** `inlineStyleRanges`/`links` 的 offset,否则 `- [ ] **粗体**` 的加粗区间会砸到前缀上。
+- 设置页「任务列表」项**取消置灰**,文案从「（规划中）」改为如实描述。
+
+### 修复 · 能力面板的静默降级与错误标绿(兑现「不会导入完才发现丢了」)
+盘点发现能力面板对一批常见语法**只字不提**，任务列表更是被标绿成「原生列表」而正文实际留着 `[ ]` 字面量——面板在撒谎，与 README 的核心承诺相悖。补 7 类如实告知：
+
+- **多级列表**（`special`）：走 Draft 原生 `depth` 字段，非降级路径；X 是否渲染层级**尚未真机验证**，故不标 `warn`——标 warn 等于断言「已降级」这件我们并不知道的事，还会让报告的「降级 N 处」凭空膨胀。
+- **任务列表 / 行内图片 / 脚注 / HTML 块 / 数学公式 / setext 标题**（均 `warn`）：如实说明会变成什么。
+- 计数**严格从 `parseMarkdown` 的产出块**取（沿用本文件既有 doctrine，不另起一套正则）：独占一行的图片已是 `ImageBlock`，天然不会与「行内图片」重复计数；围栏代码块内的 `![]()`/`$$`/`<div>` 是 atomic 块，不会误计。仅 setext 标题因解析后语义已丢失而必须扫原文，用围栏感知的 `forEachContentLine` 保持判定同源。
+- **顺带修一个既存隐患**：`capability()` 此前调 `parseMarkdown(md)` **不带任何开关**，用户关掉 `obsidianImg`/`wikilink` 后面板按「默认开」统计、与实际写入不一致（又一次 UI 撒谎）。现加 `parseOpts` 第三参并从 3 个调用方透传真实设置。
+
+### 修复 · Toast 长文案溢出侧边栏
+成功提示最多可拼 5 段(空替换 + 图片 N/M + 封面 + 标题 + 文件夹断开),而 Toast 是 `whiteSpace:nowrap` 且无宽度上限;它 `position:absolute` 而 `#root` 为 `position:static`,包含块是视口而非面板,故长文案会向两侧溢出侧边栏被切掉。改为限宽换行(`maxWidth: calc(100vw - 32px)` + `overflowWrap:anywhere`,兼顾中文与长 URL/文件名),图标加 `flexShrink:0` 防换行时被压扁。`borderRadius` 99→18:单行高约 35px、半高 17.7px < 18,浏览器按半高钳制后**渲染与原胶囊逐字节相同**(短文案截图比对验证零回归),多行时不再侵入首尾行文字。
+
 ### 新增 · 单测体系 + CI(225 用例)
 - **Vitest 单测覆盖纯函数层**:parser(85,块级/行内 offset/代理对/对抗输入/全部历史修复回归)、frontmatter+capability(55,fence 统一/计数回归)、backup validate(36,坏备份砖化 P0 防线:非法枚举回落/代理对截断/`__proto__` 不污染)、localVault `splitLocalPath`(20,路径逃逸/编码绕过)、protocol 纯函数+守卫(28)。`pnpm test` 150ms 跑完。
 - **CI workflow**(`.github/workflows/ci.yml`):push/PR 跑 tsc + 单测 + Chrome 构建(Node 22,pnpm 版本从 packageManager 读取)。

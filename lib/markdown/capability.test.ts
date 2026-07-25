@@ -188,6 +188,186 @@ describe('images()', () => {
   });
 });
 
+describe('capability · 多级列表(depth > 0)', () => {
+  it('嵌套一层的列表项计入多级列表,顶层项不计', () => {
+    const md = '- a\n  - b\n';
+    const items = capability(md, false);
+    expect(find(items, '多级列表')?.count).toBe(1);
+  });
+
+  it('无嵌套的平层列表不出现多级列表条目', () => {
+    const md = '- a\n- b\n- c\n';
+    const items = capability(md, false);
+    expect(find(items, '多级列表')).toBeUndefined();
+  });
+
+  it('多级列表标 special 而非 warn,不计入报告的「降级」数', () => {
+    // depth 走 Draft 原生字段、非降级路径,且 X 是否渲染层级尚未真机验证——
+    // 标 warn 等于断言「已降级」(我们并不知道),还会让 `降级 N 处` 凭空膨胀。
+    const items = capability('- a\n  - b\n    - c\n', false);
+    expect(find(items, '多级列表')?.badge).toBe('special');
+    const deg = items.filter((c) => c.badge === 'warn').reduce((a, c) => a + c.count, 0);
+    expect(deg).toBe(0);
+  });
+});
+
+describe('capability · 任务列表', () => {
+  it('任务项按数量计数,普通列表项不计入', () => {
+    const md = '- [ ] todo\n- [x] done\n- 普通项\n';
+    const items = capability(md, false);
+    expect(find(items, '任务列表')?.count).toBe(2);
+    expect(find(items, '列表')?.count).toBe(3); // 三条都仍是列表项(原生计数不受任务标记影响)
+  });
+
+  it('无任务标记的文档不出现任务列表条目', () => {
+    const md = '- a\n- b\n';
+    const items = capability(md, false);
+    expect(find(items, '任务列表')).toBeUndefined();
+  });
+
+  it('note 随 parseOpts.taskList 切换(symbol vs plain)', () => {
+    const md = '- [ ] todo\n';
+    const symbol = capability(md, false, { taskList: 'symbol' });
+    const plain = capability(md, false, { taskList: 'plain' });
+    expect(find(symbol, '任务列表')?.note).toBe('X 无任务列表 · 转 ☑/☐ 符号');
+    expect(find(plain, '任务列表')?.note).toBe('X 无任务列表 · 转普通列表项');
+  });
+
+  it('未传 parseOpts 时按默认 symbol 模式显示 note', () => {
+    const md = '- [ ] todo\n';
+    const items = capability(md, false);
+    expect(find(items, '任务列表')?.note).toBe('X 无任务列表 · 转 ☑/☐ 符号');
+  });
+});
+
+describe('capability · 行内图片(仅段落中残留的,不含独占行)', () => {
+  it('段落内的行内图片按出现次数计数', () => {
+    const md = '文字里有 ![a](x.png) 和 ![b](y.png) 两张行内图片。';
+    const items = capability(md, false);
+    expect(find(items, '行内图片')?.count).toBe(2);
+  });
+
+  it('独占一行的图片已被解析成 ImageBlock,不重复计入行内图片(关键收益:不再靠正则扫全文)', () => {
+    const md = '![cover](x.png)\n\n正文里还有 ![inline](y.png) 一张行内图片。';
+    const items = capability(md, false);
+    expect(find(items, '图片 → 上传')?.count).toBe(1);
+    expect(find(items, '行内图片')?.count).toBe(1); // 只计段落里那一张,独占行那张不算
+  });
+
+  it('无行内图片的文档不出现该条目', () => {
+    const md = '![cover](x.png)\n';
+    const items = capability(md, false);
+    expect(find(items, '行内图片')).toBeUndefined();
+  });
+
+  it('围栏代码块内的 ![]() 不计入行内图片(已单独成 atomic 块,不是文本块)', () => {
+    const md = '```\n![x](a.png)\n```\n';
+    const items = capability(md, false);
+    expect(find(items, '行内图片')).toBeUndefined();
+  });
+});
+
+describe('capability · 脚注', () => {
+  it('文本块内的脚注标记按出现次数计数', () => {
+    const md = '这是一段带脚注的正文[^1],还有一个[^note]。';
+    const items = capability(md, false);
+    expect(find(items, '脚注')?.count).toBe(2);
+  });
+
+  it('无脚注标记的文档不出现该条目', () => {
+    const md = '普通正文,没有脚注。';
+    const items = capability(md, false);
+    expect(find(items, '脚注')).toBeUndefined();
+  });
+});
+
+describe('capability · HTML 块', () => {
+  it('以 < + 字母开头的文本块计入 HTML 块', () => {
+    const md = '<div>一段 HTML</div>\n';
+    const items = capability(md, false);
+    expect(find(items, 'HTML 块')?.count).toBe(1);
+  });
+
+  it('文本中间出现的 < 不计入(仅块首判定)', () => {
+    const md = '这段话里 a < b 只是比较符号。';
+    const items = capability(md, false);
+    expect(find(items, 'HTML 块')).toBeUndefined();
+  });
+
+  it('围栏代码块内的 <div> 不计入 HTML 块(已成 atomic 块)', () => {
+    const md = '```\n<div>x</div>\n```\n';
+    const items = capability(md, false);
+    expect(find(items, 'HTML 块')).toBeUndefined();
+  });
+});
+
+describe('capability · 数学公式', () => {
+  it('含 $$ 的文本块按块数计数(同块内多个 $$ 只算一块)', () => {
+    const md = '$$\nE = mc^2\n$$\n';
+    const items = capability(md, false);
+    expect(find(items, '数学公式')?.count).toBe(1);
+  });
+
+  it('无 $$ 的文档不出现该条目', () => {
+    const md = '普通正文,没有公式。';
+    const items = capability(md, false);
+    expect(find(items, '数学公式')).toBeUndefined();
+  });
+
+  it('围栏代码块内的 $$ 不计入数学公式(已成 atomic 块)', () => {
+    const md = '```\n$$\nx\n$$\n```\n';
+    const items = capability(md, false);
+    expect(find(items, '数学公式')).toBeUndefined();
+  });
+});
+
+describe('capability · setext 标题(唯一扫原始 md 的一项)', () => {
+  it('=== 下划线的一级 setext 标题被计入', () => {
+    const md = '标题一\n===\n\n正文\n';
+    const items = capability(md, false);
+    expect(find(items, 'setext 标题')?.count).toBe(1);
+  });
+
+  it('短划线下划线(不足 3 个,不触发 DIVIDER)的二级 setext 标题被计入', () => {
+    const md = '标题二\n--\n\n正文\n';
+    const items = capability(md, false);
+    expect(find(items, 'setext 标题')?.count).toBe(1);
+  });
+
+  it('3+ 个短划线的下划线会先被 parser 识别成 DIVIDER(段落+分割线,标题语义丢失)——仍计入 setext 标题', () => {
+    const md = '标题三\n---\n\n正文\n';
+    const items = capability(md, false);
+    expect(find(items, '分割线 → DIVIDER')?.count).toBe(1); // parser 侧确实产出了 DIVIDER
+    expect(find(items, 'setext 标题')?.count).toBe(1); // 但标题语义已丢,面板须如实告知
+  });
+
+  it('ATX 标题(# 开头)不误判为 setext 标题正文', () => {
+    const md = '# 正常标题\n\n正文\n';
+    const items = capability(md, false);
+    expect(find(items, 'setext 标题')).toBeUndefined();
+  });
+
+  it('无 setext 语法的普通文档不出现该条目', () => {
+    const md = '普通段落一。\n\n普通段落二。\n';
+    const items = capability(md, false);
+    expect(find(items, 'setext 标题')).toBeUndefined();
+  });
+
+  it('围栏代码块内的「文字 + ===」不误计(forEachContentLine 跳过围栏)', () => {
+    const md = '```\n标题\n===\n```\n';
+    const items = capability(md, false);
+    expect(find(items, 'setext 标题')).toBeUndefined();
+  });
+});
+
+describe('capability · parseOpts 透传影响解析结果', () => {
+  it('taskList=plain 时任务列表项不再有 ☑/☐ 前缀,但计数不受影响', () => {
+    const md = '- [x] done\n';
+    const items = capability(md, false, { taskList: 'plain' });
+    expect(find(items, '任务列表')?.count).toBe(1);
+  });
+});
+
 describe('firstTitle()', () => {
   it('取第一个 # H1', () => {
     expect(firstTitle('# 我的标题\n\n正文', false)).toBe('我的标题');

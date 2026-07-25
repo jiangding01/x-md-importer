@@ -856,12 +856,18 @@ export default defineUnlistedScript(() => {
           // characterList:从空模板用实例方法 push() 逐个追加(不用 constructor 直造)。
           let characterList = emptyCharList;
           for (const c of chars) characterList = characterList.push(c);
+          // depth:列表嵌套层级(Draft 原生字段)。截顶到 [0,4]——Draft 默认样式表只到 depth4,
+          // 且负数/超大值会让 X 的列表渲染算 padding 时出界。非列表块 parser 不产出 depth,取 0。
+          // 先过 isFinite:单纯 clamp 挡不住 NaN(Math.max/min 遇 NaN 一路返回 NaN),
+          // 而 NaN 写进 Draft 的数值字段会让列表渲染出难以排查的怪状态。
+          const rawDepth = Number(block.depth ?? 0);
+          const depth = Number.isFinite(rawDepth) ? Math.max(0, Math.min(4, Math.trunc(rawDepth))) : 0;
           const nextBlock = sampleBlock.merge({
             key,
             type: block.type,
             text: block.text,
             characterList,
-            depth: 0,
+            depth,
             data: emptyBlockData,
           });
           built.push([key, nextBlock]);
