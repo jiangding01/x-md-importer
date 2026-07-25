@@ -74,7 +74,7 @@ export function settingsConfig({ en, folderConnected, folderName, wipeArm }: Con
       title: T('内容转换', 'Content conversion'),
       rows: [
         { k: 'codeStrategy', t: 'select', disabled: true, label: T('代码块策略', 'Code blocks'), desc: T('原生代码块带语言标注（当前固定）。', 'Native code block with language (fixed).'), opts: [o('native', '原生代码块', 'Native')] },
-        { k: 'taskList', t: 'select', disabled: true, label: T('任务列表 - [ ]', 'Task lists'), desc: T('☑/☐ 符号列表或普通列表。（规划中）', 'Symbol list or plain list. (planned)'), opts: [o('symbol', '符号列表', 'Symbol list'), o('plain', '普通列表', 'Plain list')] },
+        { k: 'taskList', t: 'select', label: T('任务列表 - [ ]', 'Task lists'), desc: T('`- [ ]` 转 ☑/☐ 符号,或只保留文字。', 'Convert `- [ ]` to ☑/☐ symbols, or keep plain text.'), opts: [o('symbol', '符号列表', 'Symbol list'), o('plain', '普通列表', 'Plain list')] },
         { k: 'obsidianImg', t: 'toggle', label: T('Obsidian 图片嵌入', 'Obsidian embeds'), desc: T('识别 ![[图片]] 语法(本地文件夹解析)。', 'Recognize ![[image]] syntax.') },
         { k: 'wikilink', t: 'toggle', label: T('Wikilink 转纯文本', 'Wikilinks to text'), desc: T('[[wikilink]] 转为纯文本。', 'Convert [[wikilink]] to text.') },
         { k: 'punct', t: 'toggle', disabled: true, label: T('智能标点', 'Smart punctuation'), desc: T('修正中文标点,保护代码/链接/URL 区域。（规划中）', 'Fix CJK punctuation; protect code & URLs. (planned)') },

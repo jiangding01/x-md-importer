@@ -1,6 +1,7 @@
 import { useMemo, type CSSProperties } from 'react';
 import { useI18n } from '@/lib/i18n/useI18n';
 import { useWorkspace } from '@/lib/workspace/WorkspaceProvider';
+import { useSettings } from '@/lib/settings/SettingsProvider';
 import { capability } from '@/lib/markdown/capability';
 import type { Dict } from '@/lib/i18n/dict';
 import type { ImageFailReason } from '@/lib/bridge/protocol';
@@ -43,12 +44,17 @@ const card: CSSProperties = {
 export function ReportCard() {
   const { t, lang } = useI18n();
   const { reportVisible, closeReport, md, history } = useWorkspace();
+  const { opts } = useSettings();
   const en = lang === 'en';
   const lastRun = history[0];
 
   // review B6-UI:useMemo 缓存 capability 解析(须在 return 之前,遵守 Hooks 规则);
   // 解析抛错由 App 层 ErrorBoundary 兜底。
-  const items = useMemo(() => capability(md, en), [md, en]);
+  // 传入 parseOpts:报告须复盘「本次实际写入用的解析开关」,与面板同理避免统计口径漂移。
+  const items = useMemo(
+    () => capability(md, en, { obsidianImg: opts.obsidianImg, wikilink: opts.wikilink, taskList: opts.taskList }),
+    [md, en, opts.obsidianImg, opts.wikilink, opts.taskList],
+  );
 
   if (!reportVisible || !lastRun) return null;
 

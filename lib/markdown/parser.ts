@@ -11,7 +11,7 @@
  * 最终文本」——这是本模块的核心难点。
  */
 
-import type { ImportBlock, InlineStyleRange, LinkRange, TextBlockType } from '../bridge/protocol';
+import type { ImportBlock, InlineStyleRange, LinkRange, TextBlock, TextBlockType } from '../bridge/protocol';
 
 /** 行内解析的中间产物:干净文本 + 样式区间 + 链接区间(offset 相对自身 text)。 */
 interface InlineResult {
@@ -48,8 +48,21 @@ const RE_LINKED_IMAGE_LINE = /^\[!\[([^\]]*)\]\((.+)\)\]\((.+)\)$/;
 const RE_OBSIDIAN_IMAGE_LINE = /^!\[\[([^\]]+)\]\]$/;
 const RE_HEADING = /^(#{1,6})\s+(.*)$/;
 const RE_BLOCKQUOTE = /^>/;
-const RE_UL = /^[-*+]\s+(.*)$/;
-const RE_OL = /^\d+\.\s+(.*)$/;
+/**
+ * 列表项:组1 = 前导缩进(决定嵌套层级)、组2 = 标记后的内容。
+ * 允许前导空白是嵌套列表的入口——此前要求顶格,缩进行落到段落分支、
+ * 正文里留下字面量 `  - 二级`(内容错乱,非降级)。缩进→depth 的换算见 listDepth。
+ *
+ * 两组空白的写法**有意不同**,别"统一"掉:
+ *  - 缩进组用 `[ \t]*`:只有空格/Tab 才有确定的列宽,全角空格等无法换算 depth;
+ *  - 标记后的分隔符保持 `\s+`(与本特性引入前逐字节一致):`\s` 覆盖全角空格 `　` 与 NBSP,
+ *    中文输入法下 `-　项目` 很常见,收窄成 `[ \t]` 会让它掉进段落、正文留字面量 `-　项目`。
+ */
+const RE_UL = /^([ \t]*)[-*+]\s+(.*)$/;
+const RE_OL = /^([ \t]*)\d+\.\s+(.*)$/;
+
+/** Draft 默认样式表只到 `public-DraftStyleDefault-depth4`,更深不再有额外缩进,故截顶。 */
+const MAX_LIST_DEPTH = 4;
 /**
  * GFM 表格分隔行(表头下方那行):每列 `:?-+:?`,列间 `|`。要求本行**含 `|` 且含 `-`**——
  * 这样纯 `---`/`***` 分割线(不含 `|`)不会被当成表格分隔,与 DIVIDER 不冲突。
@@ -57,6 +70,13 @@ const RE_OL = /^\d+\.\s+(.*)$/;
 const RE_TABLE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
 const isTableSeparator = (line: string): boolean =>
   line.includes('|') && line.includes('-') && RE_TABLE_SEP.test(line);
+
+/**
+ * setext 标题的下划线行:`===`(一级)/ `---`(二级),数量任意 ≥1,其后仅允许空白。
+ * **顶格,不允许前导空白**——与 RE_DIVIDER 同样严格,免得列表项下方缩进的 `---` 被误判。
+ */
+const RE_SETEXT_EQ = /^=+[ \t]*$/;
+const RE_SETEXT_DASH = /^-+[ \t]*$/;
 
 /** ASCII 标点集合:反斜杠转义仅在其后紧跟 ASCII 标点时生效(字母/CJK 前的反斜杠保留原样)。 */
 const RE_PUNCT = /[!-/:-@[-`{-~]/;
@@ -69,6 +89,51 @@ const RE_PUNCT = /[!-/:-@[-`{-~]/;
 export function isImageLine(line: string): boolean {
   const t = line.trim();
   return matchImageLine(t) !== null || RE_LINKED_IMAGE_LINE.test(t) || RE_OBSIDIAN_IMAGE_LINE.test(t);
+}
+
+/**
+ * setext 标题下划线的级别:`===` → 1、`---` → 2;不是下划线返回 null。
+ * 导出供 frontmatter.ts 的 H1 抽取复用——标题抽取与正文解析必须用**同一套**判定,
+ * 否则会出现「parser 认成标题、extractTitle 抽不到」的分裂(本项目在 frontmatter/围栏
+ * 判定上已栽过两次「第二套实现漂移」,见 HANDOFF §8)。
+ */
+export function setextUnderlineLevel(line: string): 1 | 2 | null {
+  if (RE_SETEXT_EQ.test(line)) return 1;
+  if (RE_SETEXT_DASH.test(line)) return 2;
+  return null;
+}
+
+/**
+ * 该行是否为「普通段落文本行」——即不是任何块级语法的起始、也不是空行。
+ * setext 标题的正文行必须满足它(`# x` / `- x` / `> x` 等下方跟 `===` 不构成 setext)。
+ * 导出同样是为了让 frontmatter.ts 复用同一判定。
+ */
+export function isParagraphLine(line: string): boolean {
+  return !isBlockBoundary(line);
+}
+
+/**
+ * 文首 YAML frontmatter 之后第一行的下标;无 frontmatter 返回 0(即从头解析)。
+ *
+ * 判定:仅当**第一行即为顶格 `---`** 且后续存在顶格闭合 `---` 时触发。用「顶格 `^---`」
+ * 而非 trim,与 frontmatter.ts 的抽取正则一致——否则缩进的 `  ---` 会出现「parser 剥离了
+ * 但 extractTitle 抽不到 → 标题静默丢失」的不一致。闭合 `---` 必须出现在**首个空行之前**
+ * (frontmatter 体不含空行),否则文首装饰性 `---\n\n正文\n\n---` 会把中间正文当 frontmatter
+ * 静默吞掉。此判定须与 frontmatter.ts 的 frontmatterBody 完全对齐。
+ *
+ * **导出是为了消除第二套实现**:capability 的 setext 计数此前直接扫原始 md(只跳围栏、
+ * 不跳 frontmatter),把 frontmatter 体末行 + 闭合 `---` 误当成 setext 标题,任何带
+ * frontmatter 的文档都凭空多一条「setext 标题未识别」假告警(review 揪出)。
+ */
+export function frontmatterBodyStart(lines: string[]): number {
+  const isFmDelim = (line: string) => /^---[ \t]*$/.test(line);
+  if (!isFmDelim(lines[0] ?? '')) return 0;
+  for (let j = 1; j < lines.length; j += 1) {
+    const l = lines[j] ?? '';
+    if (isFmDelim(l)) return j + 1;
+    if (l.trim() === '') break; // 首个空行前未闭合 → 非 frontmatter,首行 --- 交后续按分割线处理
+  }
+  return 0;
 }
 
 /**
@@ -136,6 +201,8 @@ export function stripFirstImageLine(md: string): string {
 export interface ParseOptions {
   obsidianImg?: boolean;
   wikilink?: boolean;
+  /** `- [ ]` 任务列表项的呈现:symbol=转 ☐/☑ 符号(默认);plain=剥掉标记、按普通列表项处理。 */
+  taskList?: 'symbol' | 'plain';
 }
 
 // 解析开关:parseMarkdown **同步执行**(内部无 await)、JS 单线程不会重入,故用模块级标志
@@ -143,36 +210,34 @@ export interface ParseOptions {
 // 块级/行内解析只读。
 let optObsidianImg = true;
 let optWikilink = true;
+let optTaskList: 'symbol' | 'plain' = 'symbol';
 
 /** 解析 Markdown 文本为按文档顺序排列的写入块序列。 */
 export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[] {
   optObsidianImg = opts.obsidianImg ?? true;
   optWikilink = opts.wikilink ?? true;
+  optTaskList = opts.taskList ?? 'symbol';
   const lines = md.split(/\r?\n/);
   const blocks: ImportBlock[] = [];
-  let i = 0;
-
-  // 跳过文首 YAML frontmatter(--- … ---):仅当**第一行即为顶格 ---** 且后续存在顶格闭合 --- 时触发,
-  // 从闭合行之后开始正文解析。frontmatter 的 title/cover 由 lib/markdown/frontmatter.ts 单独抽取,
-  // 不进正文——否则会被误当「分割线 + 文本 + 分割线」写入(正文中间的 --- 分割线不受影响)。
-  // 判定用「顶格 ^---」而非 trim,与 frontmatter.ts 的抽取正则一致——否则缩进的 `  ---`
-  // 会出现「parser 剥离了但 extractTitle 抽不到 → 标题静默丢失」的不一致。
-  // 闭合 --- 必须出现在**首个空行之前**(frontmatter 体不含空行):否则文首装饰性 `---\n\n正文\n\n---`
-  // 会把中间正文当 frontmatter 静默吞掉。此判定须与 frontmatter.ts 的 frontmatterBody 完全对齐。
-  const isFmDelim = (line: string) => /^---[ \t]*$/.test(line);
-  if (isFmDelim(lines[0] ?? '')) {
-    for (let j = 1; j < lines.length; j += 1) {
-      const l = lines[j] ?? '';
-      if (isFmDelim(l)) {
-        i = j + 1;
-        break;
-      }
-      if (l.trim() === '') break; // 首个空行前未闭合 → 非 frontmatter,首行 --- 交后续按分割线处理
-    }
-  }
+  // 跳过文首 YAML frontmatter(判定见 frontmatterBodyStart)。
+  let i = frontmatterBodyStart(lines);
+  // 当前列表 run 的缩进栈(每层的缩进宽度),由 listDepth 就地维护、离开列表时清空。
+  const listIndents: number[] = [];
 
   while (i < lines.length) {
     const line = lines[i] ?? '';
+
+    // 列表缩进栈的生命周期:上一个产出块不是列表项 ⇒ 列表已结束 ⇒ 清栈,下个列表从 depth 0 重新起算。
+    // 放在轮首统一判定(而非在十余处 push 点各写一遍),对所有 continue 分支都成立。
+    // 空行不产出块,故「项与项之间空一行」的松散列表层级得以保持。
+    const prevBlock = blocks[blocks.length - 1];
+    if (
+      !prevBlock ||
+      prevBlock.kind !== 'text' ||
+      (prevBlock.type !== 'unordered-list-item' && prevBlock.type !== 'ordered-list-item')
+    ) {
+      listIndents.length = 0;
+    }
 
     // 1. 围栏代码块:优先保护,内部所有内容(含 --- / > / 行内标记)一律不解析
     const fence = matchFenceOpen(line);
@@ -306,18 +371,20 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
       continue;
     }
 
-    // 7. 无序列表(单层,行首无缩进;缩进视为嵌套 → 落到段落按普通文本)
+    // 7. 无序列表(支持嵌套:前导缩进 → depth;缩进门槛见 canBeListItem)
     const ul = line.match(RE_UL);
-    if (ul) {
-      blocks.push(textBlock('unordered-list-item', walkInline(ul[1] ?? '')));
+    if (ul && canBeListItem(listIndents, ul[1] ?? '')) {
+      const depth = listDepth(listIndents, indentWidth(ul[1] ?? ''));
+      blocks.push(taskAwareListBlock('unordered-list-item', ul[2] ?? '', depth));
       i += 1;
       continue;
     }
 
-    // 8. 有序列表(单层)
+    // 8. 有序列表(支持嵌套,与无序共用同一缩进栈——混合嵌套 `- 一级 / 1. 二级` 层级正确)
     const ol = line.match(RE_OL);
-    if (ol) {
-      blocks.push(textBlock('ordered-list-item', walkInline(ol[1] ?? '')));
+    if (ol && canBeListItem(listIndents, ol[1] ?? '')) {
+      const depth = listDepth(listIndents, indentWidth(ol[1] ?? ''));
+      blocks.push(taskAwareListBlock('ordered-list-item', ol[2] ?? '', depth));
       i += 1;
       continue;
     }
@@ -328,12 +395,26 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
     while (k < lines.length) {
       const next = lines[k] ?? '';
       if (isBlockBoundary(next)) break;
+      // setext 下划线终止段落收集,交下面判定升格为标题。`---` 已被 isBlockBoundary 的
+      // 分割线规则拦下,这里主要拦 `===`(它不匹配任何块级规则,否则会被吸进段落文本)。
+      if (setextUnderlineLevel(next) !== null) break;
       // 表格开始(当前行含 `|` 且下一行是分隔行):停止段落收集,交主循环的表格分支处理,
       // 否则紧跟正文段落后、无空行分隔的表格会被段落吞掉。
       if (next.includes('|') && isTableSeparator(lines[k + 1] ?? '')) break;
       para.push(next);
       k += 1;
     }
+
+    // setext 标题:段落正下方紧跟 `===` / `---` → 整段升格为标题,并吃掉下划线行。
+    // 放在段落收集**之后**判定,天然支持多行 setext 正文;也天然让 `---` 在此处
+    // 优先当下划线而非分割线(CommonMark 同序:有前置段落时 setext 胜出)。
+    // 级别映射与 ATX 一致:一级/二级同归 header-one(X 只有两级标题,见 TextBlockType)。
+    if (k < lines.length && setextUnderlineLevel(lines[k] ?? '') !== null) {
+      blocks.push(textBlock('header-one', walkInline(para.join('\n'))));
+      i = k + 1;
+      continue;
+    }
+
     blocks.push(textBlock('unstyled', walkInline(para.join('\n'))));
     i = k;
   }
@@ -345,15 +426,109 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
 // 块级辅助
 // ---------------------------------------------------------------------------
 
-/** 由行内解析结果组装一个 TextBlock。 */
-function textBlock(type: TextBlockType, inline: InlineResult): ImportBlock {
-  return {
+/**
+ * 由行内解析结果组装一个 TextBlock。
+ * depth 仅在 > 0(嵌套列表项)时写入——顶层块不带该字段,产出形状与本特性引入前完全一致。
+ * task 仅任务列表项传入(见 taskAwareListBlock)。
+ */
+function textBlock(type: TextBlockType, inline: InlineResult, depth = 0, task?: 'todo' | 'done'): ImportBlock {
+  const block: TextBlock = {
     kind: 'text',
     type,
     text: inline.text,
     inlineStyleRanges: inline.inlineStyleRanges,
     links: inline.links,
   };
+  if (depth > 0) block.depth = depth;
+  if (task) block.task = task;
+  return block;
+}
+
+/**
+ * 列表内容开头的任务标记 `[ ]` / `[x]` / `[X]`,其后须紧跟至少一个空白——
+ * `[x]abc` 不算任务项(与 GFM 一致),原样交普通列表分支处理。
+ * 分隔符用 `\s`(而非 `[ \t]`)与列表标记同理:中文输入法下 `- [x]　完成` 会打出全角空格,
+ * 收窄会让它退化成正文里带字面量 `[x]` 的普通列表项。
+ */
+const RE_TASK_MARK = /^\[([ xX])\]\s+/;
+
+/** 识别并剥离任务标记,返回勾选态与剩余内容;不匹配返回 null。 */
+function matchTaskMark(content: string): { checked: boolean; rest: string } | null {
+  const m = RE_TASK_MARK.exec(content);
+  if (!m) return null;
+  return { checked: (m[1] ?? ' ') !== ' ', rest: content.slice(m[0].length) };
+}
+
+/**
+ * 把 InlineResult 的所有 offset 整体平移 shift(不就地改,返回新对象)。
+ * symbol 模式在剩余内容解析结果前拼接 `☐ `/`☑ ` 前缀时,inlineStyleRanges / links 的
+ * offset 是相对「剩余内容」算出的,必须同步平移前缀长度,否则如 `- [ ] **粗体**` 会整体错位
+ * (加粗区间仍指向拼接前的位置,砸到前缀符号或空格上)。
+ */
+function shiftInline(inline: InlineResult, prefix: string): InlineResult {
+  const shift = prefix.length;
+  return {
+    text: prefix + inline.text,
+    inlineStyleRanges: inline.inlineStyleRanges.map((r) => ({ ...r, offset: r.offset + shift })),
+    links: inline.links.map((l) => ({ ...l, offset: l.offset + shift })),
+  };
+}
+
+/**
+ * 组装无序/有序列表项块,统一处理任务列表标记(`- [ ] x` / `1. [x] x`):
+ *  - 非任务项:与此前行为完全一致,直接 walkInline(content)。
+ *  - 任务项:剥标记 → 按 optTaskList 决定是否加 ☐/☑ 前缀(symbol 平移 offset;plain 不加符号)
+ *    → 写入 task 字段。
+ */
+function taskAwareListBlock(type: TextBlockType, content: string, depth: number): ImportBlock {
+  const task = matchTaskMark(content);
+  if (!task) return textBlock(type, walkInline(content), depth);
+  const inline = walkInline(task.rest);
+  const shaped = optTaskList === 'symbol' ? shiftInline(inline, task.checked ? '☑ ' : '☐ ') : inline;
+  return textBlock(type, shaped, depth, task.checked ? 'done' : 'todo');
+}
+
+/**
+ * 缩进的列表标记是否真的算列表项。
+ *  - **已在列表 run 中**(缩进栈非空)→ 任意缩进都算,这正是嵌套项的入口;
+ *  - **不在列表中** → 仅允许缩进 ≤3 列(CommonMark:列表最多缩进 3 格,≥4 格属缩进代码块领域)。
+ *
+ * 没有这道门槛时,粘进正文的 4 空格缩进代码/日志里的 `- x`、`1. x` 会被拆成独立列表项、
+ * 丢掉原始缩进语境(review 揪出:放开缩进匹配的副作用,`isBlockBoundary` 复用同一正则会
+ * 把本应连续的段落硬切开)。2 空格的情形保持「可打断段落」——那与 CommonMark 一致。
+ */
+function canBeListItem(stack: number[], indent: string): boolean {
+  return stack.length > 0 || indentWidth(indent) <= 3;
+}
+
+/** 顶层语境下该行是否为列表项起始——段落边界判定用(收集段落时定义上不在列表 run 内)。 */
+function isTopLevelListLine(line: string): boolean {
+  const m = RE_UL.exec(line) ?? RE_OL.exec(line);
+  return m !== null && indentWidth(m[1] ?? '') <= 3;
+}
+
+/** 缩进宽度(列):Tab 记 4 列,空格记 1 列——与主流编辑器/CommonMark 的 Tab 展开一致。 */
+function indentWidth(ws: string): number {
+  let w = 0;
+  for (const ch of ws) w += ch === '\t' ? 4 : 1;
+  return w;
+}
+
+/**
+ * 由缩进宽度算列表嵌套层级,**栈式**而非「缩进 ÷ 固定单位」:
+ * 后者必须假定每级固定 2 或 4 空格,遇到另一种(或混用 Tab)就整体算错;
+ * 栈式只看「比上一层更深/更浅」的相对关系,故 2 空格、4 空格、Tab、混合缩进都正确。
+ *
+ * 就地维护 stack(调用方每轮列表run 复用同一个数组):
+ *  - 比栈顶浅 → 逐层出栈,回到匹配层级;
+ *  - 比栈顶深 → 入栈,新增一层;
+ *  - 与栈顶齐平 → 维持当前层。
+ * 返回值截顶到 MAX_LIST_DEPTH。
+ */
+function listDepth(stack: number[], width: number): number {
+  while (stack.length > 0 && width < (stack[stack.length - 1] ?? 0)) stack.pop();
+  if (stack.length === 0 || width > (stack[stack.length - 1] ?? 0)) stack.push(width);
+  return Math.min(stack.length - 1, MAX_LIST_DEPTH);
 }
 
 /** 段落边界:空行,或任一块级元素的起始行——段落收集到这些行前停止。 */
@@ -367,8 +542,7 @@ function isBlockBoundary(line: string): boolean {
   if (optObsidianImg && RE_OBSIDIAN_IMAGE_LINE.test(line.trim())) return true;
   if (RE_HEADING.test(line)) return true;
   if (RE_BLOCKQUOTE.test(line)) return true;
-  if (RE_UL.test(line)) return true;
-  if (RE_OL.test(line)) return true;
+  if (isTopLevelListLine(line)) return true;
   return false;
 }
 

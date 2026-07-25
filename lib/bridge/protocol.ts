@@ -63,7 +63,7 @@ export interface LinkRange {
 
 /**
  * 文本类块的 Draft block type(M1 范围)。映射:H1/H2→header-one、H3→header-two、
- * H4+→unstyled+全段 BOLD(X 仅两级标题);列表不嵌套(depth 恒 0)。
+ * H4+→unstyled+全段 BOLD(X 仅两级标题);列表层级见 TextBlock.depth。
  */
 export type TextBlockType =
   | 'unstyled'
@@ -80,6 +80,16 @@ export interface TextBlock {
   text: string;
   inlineStyleRanges: InlineStyleRange[];
   links: LinkRange[];
+  /**
+   * 列表嵌套层级(Draft.js `ContentBlock.depth` 原生字段,0 = 顶层)。仅列表项会带,
+   * 且**仅在 > 0 时出现**——顶层项不写该字段,保持既有产出形状不变。
+   * 上限 4:Draft 默认样式表只到 `public-DraftStyleDefault-depth4`,更深无额外缩进。
+   * 可选字段是刻意的**向后兼容**:旧版 injector(用户未刷新 X 页面)读不到它,
+   * 嵌套项会退化为扁平列表项——仍优于本字段引入前「退化成含字面量 `- x` 的段落」。
+   */
+  depth?: number;
+  /** 任务列表项的勾选态(仅任务项有);供能力面板如实计数,注入引擎不读。 */
+  task?: 'todo' | 'done';
 }
 
 /**

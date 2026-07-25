@@ -7,7 +7,7 @@
  * `title:` / `Title:` / `标题:`,不支持嵌套 YAML、不支持多行值。
  */
 
-import { forEachContentLine } from './parser';
+import { forEachContentLine, isParagraphLine, setextUnderlineLevel } from './parser';
 
 /** 抽取结果:命中标题及其来源(供上层决定是否从正文移除 H1)。 */
 export interface ExtractedTitle {
@@ -86,12 +86,18 @@ export function extractCover(md: string): string | null {
 }
 
 /**
- * 逐行扫描定位「首个位于代码围栏外的 H1」(仅 `# `,不含 `## `),返回其行号与标题。
+ * 逐行扫描定位「首个位于代码围栏外的一级标题」,返回其行号、**占用行数**与标题。
+ * 两种写法都认:ATX `# x`(1 行)与 **setext `x` + `===`**(2 行)。
  * **必须跳过围栏代码块**——否则代码示例里的 `# 注释` 会被误当文章标题(与 parser 一致)。
- * extractTitle 与 stripFirstH1 共用它,保证「抽为标题的 H1」与「从正文移除的 H1」是同一行。
+ * extractTitle 与 stripFirstH1 共用它,保证「抽为标题的那行」与「从正文移除的那行」一致;
+ * lineCount 就是为 setext 的两行而加——按 1 行删会把 `===` 下划线孤零零留在正文。
+ *
+ * setext 只认**一级**(`===`):`---` 是二级,与 ATX 的 `## ` 一样不作文章标题。
+ * 判定复用 parser 导出的 `setextUnderlineLevel`/`isParagraphLine`,不另写一套——
+ * 否则会出现「parser 认成标题、extractTitle 抽不到」的分裂(HANDOFF §8 记过两次同类教训)。
  */
-function findFirstH1(lines: string[]): { index: number; title: string } | null {
-  let found: { index: number; title: string } | null = null;
+function findFirstH1(lines: string[]): { index: number; lineCount: number; title: string } | null {
+  let found: { index: number; lineCount: number; title: string } | null = null;
   // 复用 parser 的严格围栏遍历(与解析主循环同源):`~~~` 与 ``` 不互闭、闭栏须裸行且数量足够,
   // 代码块内的 `# 注释` 不会被误当文章标题。`/^#\s+/` 只匹配 H1(`## ` 因 `#` 后非空白不命中)。
   forEachContentLine(lines, (line, index) => {
@@ -99,7 +105,20 @@ function findFirstH1(lines: string[]): { index: number; title: string } | null {
     if (h1) {
       const title = (h1[1] ?? '').trim();
       if (title.length > 0) {
-        found = { index, title };
+        found = { index, lineCount: 1, title };
+        return true;
+      }
+    }
+    // setext 一级标题:本行是普通段落文本,下一行是 `===`。
+    // 额外要求**本行独立成段**(上一行为空/块边界/文首)——多行 setext 正文时,
+    // 标题该取整段而非末行,且 stripFirstH1 按固定行数删会删错;这类写法极罕见,
+    // 宁可不认(标题留在正文,不误伤),也不做不完整的处理。
+    if (isParagraphLine(line) && setextUnderlineLevel(lines[index + 1] ?? '') === 1) {
+      const prev = index > 0 ? (lines[index - 1] ?? '') : '';
+      const standalone = index === 0 || prev.trim() === '' || !isParagraphLine(prev);
+      const title = line.trim();
+      if (standalone && title.length > 0) {
+        found = { index, lineCount: 2, title };
         return true;
       }
     }
@@ -121,7 +140,9 @@ export function stripFirstH1(md: string): string {
   const lines = md.split(/\r?\n/);
   const found = findFirstH1(lines);
   if (!found) return md;
-  lines.splice(found.index, 1);
+  // 删 found.lineCount 行:ATX 是 1 行,setext 是「正文行 + `===` 下划线」共 2 行
+  // (只删 1 行会把下划线孤零零留在正文,再被解析成分割线/段落)。
+  lines.splice(found.index, found.lineCount);
   return lines.join('\n');
 }
 

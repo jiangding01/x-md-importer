@@ -8,7 +8,7 @@
  * 导出签名与 CapItem 结构保持不变(消费方 CapabilityPanel / ReportCard / AssetsCard 不改)。
  */
 
-import { forEachContentLine, parseMarkdown } from './parser';
+import { forEachContentLine, parseMarkdown, type ParseOptions } from './parser';
 
 export type CapBadge = 'native' | 'special' | 'image' | 'warn';
 
@@ -19,8 +19,13 @@ export interface CapItem {
   note: string;
 }
 
-export function capability(md: string, en: boolean): CapItem[] {
-  const blocks = parseMarkdown(md);
+/**
+ * parseOpts 透传给 parseMarkdown——面板必须与「实际会写入的内容」同一份解析开关下产出,
+ * 否则用户关掉 obsidianImg/wikilink/taskList 后,面板仍按默认开的口径统计,又是一次
+ * 「UI 撒谎」(计数与真实写入不一致)。调用方拿不到 opts 时不传,退回 parseMarkdown 的默认值。
+ */
+export function capability(md: string, en: boolean, parseOpts?: ParseOptions): CapItem[] {
+  const blocks = parseMarkdown(md, parseOpts);
 
   let headers = 0; // header-one(源 H1/H2)
   let subheaders = 0; // header-two(源 H3)
@@ -35,8 +40,18 @@ export function capability(md: string, en: boolean): CapItem[] {
   let tweets = 0;
   let imageCount = 0;
   let inlineCode = 0; // 保留反引号的行内代码(扫文本块内 `...`,代码块已单独成块不误计)
+  let multiLevelList = 0; // 嵌套列表项(depth > 0)
+  let taskListItems = 0; // 任务列表项(task 字段非空)
+  let inlineImages = 0; // 文本块残留的行内图片(独占一行的已被解析成 ImageBlock,不在此列)
+  let footnotes = 0; // 文本块内的脚注标记 [^xxx]
+  let htmlBlocks = 0; // 以 `<字母` 开头、被当普通段落写入的 HTML 块
+  let mathBlocks = 0; // 含 $$ 的文本块(LaTeX 块级公式)
 
   const RE_INLINE_CODE = /`[^`]+`/g;
+  const RE_INLINE_IMAGE = /!\[[^\]]*\]\([^)]*\)/g;
+  const RE_FOOTNOTE = /\[\^[^\]]+\]/g;
+  const RE_HTML_BLOCK_START = /^<[A-Za-z]/;
+  const RE_MATH_BLOCK = /^\$\$/m;
 
   for (const b of blocks) {
     if (b.kind === 'image') {
@@ -70,7 +85,16 @@ export function capability(md: string, en: boolean): CapItem[] {
     }
     links += b.links.length;
     inlineCode += (b.text.match(RE_INLINE_CODE) || []).length;
+    if (b.depth !== undefined && b.depth > 0) multiLevelList += 1;
+    if (b.task) taskListItems += 1;
+    inlineImages += (b.text.match(RE_INLINE_IMAGE) || []).length;
+    footnotes += (b.text.match(RE_FOOTNOTE) || []).length;
+    if (RE_HTML_BLOCK_START.test(b.text.trim())) htmlBlocks += 1;
+    // `$$` 须在**行首**才算数学块:行中的 `$$` 多是口语化的双美元符(如「$$100」),
+    // 用 includes 会误报。块级公式 `$$\n…\n$$` 的文本恒以 `$$` 起行,不受影响。
+    if (RE_MATH_BLOCK.test(b.text)) mathBlocks += 1;
   }
+
 
   const items: CapItem[] = [];
   const add = (label: string, count: number, badge: CapBadge, note: string) => {
@@ -129,6 +153,52 @@ export function capability(md: string, en: boolean): CapItem[] {
     inlineCode,
     'warn',
     en ? 'X unsupported → keep `backticks`' : 'X 不支持·保留反引号 `code`',
+  );
+  // **真机已确认**(2026-07-25):X 忽略 Draft 的 `ContentBlock.depth`,嵌套项渲染成扁平列表
+  // (有序列表还会被连续重编号)。层级信息确实丢失 → badge 从暂定的 'special' 落为 'warn',
+  // 文案也从「以实际为准」改成确定的结论。depth 仍照写(语义正确、零成本,X 日后支持即生效)。
+  // 注:即便扁平,也远好于本特性引入前——那时缩进项根本不是列表项,而是带字面量 `- x` 的段落。
+  add(
+    en ? 'Nested lists' : '多级列表',
+    multiLevelList,
+    'warn',
+    en
+      ? 'X ignores list nesting · flattened (content preserved)'
+      : 'X 不支持列表层级 · 已扁平化(内容不丢)',
+  );
+  add(
+    en ? 'Task lists' : '任务列表',
+    taskListItems,
+    'warn',
+    (parseOpts?.taskList ?? 'symbol') === 'symbol'
+      ? (en ? 'X has no task lists · rendered as ☑/☐ symbols' : 'X 无任务列表 · 转 ☑/☐ 符号')
+      : (en ? 'X has no task lists · rendered as plain list items' : 'X 无任务列表 · 转普通列表项'),
+  );
+  add(
+    en ? 'Inline images' : '行内图片',
+    inlineImages,
+    'warn',
+    en
+      ? 'Inline images kept as raw text · only images on their own line upload'
+      : '行内图片保留原文 · 仅独占一行的图片可上传',
+  );
+  add(
+    en ? 'Footnotes' : '脚注',
+    footnotes,
+    'warn',
+    en ? 'X has no footnotes · marker kept as-is' : 'X 无脚注 · 保留原文标记',
+  );
+  add(
+    en ? 'HTML blocks' : 'HTML 块',
+    htmlBlocks,
+    'warn',
+    en ? "X doesn't support HTML · kept as-is" : 'X 不支持 HTML · 保留原文',
+  );
+  add(
+    en ? 'Math blocks' : '数学公式',
+    mathBlocks,
+    'warn',
+    en ? 'X has no LaTeX support · kept as-is' : 'X LaTeX 块未接 · 保留原文',
   );
 
   return items;

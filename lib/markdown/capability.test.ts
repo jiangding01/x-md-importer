@@ -4,6 +4,7 @@
 // 以注释标注(不修改生产代码),并在最终报告汇总。
 import { describe, expect, it } from 'vitest';
 import { capability, images, firstTitle } from './capability';
+import { parseMarkdown } from './parser';
 import { extractTitle } from './frontmatter';
 
 const find = (items: ReturnType<typeof capability>, label: string) => items.find((it) => it.label === label);
@@ -185,6 +186,170 @@ describe('images()', () => {
       { src: 'https://example.com/b.png', kind: 'remote' },
       { src: 'data:image/png;base64,AAAA', kind: 'data' },
     ]);
+  });
+});
+
+describe('capability · 多级列表(depth > 0)', () => {
+  it('嵌套一层的列表项计入多级列表,顶层项不计', () => {
+    const md = '- a\n  - b\n';
+    const items = capability(md, false);
+    expect(find(items, '多级列表')?.count).toBe(1);
+  });
+
+  it('无嵌套的平层列表不出现多级列表条目', () => {
+    const md = '- a\n- b\n- c\n';
+    const items = capability(md, false);
+    expect(find(items, '多级列表')).toBeUndefined();
+  });
+
+  it('多级列表标 warn 并计入「降级」(真机确认 X 忽略 depth、渲染为扁平)', () => {
+    // 2026-07-25 真机:X 不渲染 Draft 的 depth,嵌套项显示成扁平列表、有序列表还会连续重编号。
+    // 层级信息确实丢失,故如实标 warn 并计入降级——此前暂标 special 是因为尚未验证,
+    // 不该在不知情时断言「已降级」;现在知情了,就该如实说。
+    const items = capability('- a\n  - b\n    - c\n', false);
+    expect(find(items, '多级列表')?.badge).toBe('warn');
+    expect(find(items, '多级列表')?.count).toBe(2);
+    const deg = items.filter((c) => c.badge === 'warn').reduce((a, c) => a + c.count, 0);
+    expect(deg).toBe(2);
+  });
+});
+
+describe('capability · 任务列表', () => {
+  it('任务项按数量计数,普通列表项不计入', () => {
+    const md = '- [ ] todo\n- [x] done\n- 普通项\n';
+    const items = capability(md, false);
+    expect(find(items, '任务列表')?.count).toBe(2);
+    expect(find(items, '列表')?.count).toBe(3); // 三条都仍是列表项(原生计数不受任务标记影响)
+  });
+
+  it('无任务标记的文档不出现任务列表条目', () => {
+    const md = '- a\n- b\n';
+    const items = capability(md, false);
+    expect(find(items, '任务列表')).toBeUndefined();
+  });
+
+  it('note 随 parseOpts.taskList 切换(symbol vs plain)', () => {
+    const md = '- [ ] todo\n';
+    const symbol = capability(md, false, { taskList: 'symbol' });
+    const plain = capability(md, false, { taskList: 'plain' });
+    expect(find(symbol, '任务列表')?.note).toBe('X 无任务列表 · 转 ☑/☐ 符号');
+    expect(find(plain, '任务列表')?.note).toBe('X 无任务列表 · 转普通列表项');
+  });
+
+  it('未传 parseOpts 时按默认 symbol 模式显示 note', () => {
+    const md = '- [ ] todo\n';
+    const items = capability(md, false);
+    expect(find(items, '任务列表')?.note).toBe('X 无任务列表 · 转 ☑/☐ 符号');
+  });
+});
+
+describe('capability · 行内图片(仅段落中残留的,不含独占行)', () => {
+  it('段落内的行内图片按出现次数计数', () => {
+    const md = '文字里有 ![a](x.png) 和 ![b](y.png) 两张行内图片。';
+    const items = capability(md, false);
+    expect(find(items, '行内图片')?.count).toBe(2);
+  });
+
+  it('独占一行的图片已被解析成 ImageBlock,不重复计入行内图片(关键收益:不再靠正则扫全文)', () => {
+    const md = '![cover](x.png)\n\n正文里还有 ![inline](y.png) 一张行内图片。';
+    const items = capability(md, false);
+    expect(find(items, '图片 → 上传')?.count).toBe(1);
+    expect(find(items, '行内图片')?.count).toBe(1); // 只计段落里那一张,独占行那张不算
+  });
+
+  it('无行内图片的文档不出现该条目', () => {
+    const md = '![cover](x.png)\n';
+    const items = capability(md, false);
+    expect(find(items, '行内图片')).toBeUndefined();
+  });
+
+  it('围栏代码块内的 ![]() 不计入行内图片(已单独成 atomic 块,不是文本块)', () => {
+    const md = '```\n![x](a.png)\n```\n';
+    const items = capability(md, false);
+    expect(find(items, '行内图片')).toBeUndefined();
+  });
+});
+
+describe('capability · 脚注', () => {
+  it('文本块内的脚注标记按出现次数计数', () => {
+    const md = '这是一段带脚注的正文[^1],还有一个[^note]。';
+    const items = capability(md, false);
+    expect(find(items, '脚注')?.count).toBe(2);
+  });
+
+  it('无脚注标记的文档不出现该条目', () => {
+    const md = '普通正文,没有脚注。';
+    const items = capability(md, false);
+    expect(find(items, '脚注')).toBeUndefined();
+  });
+});
+
+describe('capability · HTML 块', () => {
+  it('以 < + 字母开头的文本块计入 HTML 块', () => {
+    const md = '<div>一段 HTML</div>\n';
+    const items = capability(md, false);
+    expect(find(items, 'HTML 块')?.count).toBe(1);
+  });
+
+  it('文本中间出现的 < 不计入(仅块首判定)', () => {
+    const md = '这段话里 a < b 只是比较符号。';
+    const items = capability(md, false);
+    expect(find(items, 'HTML 块')).toBeUndefined();
+  });
+
+  it('围栏代码块内的 <div> 不计入 HTML 块(已成 atomic 块)', () => {
+    const md = '```\n<div>x</div>\n```\n';
+    const items = capability(md, false);
+    expect(find(items, 'HTML 块')).toBeUndefined();
+  });
+});
+
+describe('capability · 数学公式', () => {
+  it('含 $$ 的文本块按块数计数(同块内多个 $$ 只算一块)', () => {
+    const md = '$$\nE = mc^2\n$$\n';
+    const items = capability(md, false);
+    expect(find(items, '数学公式')?.count).toBe(1);
+  });
+
+  it('无 $$ 的文档不出现该条目', () => {
+    const md = '普通正文,没有公式。';
+    const items = capability(md, false);
+    expect(find(items, '数学公式')).toBeUndefined();
+  });
+
+  it('行中的 $$ 不算数学块(review 修复:「$$100」这类口语双美元符的假阳性)', () => {
+    expect(find(capability('价格从 $$100 涨到 $$200', false), '数学公式')).toBeUndefined();
+  });
+
+  it('围栏代码块内的 $$ 不计入数学公式(已成 atomic 块)', () => {
+    const md = '```\n$$\nx\n$$\n```\n';
+    const items = capability(md, false);
+    expect(find(items, '数学公式')).toBeUndefined();
+  });
+});
+
+describe('capability · setext 标题(已支持,不再是降级项)', () => {
+  it('setext 标题被解析成真标题、计入 Heading,不再有「未识别」告警条目', () => {
+    // 本项功能落地前:setext 标题退化成普通段落(=== 字面量进正文),能力面板以 warn 告知;
+    // 落地后它就是 header-one,告警条目随之移除——面板不该再报一个已经支持的语法。
+    const items = capability('我的标题\n===\n\n正文', false);
+    expect(find(items, 'setext 标题')).toBeUndefined();
+    expect(find(items, '二级标题 → Heading')?.count).toBe(1);
+  });
+
+  it('带 frontmatter 的文档不产生任何幽灵标题条目(review 假告警的最终归宿)', () => {
+    const items = capability('---\ntitle: T\ntags: x\n---\n真正的正文', false);
+    expect(find(items, 'setext 标题')).toBeUndefined();
+    expect(find(items, '二级标题 → Heading')).toBeUndefined();
+    expect(parseMarkdown('---\ntitle: T\ntags: x\n---\n真正的正文')).toHaveLength(1);
+  });
+});
+
+describe('capability · parseOpts 透传影响解析结果', () => {
+  it('taskList=plain 时任务列表项不再有 ☑/☐ 前缀,但计数不受影响', () => {
+    const md = '- [x] done\n';
+    const items = capability(md, false, { taskList: 'plain' });
+    expect(find(items, '任务列表')?.count).toBe(1);
   });
 });
 

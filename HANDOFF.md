@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**：2026-07-16 · 分支 `feat/report-failure-details` · **批次三:导入报告失败明细(v0.2.2)**——失败图给出序号/来源/阶段/原因(生产端强类型码表 `IMAGE_FAIL_REASONS`,封面 index=-1 哨兵,coverKeep=remove 序号 +1 还原);8 角度 code review 修 8 条;真机暴露并修复 **sweepMarkers「假干净」**(一次陈旧的干净读取即终止清扫 → 连续两轮 clean 才收工,残留审计以 `marker-residue` 上报不再静默)。T6 ×6 零残留、偶发超时被如实报「图 2 · 上传超时」。〔历史〕上一轮 · **全量真机回归(14 用例,QA 文档 `docs/qa/真机回归测试-v0.2.0加固批.md`)+ 修 2 处 UI 撒谎**:T2 本地图导入后文件夹状态不刷新(`recalibrateFolders` 就地校准 + 断开提示 toast,补上 B5 的 UX 待办)、T5 导入报告虚报计数(改用引擎回传真实 `blockCount`)。历史载入弹窗 FAIL 证实为误报(内容全等静默载入是设计行为);append 1 图片失败未复现记偶发。修复已真机复测通过(1 成功/0 降级 · 大文档 174 成功 · 文件夹即时未连接)。〔历史〕上一轮 · **发布前全面审计 + 13 项加固**（4 专项审查：注入/UI/安全/解析；P0×2：标题写错文章 pinnedTabId、坏备份砖化 ErrorBoundary）。**并修复跨机器分支分叉**：标题 ask 弹窗（PR #21）内容曾掉出 main，已 rebase 整合回来（见 §11）。tsc/build/zip 全绿，**待真机回归**。〔历史〕上一轮 · 标题冲突 `ask` 询问弹窗（`TitleConflictDialog` + Promise 化 resolver：编辑器已有标题时弹「覆盖/保留」，真冲突才弹、无冲突静默设，待真机验证）。上一轮:**设置 action 接真实实现(A 组)**：快捷键跳转 `chrome://extensions/shortcuts`、诊断快照导出 JSON、备份/恢复(新模块 `lib/storage/backup.ts`,导出 prefs+options+history+draft、恢复宽松写回)。纯前端,静态预览验证(tabs.create URL / 诊断备份 JSON 结构 / 恢复写回 4 key、无效拒绝)。剩:标题 `ask` 弹窗(B 组,需真机)。上一轮:**批次 C:图片压缩（智能保护 PNG）+ 探针「需刷新」文案（真机验证）**——设置面板诚实化(批次 A/B/C)收官。图片压缩**只压 JPEG 照片**、PNG 截图/文字图保持原样清晰（实测截图压完糊掉后的取舍),压缩打 console 日志;探针 `needs-refresh` 态(当前是 X 页但 content 不应答→提示刷新页面)。上一轮:**全面刷新 README + HANDOFF 文档**（此前停在 M2 早期,严重落后）。上一轮:**批次 B2:scrollTop 接真实实现 + 修 stale-closure / 探针刷新重探**(真机验证):`startImport` useCallback 依赖改为整个 `opts`;探针 `onUpdated` 加 `status==='complete'`。上一轮:**批次 B1:Obsidian 图片 / Wikilink 开关接真实实现**：parser 加 `parseMarkdown(md, opts)`(模块级标志);`obsidianImg` 关时 `![[x]]` 不当图片、`wikilink` 开时行内 `[[x]]`→纯文本(默认开)。8 条 node 用例验证。批次 B 剩 scrollTop(B2,需真机)。设置精简 PR #15 已合并。上一轮:**设置面板诚实化(精简 + 置灰,批次 A,PR #15)**：盘点发现设置里近 2/3 开关「改了不生效」。批次 A **删除 14 个无意义/不可行的项**(altCaption/graphql/tableStrategy/h4Plus/inlineCode/tweetUrl/divider/imgFail/strict/pace/htmlBlock/footnote/codeLang/concurrency,config 行+options 字段一并移除)+ **置灰保留**未接的(codeStrategy/taskList/punct/zhConvert/retries,标「规划中」/「当前固定」);`SettingsTab` 加 disabled 渲染。纯 UI,静态预览验证(删除项消失、保留项置灰、批次 B/C 项保持可交互)。批次 B(低成本接:scrollTop/wikilink/obsidianImg)、批次 C(图片压缩)随后。上一轮:自动填图片 ALT 尝试后搁置(三路皆不通,代码已回退)。PR #10~#14 已合并 main。
+**最后更新**：2026-07-25 · 分支 `claude/chrome-extension-onboarding-azy3nz` · **列表语义补齐 + 能力面板诚实化 + Toast 溢出修复**——嵌套列表接 Draft 原生 `depth`（栈式换算，此前缩进项掉进段落、正文留字面量 `  - 二级`）；任务列表 `- [ ]` 接通被置灰的 `taskList` 设置（☐/☑ 符号，加前缀时整体平移 offset）；能力面板补 7 类此前静默/撒谎的语法告知（任务列表原被标绿「原生列表」）+ 修 `capability()` 不透传解析开关的既存隐患；Toast 长文案不再溢出侧边栏；**setext 标题**（`标题\n===`）从「完全不识别」到解析 + 标题抽取全通。单测 225→293，tsc/build 全绿。**整批已真机验证通过**（setext 标题 / 任务列表 ☐☑ / 全角空格列表项 / emoji 后加粗 offset / 图片上传 / 封面 / 推文嵌入 / 表格 / 代码块逐项确认）。**真机同时确认：X 忽略 Draft `depth`、嵌套列表渲染为扁平**（有序列表还会连续重编号）——能力面板已如实标 warn「已扁平化(内容不丢)」;depth 仍照写(语义正确、零成本,X 日后支持即生效)。即便扁平也远好于改动前:那时缩进项根本不是列表项,而是带字面量 `- x` 的段落。〔历史〕**批次三:导入报告失败明细(v0.2.2)**——失败图给出序号/来源/阶段/原因(生产端强类型码表 `IMAGE_FAIL_REASONS`,封面 index=-1 哨兵,coverKeep=remove 序号 +1 还原);8 角度 code review 修 8 条;真机暴露并修复 **sweepMarkers「假干净」**(一次陈旧的干净读取即终止清扫 → 连续两轮 clean 才收工,残留审计以 `marker-residue` 上报不再静默)。T6 ×6 零残留、偶发超时被如实报「图 2 · 上传超时」。〔历史〕上一轮 · **全量真机回归(14 用例,QA 文档 `docs/qa/真机回归测试-v0.2.0加固批.md`)+ 修 2 处 UI 撒谎**:T2 本地图导入后文件夹状态不刷新(`recalibrateFolders` 就地校准 + 断开提示 toast,补上 B5 的 UX 待办)、T5 导入报告虚报计数(改用引擎回传真实 `blockCount`)。历史载入弹窗 FAIL 证实为误报(内容全等静默载入是设计行为);append 1 图片失败未复现记偶发。修复已真机复测通过(1 成功/0 降级 · 大文档 174 成功 · 文件夹即时未连接)。〔历史〕上一轮 · **发布前全面审计 + 13 项加固**（4 专项审查：注入/UI/安全/解析；P0×2：标题写错文章 pinnedTabId、坏备份砖化 ErrorBoundary）。**并修复跨机器分支分叉**：标题 ask 弹窗（PR #21）内容曾掉出 main，已 rebase 整合回来（见 §11）。tsc/build/zip 全绿，**待真机回归**。〔历史〕上一轮 · 标题冲突 `ask` 询问弹窗（`TitleConflictDialog` + Promise 化 resolver：编辑器已有标题时弹「覆盖/保留」，真冲突才弹、无冲突静默设，待真机验证）。上一轮:**设置 action 接真实实现(A 组)**：快捷键跳转 `chrome://extensions/shortcuts`、诊断快照导出 JSON、备份/恢复(新模块 `lib/storage/backup.ts`,导出 prefs+options+history+draft、恢复宽松写回)。纯前端,静态预览验证(tabs.create URL / 诊断备份 JSON 结构 / 恢复写回 4 key、无效拒绝)。剩:标题 `ask` 弹窗(B 组,需真机)。上一轮:**批次 C:图片压缩（智能保护 PNG）+ 探针「需刷新」文案（真机验证）**——设置面板诚实化(批次 A/B/C)收官。图片压缩**只压 JPEG 照片**、PNG 截图/文字图保持原样清晰（实测截图压完糊掉后的取舍),压缩打 console 日志;探针 `needs-refresh` 态(当前是 X 页但 content 不应答→提示刷新页面)。上一轮:**全面刷新 README + HANDOFF 文档**（此前停在 M2 早期,严重落后）。上一轮:**批次 B2:scrollTop 接真实实现 + 修 stale-closure / 探针刷新重探**(真机验证):`startImport` useCallback 依赖改为整个 `opts`;探针 `onUpdated` 加 `status==='complete'`。上一轮:**批次 B1:Obsidian 图片 / Wikilink 开关接真实实现**：parser 加 `parseMarkdown(md, opts)`(模块级标志);`obsidianImg` 关时 `![[x]]` 不当图片、`wikilink` 开时行内 `[[x]]`→纯文本(默认开)。8 条 node 用例验证。批次 B 剩 scrollTop(B2,需真机)。设置精简 PR #15 已合并。上一轮:**设置面板诚实化(精简 + 置灰,批次 A,PR #15)**：盘点发现设置里近 2/3 开关「改了不生效」。批次 A **删除 14 个无意义/不可行的项**(altCaption/graphql/tableStrategy/h4Plus/inlineCode/tweetUrl/divider/imgFail/strict/pace/htmlBlock/footnote/codeLang/concurrency,config 行+options 字段一并移除)+ **置灰保留**未接的(codeStrategy/taskList/punct/zhConvert/retries,标「规划中」/「当前固定」);`SettingsTab` 加 disabled 渲染。纯 UI,静态预览验证(删除项消失、保留项置灰、批次 B/C 项保持可交互)。批次 B(低成本接:scrollTop/wikilink/obsidianImg)、批次 C(图片压缩)随后。上一轮:自动填图片 ALT 尝试后搁置(三路皆不通,代码已回退)。PR #10~#14 已合并 main。
 
 ---
 
@@ -26,8 +26,11 @@
   - ✅ **本地图按需授权**（分支 `feat/session-vault-folder`，真机验证）：两级文件夹 `active`（素材板「本篇图片文件夹」）+ `persistent`（设置默认），读取优先级 active > persistent > 降级；素材板就地连接/更换/清除本篇专用文件夹；浏览器重启权限回落后「一键恢复」复用存量 handle（`requestPermission`，免重选文件夹）。
   - ✅ **探针自动重探**（PR #10，真机验证）：监听标签页事件自动更新连接状态,免手动刷新;tab 定位改为跟随当前活动标签。
   - ✅ **设置面板诚实化**（PR #15/#16/#17，批次 A/B）：盘点发现近 2/3 开关「改了不生效」→ 删 14 个无意义/不可行项 + 置灰未接项;`obsidianImg`/`wikilink`/`scrollTop` 接真实实现;修 stale-closure（切开关不改 md 即时生效）+ 探针刷新后自动重探。
-- **本次刚做**：**批次三 · 导入报告失败明细(v0.2.2)**——每张失败图报「序号/来源/阶段/原因」,含封面(index=-1)与序号还原;附带修复 `sweepMarkers`「假干净」缺陷(连续两轮 clean 才收工 + 残留审计 `marker-residue` 上报)。QA T7 全过(T6 ×6 零残留)。
-- **还没做**：QA 未跑项 T3 砖化兜底(手动写坏 `chrome.storage`)。
+- **本次刚做**：**列表语义补齐 + 能力面板诚实化 + Toast 溢出修复**——① **嵌套列表**接 Draft 原生 `depth`(栈式换算,2/4 空格与 Tab 通吃),此前缩进项会掉进段落、正文留字面量 `  - 二级`(内容错乱);② **任务列表** `- [ ]` 接通早已存在却被置灰的 `taskList` 设置(☐/☑ 符号 or 纯文本),加前缀时整体平移 offset;③ **能力面板补齐此前静默/撒谎的语法告知**(多级列表/任务列表/行内图/脚注/HTML/数学),兑现 README「不会导入完才发现丢了」的核心承诺;④ Toast 长文案不再溢出侧边栏；⑤ **setext 标题**（CommonMark 标准语法，此前整段退化成段落、`===` 字面量进正文）解析 + 标题抽取/去重全通。〔上一轮〕批次三 · 导入报告失败明细(v0.2.2)——每张失败图报「序号/来源/阶段/原因」,含封面(index=-1)与序号还原;附带修复 `sweepMarkers`「假干净」缺陷(连续两轮 clean 才收工 + 残留审计 `marker-residue` 上报)。QA T7 全过(T6 ×6 零残留)。
+- **还没做**：QA 未跑项 T3 砖化兜底(手动写坏 `chrome.storage`);数学块 `$$`(X 有原生 LaTeX 块可接,见 §11 第九次会话);行内图片(需 Draft 行内 atomic,成本较高,已在能力面板如实告知)。
+- **真机验证(本轮,已通过)**：setext 标题两种下划线均成标题且不多出分割线 · 任务列表 ☐/☑ 正确、加粗精确落在文字上未被符号带偏 · `[x]无空格` 原样保留 · 全角空格列表项正常 · emoji/CJK 后的加粗 offset 精确 · 远程图上传 + 封面设置成功（含带查询参数的 `pbs.twimg.com` URL）· 推文嵌入 / 表格 / 代码块 / 分割线均原生。
+  - 期间一次图片上传失败经排查为**该 Wikimedia URL 本身不可达**，非代码问题；降级链路如实把 markdown 原文写回正文、未丢内容，行为符合设计。样例已改用 `pbs.twimg.com`。
+- **真机结论(本轮)**：**X 忽略 Draft `ContentBlock.depth`**——嵌套列表渲染成扁平列表,有序列表还会被连续重编号。能力面板「多级列表」据此从暂定的 `special` 落为 `warn`、文案改为确定的「X 不支持列表层级 · 已扁平化(内容不丢)」。**depth 保留照写**:语义正确、零成本,X 日后支持即自动生效。
 - **已排除（固有限制）**：`postMessage`→MessageChannel「私有通道」（MAIN world 下 File 对页面脚本不可隐藏，见 §8）；**自动填图片 ALT/Description**——实测 ALT 不在 Draft MEDIA entity data（`data` 只有 `mediaItems`）、走 X 后端 `media/edit`,无法「借 Draft 直写」;程序化打开「Edit media」弹窗永久 loading(内部元素不渲染)、Save 只回 Crop tab 不关窗。三路(直写/UI 弹窗/私有接口)皆不通,**自动 alt 已搁置**、代码已回退(分支 `feat/image-alt-text`),`altCaption` 开关为演示占位。详见 §11。
 - **下一步**：远期「文章 → Markdown 反向导出」;或按需迭代。
 - **怎么跑**：`pnpm install && pnpm build` → Chrome 加载 `.output/chrome-mv3`。详见 §7。
@@ -130,6 +133,12 @@ background（开侧栏）                          injector.ts（MAIN world，�
 - ✅ **设置面板诚实化**（PR #15/#16/#17，批次 A/B）：盘点发现近 2/3 开关「改了不生效」→ **删 14 个无意义/不可行项 + 置灰未接项**（批次 A）；`obsidianImg`/`wikilink` 接真实实现（B1）；`scrollTop` 接实现 + 修 stale-closure + 探针刷新重探（B2）。
 - ✅ **图片压缩 + 探针「需刷新」文案**（批次 C，真机验证）：**智能保护 PNG**——只压 `image/jpeg` 照片,PNG（截图/文字/UI 图）/ WebP / GIF 保持原样、不转不缩（实测「截图压完糊掉」后的取舍);压缩打 console 日志（原体积→压后体积)。探针新增 `needs-refresh` 态（当前是 X 页但 content 不应答 → 提示「请刷新此 X 页面」而非「打开编辑页」）。
 
+- ✅ **列表语义补齐 + 能力面板诚实化**（本轮，纯离线验证）：
+  - **嵌套列表**：`TextBlock.depth` → Draft 原生 `ContentBlock.depth`；缩进→层级走**栈式**换算（`listDepth`），2 空格 / 4 空格 / Tab / 混合缩进都正确，有序无序共用一个栈；上限 4。`depth` 为可选字段且仅 > 0 时写入 → 顶层项产出形状零变化、旧 injector 读不到只退化为扁平（向后兼容）。
+  - **任务列表**：接通 `taskList` 设置（`symbol` 转 ☐/☑、`plain` 剥标记），`TextBlock.task` 记勾选态；加前缀时 `shiftInline` 整体平移 offset。设置页该项取消置灰。
+  - **能力面板**：补 7 类此前**静默或撒谎**的语法告知（任务列表此前被标绿「原生列表」但正文实际留着 `[ ]` 字面量）；并给 `capability()` 加 `parseOpts` 透传，修掉「面板按默认开关计数、与实际写入不一致」的既存隐患。
+  - **Toast 溢出**：长文案限宽换行，图标防压扁；圆角 99→18 在单行下渲染逐字节相同（截图比对验证）。
+
 `tsc --noEmit` 全绿；`pnpm build` 正常出包。
 
 ---
@@ -145,8 +154,17 @@ background（开侧栏）                          injector.ts（MAIN world，�
 | ~~标题冲突 `titleConflict='ask'`~~ | ✅ 已接询问弹窗（`TitleConflictDialog`，真冲突时问覆盖/保留），真机验证 | 第十二/十三次会话 |
 | ~~备份/导出、诊断快照、快捷键跳转~~ | ✅ 已接真实实现（PR #20 `lib/storage/backup.ts` 等），备份往返/非法拒绝真机验证 | 第十二次会话 |
 | ~~导入报告失败明细~~ | ✅ 已实现（v0.2.2:序号/来源/阶段/原因,`IMAGE_FAIL_REASONS` 码表,封面哨兵,QA T7 真机验证） | 第十五次会话 |
+| ~~嵌套列表~~ | ✅ 已接 Draft 原生 `depth`（栈式换算,上限 4）。**X 的缩进渲染待真机确认**——最坏扁平化,仍优于此前的字面量段落 | 第十六次会话（本轮） |
+| ~~任务列表 `- [ ]`~~ | ✅ 已接通 `taskList` 设置（☐/☑ 符号 / 纯文本）,设置项取消置灰 | 第十六次会话（本轮） |
+| ~~setext 标题（`标题\n===`）~~ | ✅ 已支持:整段升格 header-one;`extractTitle` 认 setext 一级标题、`stripFirstH1` 按行数删两行。能力面板告警条目已随之移除 | 第十六次会话（本轮） |
+| **数学块 `$$`** | ⚠️ 按纯文本写入。X 的 Insert 菜单有原生 LaTeX 块（第九次会话探明）可接。**能力面板已如实告知** | 下一批候选 |
+| **行内图片**（段落中的 `![](x)`） | ⚠️ 保留 markdown 原文（仅独占一行的图片会上传）。需 Draft 行内 atomic,成本较高。**能力面板已如实告知** | 暂缓 |
+| 脚注 `[^1]` / 内嵌 HTML | ⚠️ 保留原文（X 均不支持）。**能力面板已如实告知** | 不计划 |
+| `punct` / `zhConvert` / `retries` / `codeStrategy` 设置项 | 仍置灰「规划中 / 当前固定」（诚实占位,非撒谎） | 未定 |
 
 > 图片上传（远程/dataURI）、封面、原生表格均已完成并真机验证合并（PR #4/#5/#7）。
+>
+> **§6 与 §0 是最容易漏更新的两处**（第十四次会话的明确教训）——每轮改动后务必连同 §5/§9/§11 一起过一遍。
 
 **M2 图片上传范本**见 `docs/research/xposter-analysis.md` §3：MAIN world 从 fiber 找 X 的 `onFilesAdded` 回调，把 `File` 交给它走 X 原生上传管线；轮询 blockMap 新增的 MEDIA entity 拿 mediaId；用 **marker 占位 → 上传 → 原位归位** 事务（M1 纯文本/atomic 单趟构造时特意没引入 marker，图片异步上传必须补上）。封面走 GraphQL `ArticleEntityUpdateCoverMedia`（queryId 硬编码脆弱，想好降级）。
 
@@ -181,6 +199,13 @@ pnpm build              # → .output/chrome-mv3
   4. background 是持任意 host 权限的取数代理，SSRF 防护（IPv4-mapped IPv6 `::ffff:`、跟随重定向后复检 `resp.url` 落点、流式体积上限、magic-byte 真实类型）不可删。
   5. 远程图 host 权限用运行时 `permissions.request`，**必须是写入手势链上第一个 await**——不能先 `await permissions.contains`（会消耗用户手势导致 request 被拒）。
   6. 已知未做（真机验证后按 xposter §3.3 精修）：多图 relocate 的空分裂块清理、marker 被 X 插入破坏时的 fallback 顺序配对。
+- **列表正则的两组空白语义不同，别"统一"掉**（`RE_UL`/`RE_OL`/`RE_TASK_MARK`）：
+  1. **缩进组**（组1）必须是 `[ \t]*`——只有空格/Tab 有确定列宽，`indentWidth` 才能换算 depth。
+  2. **标记后的分隔符**必须保持 `\s+`。`\s` 覆盖**全角空格 `　`(U+3000)** 与 NBSP，中文输入法下 `-　项目` / `- [x]　完成` 极常见；收窄成 `[ \t]` 会让它们掉进段落分支、正文留下字面量 `-　项目`——正是本轮要消灭的那类内容错乱。**本轮自查时我一度收窄过，已回退并加了会真失败的回归测试**（把正则改回收窄版跑测试可复现红灯）。
+- **列表 depth 用栈式换算，不要改成「缩进 ÷ 固定单位」**：除法必须假定每级固定 2 或 4 空格，遇到另一种缩进或 Tab/空格混用就整体算错层级；栈式（`listDepth`）只看相对深浅，2 空格 / 4 空格 / Tab / 混合都正确。上限 4 —— Draft 默认样式表只到 `public-DraftStyleDefault-depth4`。injector 侧的 clamp 要**先过 `Number.isFinite`**：单纯 `Math.max/min` 挡不住 NaN（遇 NaN 一路返回 NaN），NaN 进 Draft 数值字段会让列表渲染出难查的怪状态。
+- **凡「扫原始 md」的统计,必须和 `parseMarkdown` 用同一套跳过口径**：`forEachContentLine` 只跳**围栏**、**不跳 frontmatter**。capability 的 setext 计数曾直接扫原文，把「frontmatter 体末行 + 闭合 `---`」当成 setext 标题，**任何带 frontmatter 的文档**都凭空多一条假告警。frontmatter 判定已抽成 `frontmatterBodyStart()` 导出、两处共用——再有新的"扫原文"需求一律复用它，别另写一套（本项目已在 frontmatter/围栏判定上栽过两次"第二套实现漂移"）。
+- **列表缩进有门槛,别去掉**（`canBeListItem`）：已在列表 run 中 → 任意缩进算嵌套项；不在列表中 → 仅 ≤3 列才起列表（CommonMark 规则，≥4 列属缩进代码块领域）。去掉门槛后，正文里**粘贴的 4 空格缩进代码/日志**中的 `- x` 会被拆成列表项、丢掉原始缩进语境。
+- **给块文本加前缀必须整体平移 offset**（任务列表 ☐/☑ 前缀，见 `shiftInline`）：`inlineStyleRanges`/`links` 的 offset 是相对「加前缀之前的文本」算的，直接字符串拼接会让 `- [ ] **粗体**` 的加粗区间砸到前缀符号上。offset 单位是 UTF-16 码元（见下条）。
 - **标题打分（setTitle）**：关键词（title/标题）是**硬门槛**，否则会误命中正文大 contenteditable，overwrite 时清空正文。别放宽。
 - **frontmatter**：parser 跳过与 `extractTitle` 抽取的边界判定必须一致（都用**顶格 `^---`**）；H1 抽取/移除都要**跳过代码块**。
 - **content script 更新不自动生效**：改 content/injector 后必须刷新 X 页面；症状①「三灯绿但写入报未连接」= 页面跑旧 content；症状②「正文写入了却报 `images undefined` 崩溃 / 图片不上传」= 新 injector + 旧 content（旧 content 注入新 injector 但自己不带 images 字段）。injector 已对 images 默认 `[]` 防御（崩溃→降级），但**真正上传图片必须刷新页面**加载新 content。
@@ -204,7 +229,16 @@ pnpm build              # → .output/chrome-mv3
 - [x] ~~备份导出 / 恢复、诊断面板、快捷键跳转~~ ✅ 已接真实实现并真机验证（QA T3:合法往返 + 3 类非法文件拒绝）。
 - [x] ~~B5 清 handle 后的断开提示 toast~~ ✅ 已补（真机回归 T2 修复的一部分）。
 - [x] ~~**导入报告失败明细**（QA T6 引出）~~ ✅ 已实现并真机验证(v0.2.2,QA T7;含 marker 残留审计上报)。
+- [x] ~~**嵌套列表 / 任务列表 / 能力面板静默降级**~~ ✅ 本轮实现（离线单测验证；depth 的 X 渲染待真机确认，见下）。
 - [ ] QA 未跑项:T3 砖化兜底(手动 `chrome.storage.local.set({markflow_prefs:"corrupted"})` 后面板不白屏)。
+- [ ] **真机确认 X 对 Draft `depth` 的缩进渲染**（本轮唯一待验证项）：真机导入一份 3 级嵌套列表，看 X 是否渲染出层级缩进。
+  - 若**渲染缩进** → 把能力面板「多级列表」条目从 `warn` 改成 `native`、文案改为如实的「原生层级」。
+  - 若**忽略 depth**（扁平） → 保持 `warn`，文案改为更准的「X 不支持层级 · 已扁平化」，并考虑给深层项加缩进符号前缀补偿。
+  - 无论哪种都**不比本轮之前差**（此前是字面量 `- 二级` 段落），故已合并、不阻断。
+
+**下一批候选（本轮盘点发现、已在能力面板如实告知但尚未支持）**
+- [ ] **数学块 `$$`**：X 的 Insert 菜单有原生 LaTeX 块（第九次会话已探明），可接。
+- [ ] 行内图片（段落中的 `![](x)`）：需要 Draft 行内 atomic，成本较高，暂只如实告知。
 
 **远期**：文章 → Markdown 反向导出（xposter 有范本，§8.1 导出器）。
 
@@ -224,7 +258,19 @@ pnpm build              # → .output/chrome-mv3
 
 ## 11. 最近一次会话小结
 
-**2026-07-16 · 第十五次会话（本次）· 批次三:导入报告失败明细(v0.2.2)**：
+**2026-07-25 · 第十六次会话（本次）· 列表语义补齐 + 能力面板诚实化 + Toast 溢出**：
+- **起点是一次主动盘点**：文档当时只剩 QA T3 一项待办，但直接把常见 Markdown 喂给 `parseMarkdown` 实跑后，发现一批**文档未记录**的缺口。最要命的两条是**内容错乱而非降级**：嵌套列表的二级项掉进段落分支、正文留字面量 `  - 二级`；任务列表正文留 `[ ]` 字面量，而**能力面板还把它标绿「原生列表」**——面板在撒谎，直接违背 README 的核心承诺。**教训：文档记的待办 ≠ 真实欠账，隔几轮该拿真实输入实跑一遍核心纯函数。**
+- **嵌套列表**：`TextBlock.depth` → Draft 原生 `ContentBlock.depth`。缩进→层级用**栈式**换算而非除法（除法必须假定固定 2 或 4 空格，混用就整体错）；有序无序共用一个栈；上限 4。`depth` 可选且仅 > 0 时写入 → 顶层项产出零变化、旧 injector 读不到只退化为扁平。
+- **任务列表**：接通早已存在却被置灰的 `taskList` 设置；`shiftInline` 在加 ☐/☑ 前缀时整体平移 offset（否则 `- [ ] **粗体**` 的加粗区间会砸到前缀上）。
+- **能力面板诚实化**：补 7 类此前静默/撒谎的语法告知；并给 `capability()` 加 `parseOpts` 透传，修掉「面板按默认开关计数、与实际写入不一致」的既存隐患。
+- **Toast 溢出**：限宽换行 + 图标 `flexShrink:0`；圆角 99→18 经截图逐字节比对确认单行零视觉回归。
+- **自查揪出自己引入的回归**：我把列表分隔符从 `\s` 收窄成了 `[ \t]`，会让中文输入法的**全角空格** `-　项目` 掉进段落——正是本轮要消灭的那类 bug。已回退并补了**会真失败**的回归测试（改回收窄版跑测试确实红灯，证明非空转断言）；同类问题在任务标记 `RE_TASK_MARK` 上一并修掉。见 §8。
+- **独立 code review 揪出 3 条并修**（都自己复现确认后才动手）：**frontmatter 闭合 `---` 被误计为 setext 标题**（假告警，命中绝大多数真实文档 —— 已抽 `frontmatterBodyStart()` 与 parser 共用口径）；**放开缩进匹配后 4 空格缩进的粘贴代码被拆成列表项**（按 CommonMark 加 `canBeListItem` 门槛）；`$$` 行中假阳性（改判行首）。四处修复**全部用「回退代码→测试必须变红」反证过**，确认不是空转断言。
+- **分工**：Toast / 任务列表 / 能力面板交 subagent（Sonnet）按详细规格实现，嵌套列表 + injector（§8 硬约束所在）由主控自己做；三者都改 `parser.ts`/`capability.ts` 故**串行**执行，只有 Toast 与嵌套列表并行（文件集不重叠）。**agent 自述一律不采信**，逐个 `git diff` 核对后才收（沿用第六次会话的教训）——本轮 review agent 报的 3 条也是自己复现后才认。
+- **setext 标题**(同批补做):解析升格 header-one + `extractTitle`/`stripFirstH1` 跟进(占两行,按 `lineCount` 删,只删一行会把 `===` 留在正文);判定复用 parser 导出的 `setextUnderlineLevel`/`isParagraphLine` 不另写一套;能力面板的告警条目随之移除。
+- 单测 225 → 293（嵌套 depth / 任务列表 / 能力面板 / setext 四组 + review 修复的回归）。tsc/build 全绿。**唯一待真机项：X 对 `depth` 的缩进渲染**（无登录态无法验证，最坏扁平化仍优于现状，不阻断）。
+
+**2026-07-16 · 第十五次会话 · 批次三:导入报告失败明细(v0.2.2)**：
 - **失败明细链路**:`prepareOneImage` 失败分支带原因码(远程透传 background error);`uploadOneImage` 改回 `{ok, reason, detail}`——8 条互异失败路径各有其码(此前调用点靠 `uploadErr===null` 猜成「超时」,「已上传但归位失败」与「超时」排查方向完全相反);封面失败 content 通道层补记(index=-1 哨兵,prepare/set 均覆盖);`coverKeep=remove` 场景引擎序号 +1 还原用户文档顺序。
 - **单一事实来源**:`protocol.ts` `IMAGE_FAIL_REASONS` as const 联合——生产端强类型、消费端 string 宽松(备份恢复兼容);`truncateForReport`(代理对安全)三处共用;备份白名单 index 须 ≥ -1 整数、source/detail 恢复边界重截。
 - **8 角度 code review 修 8 条**(5 finder 并行 + 验证):序号错位/封面丢原因/upload 猜码/旧脚本误报('prepare-missing')/detail 不截断/备份校验弱/码表无类型/双份手工账(imageFail 从明细派生)。
