@@ -2,7 +2,7 @@
   "name": "x-md-importer",
   "description": "MarkFlow — 把 Markdown 一键导入 X 文章编辑器，全格式自动排版",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "packageManager": "pnpm@11.12.0",
   "scripts": {

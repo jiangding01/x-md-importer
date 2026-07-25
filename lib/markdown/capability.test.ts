@@ -304,27 +304,49 @@ describe('capability · HTML 块', () => {
   });
 });
 
-describe('capability · 数学公式', () => {
-  it('含 $$ 的文本块按块数计数(同块内多个 $$ 只算一块)', () => {
+describe('capability · 数学公式(LATEX atomic,已接原生)', () => {
+  it('块级 $$ 公式计入数学公式、标 native(真机 dump 确认 X 有原生 LATEX 块)', () => {
+    // 本批之前 $$ 无解析、留在文本块里、面板标 warn「未接」;现 parser 产出 LATEX atomic,
+    // 计数从产出块取、badge 落 native。
     const md = '$$\nE = mc^2\n$$\n';
     const items = capability(md, false);
     expect(find(items, '数学公式')?.count).toBe(1);
+    expect(find(items, '数学公式')?.badge).toBe('native');
+  });
+
+  it('同行闭合 $$ x $$ 也计入原生数学块', () => {
+    const items = capability('$$ E = mc^2 $$', false);
+    expect(find(items, '数学公式')?.count).toBe(1);
+    expect(find(items, '数学公式')?.badge).toBe('native');
   });
 
   it('无 $$ 的文档不出现该条目', () => {
     const md = '普通正文,没有公式。';
     const items = capability(md, false);
     expect(find(items, '数学公式')).toBeUndefined();
+    expect(find(items, '未闭合公式')).toBeUndefined();
   });
 
-  it('行中的 $$ 不算数学块(review 修复:「$$100」这类口语双美元符的假阳性)', () => {
-    expect(find(capability('价格从 $$100 涨到 $$200', false), '数学公式')).toBeUndefined();
+  it('行中的 $$ 既不算原生块也不算未闭合(「$$100」口语双美元符的假阳性防线)', () => {
+    // 段落文本块,RE_MATH_RESIDUE 只匹配裸 `$$` 行、其后非空不匹配 → 两条都不出现。
+    const items = capability('价格从 $$100 涨到 $$200', false);
+    expect(find(items, '数学公式')).toBeUndefined();
+    expect(find(items, '未闭合公式')).toBeUndefined();
   });
 
-  it('围栏代码块内的 $$ 不计入数学公式(已成 atomic 块)', () => {
+  it('未闭合 $$ 起行降级为文本、计入「未闭合公式」warn(不计原生)', () => {
+    // parser 找不到闭合 `$$` → 回退普通段落,文本块以裸 `$$` 起行 → 如实标降级。
+    const items = capability('$$\nE = mc^2', false);
+    expect(find(items, '数学公式')).toBeUndefined();
+    expect(find(items, '未闭合公式')?.count).toBe(1);
+    expect(find(items, '未闭合公式')?.badge).toBe('warn');
+  });
+
+  it('围栏代码块内的 $$ 不计入(已成 MARKDOWN atomic、既非 LATEX 也非文本残留)', () => {
     const md = '```\n$$\nx\n$$\n```\n';
     const items = capability(md, false);
     expect(find(items, '数学公式')).toBeUndefined();
+    expect(find(items, '未闭合公式')).toBeUndefined();
   });
 });
 

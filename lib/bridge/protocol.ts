@@ -93,13 +93,18 @@ export interface TextBlock {
 }
 
 /**
- * 特殊块:atomic block + X 编辑器内部 entity(类型名/数据形状为 xposter 源码实证)。
- * M1 仅这三种(无需上传通道);图片/表格 MEDIA 在 M2 加入。
+ * 特殊块:atomic block + X 编辑器内部 entity(类型名/数据形状为 xposter 源码实证 / 真机 dump 实证)。
+ * M1 仅前三种(无需上传通道);图片/表格 MEDIA 在 M2 加入;LATEX 数学块见下。
+ *
+ * **LATEX 与前三种的形状差异(真机 dump 确认)**:前三种的公式/数据在 entity `data` 里、
+ * 块文本恒为单空格(injector 硬编码);LATEX 反过来——`data` 为空、**公式本体在块 `text`**,
+ * 且每个字符都挂同一个 LATEX entity key。故 LATEX 变体独有 `text` 字段承载公式原文。
  */
 export type AtomicBlock =
   | { kind: 'atomic'; entityType: 'DIVIDER'; data: Record<string, never> }
   | { kind: 'atomic'; entityType: 'MARKDOWN'; data: { markdown: string } }
-  | { kind: 'atomic'; entityType: 'TWEET'; data: { url: string; tweetId: string } };
+  | { kind: 'atomic'; entityType: 'TWEET'; data: { url: string; tweetId: string } }
+  | { kind: 'atomic'; entityType: 'LATEX'; data: Record<string, never>; text: string };
 
 /**
  * 图片块(M2 Phase 2)。解析器只产出「来源 + alt + 兜底原文」,不含字节;

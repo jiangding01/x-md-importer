@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**：2026-07-25 · 分支 `main`（PR #27 已合并，定版 v0.3.0）· **列表语义补齐 + 能力面板诚实化 + Toast 溢出修复**——嵌套列表接 Draft 原生 `depth`（栈式换算，此前缩进项掉进段落、正文留字面量 `  - 二级`）；任务列表 `- [ ]` 接通被置灰的 `taskList` 设置（☐/☑ 符号，加前缀时整体平移 offset）；能力面板补 7 类此前静默/撒谎的语法告知（任务列表原被标绿「原生列表」）+ 修 `capability()` 不透传解析开关的既存隐患；Toast 长文案不再溢出侧边栏；**setext 标题**（`标题\n===`）从「完全不识别」到解析 + 标题抽取全通。单测 225→293，tsc/build 全绿。**整批已真机验证通过**（setext 标题 / 任务列表 ☐☑ / 全角空格列表项 / emoji 后加粗 offset / 图片上传 / 封面 / 推文嵌入 / 表格 / 代码块逐项确认）。**真机同时确认：X 忽略 Draft `depth`、嵌套列表渲染为扁平**（有序列表还会连续重编号）——能力面板已如实标 warn「已扁平化(内容不丢)」;depth 仍照写(语义正确、零成本,X 日后支持即生效)。即便扁平也远好于改动前:那时缩进项根本不是列表项,而是带字面量 `- x` 的段落。〔历史〕**批次三:导入报告失败明细(v0.2.2)**——失败图给出序号/来源/阶段/原因(生产端强类型码表 `IMAGE_FAIL_REASONS`,封面 index=-1 哨兵,coverKeep=remove 序号 +1 还原);8 角度 code review 修 8 条;真机暴露并修复 **sweepMarkers「假干净」**(一次陈旧的干净读取即终止清扫 → 连续两轮 clean 才收工,残留审计以 `marker-residue` 上报不再静默)。T6 ×6 零残留、偶发超时被如实报「图 2 · 上传超时」。〔历史〕上一轮 · **全量真机回归(14 用例,QA 文档 `docs/qa/真机回归测试-v0.2.0加固批.md`)+ 修 2 处 UI 撒谎**:T2 本地图导入后文件夹状态不刷新(`recalibrateFolders` 就地校准 + 断开提示 toast,补上 B5 的 UX 待办)、T5 导入报告虚报计数(改用引擎回传真实 `blockCount`)。历史载入弹窗 FAIL 证实为误报(内容全等静默载入是设计行为);append 1 图片失败未复现记偶发。修复已真机复测通过(1 成功/0 降级 · 大文档 174 成功 · 文件夹即时未连接)。〔历史〕上一轮 · **发布前全面审计 + 13 项加固**（4 专项审查：注入/UI/安全/解析；P0×2：标题写错文章 pinnedTabId、坏备份砖化 ErrorBoundary）。**并修复跨机器分支分叉**：标题 ask 弹窗（PR #21）内容曾掉出 main，已 rebase 整合回来（见 §11）。tsc/build/zip 全绿，**待真机回归**。〔历史〕上一轮 · 标题冲突 `ask` 询问弹窗（`TitleConflictDialog` + Promise 化 resolver：编辑器已有标题时弹「覆盖/保留」，真冲突才弹、无冲突静默设，待真机验证）。上一轮:**设置 action 接真实实现(A 组)**：快捷键跳转 `chrome://extensions/shortcuts`、诊断快照导出 JSON、备份/恢复(新模块 `lib/storage/backup.ts`,导出 prefs+options+history+draft、恢复宽松写回)。纯前端,静态预览验证(tabs.create URL / 诊断备份 JSON 结构 / 恢复写回 4 key、无效拒绝)。剩:标题 `ask` 弹窗(B 组,需真机)。上一轮:**批次 C:图片压缩（智能保护 PNG）+ 探针「需刷新」文案（真机验证）**——设置面板诚实化(批次 A/B/C)收官。图片压缩**只压 JPEG 照片**、PNG 截图/文字图保持原样清晰（实测截图压完糊掉后的取舍),压缩打 console 日志;探针 `needs-refresh` 态(当前是 X 页但 content 不应答→提示刷新页面)。上一轮:**全面刷新 README + HANDOFF 文档**（此前停在 M2 早期,严重落后）。上一轮:**批次 B2:scrollTop 接真实实现 + 修 stale-closure / 探针刷新重探**(真机验证):`startImport` useCallback 依赖改为整个 `opts`;探针 `onUpdated` 加 `status==='complete'`。上一轮:**批次 B1:Obsidian 图片 / Wikilink 开关接真实实现**：parser 加 `parseMarkdown(md, opts)`(模块级标志);`obsidianImg` 关时 `![[x]]` 不当图片、`wikilink` 开时行内 `[[x]]`→纯文本(默认开)。8 条 node 用例验证。批次 B 剩 scrollTop(B2,需真机)。设置精简 PR #15 已合并。上一轮:**设置面板诚实化(精简 + 置灰,批次 A,PR #15)**：盘点发现设置里近 2/3 开关「改了不生效」。批次 A **删除 14 个无意义/不可行的项**(altCaption/graphql/tableStrategy/h4Plus/inlineCode/tweetUrl/divider/imgFail/strict/pace/htmlBlock/footnote/codeLang/concurrency,config 行+options 字段一并移除)+ **置灰保留**未接的(codeStrategy/taskList/punct/zhConvert/retries,标「规划中」/「当前固定」);`SettingsTab` 加 disabled 渲染。纯 UI,静态预览验证(删除项消失、保留项置灰、批次 B/C 项保持可交互)。批次 B(低成本接:scrollTop/wikilink/obsidianImg)、批次 C(图片压缩)随后。上一轮:自动填图片 ALT 尝试后搁置(三路皆不通,代码已回退)。PR #10~#14 已合并 main。
+**最后更新**：2026-07-25 · 分支 `feat/math-latex-block`（基于 v0.3.0）· **数学块 `$$` → X 原生 LaTeX**——真机 dump 确认 X 有原生 `LATEX` atomic 块（`entityType:'LATEX'`、`data:{}`、公式本体在块 `text`、逐字符挂同一 entity key，与前三种 atomic「数据在 entity、文本恒单空格」相反）。parser 新增块级 `$$…$$` 识别（单行 `$$ x $$` / 多行 / 未闭合回退 / `$$100` 假阳性防线 / 围栏内不误判），injector atomic 分支支持 LATEX 真实文本 + 逐字符挂 entity，能力面板「数学公式」从 warn「未接」改 native「原生 LaTeX 块」+ 新增「未闭合公式」warn 条目。行内 `$…$` 本批不做（X 无行内原生承载）。单测 293→307，tsc/build 全绿。**已真机验证通过**：`$$\nE = mc^2\n$$` 导入后 X 原生渲染出 LaTeX 公式块（带原生 Edit/Close 控件）。〔历史 v0.3.0〕**列表语义补齐 + 能力面板诚实化 + Toast 溢出修复**——嵌套列表接 Draft 原生 `depth`（栈式换算，此前缩进项掉进段落、正文留字面量 `  - 二级`）；任务列表 `- [ ]` 接通被置灰的 `taskList` 设置（☐/☑ 符号，加前缀时整体平移 offset）；能力面板补 7 类此前静默/撒谎的语法告知（任务列表原被标绿「原生列表」）+ 修 `capability()` 不透传解析开关的既存隐患；Toast 长文案不再溢出侧边栏；**setext 标题**（`标题\n===`）从「完全不识别」到解析 + 标题抽取全通。单测 225→293，tsc/build 全绿。**整批已真机验证通过**（setext 标题 / 任务列表 ☐☑ / 全角空格列表项 / emoji 后加粗 offset / 图片上传 / 封面 / 推文嵌入 / 表格 / 代码块逐项确认）。**真机同时确认：X 忽略 Draft `depth`、嵌套列表渲染为扁平**（有序列表还会连续重编号）——能力面板已如实标 warn「已扁平化(内容不丢)」;depth 仍照写(语义正确、零成本,X 日后支持即生效)。即便扁平也远好于改动前:那时缩进项根本不是列表项,而是带字面量 `- x` 的段落。〔历史〕**批次三:导入报告失败明细(v0.2.2)**——失败图给出序号/来源/阶段/原因(生产端强类型码表 `IMAGE_FAIL_REASONS`,封面 index=-1 哨兵,coverKeep=remove 序号 +1 还原);8 角度 code review 修 8 条;真机暴露并修复 **sweepMarkers「假干净」**(一次陈旧的干净读取即终止清扫 → 连续两轮 clean 才收工,残留审计以 `marker-residue` 上报不再静默)。T6 ×6 零残留、偶发超时被如实报「图 2 · 上传超时」。〔历史〕上一轮 · **全量真机回归(14 用例,QA 文档 `docs/qa/真机回归测试-v0.2.0加固批.md`)+ 修 2 处 UI 撒谎**:T2 本地图导入后文件夹状态不刷新(`recalibrateFolders` 就地校准 + 断开提示 toast,补上 B5 的 UX 待办)、T5 导入报告虚报计数(改用引擎回传真实 `blockCount`)。历史载入弹窗 FAIL 证实为误报(内容全等静默载入是设计行为);append 1 图片失败未复现记偶发。修复已真机复测通过(1 成功/0 降级 · 大文档 174 成功 · 文件夹即时未连接)。〔历史〕上一轮 · **发布前全面审计 + 13 项加固**（4 专项审查：注入/UI/安全/解析；P0×2：标题写错文章 pinnedTabId、坏备份砖化 ErrorBoundary）。**并修复跨机器分支分叉**：标题 ask 弹窗（PR #21）内容曾掉出 main，已 rebase 整合回来（见 §11）。tsc/build/zip 全绿，**待真机回归**。〔历史〕上一轮 · 标题冲突 `ask` 询问弹窗（`TitleConflictDialog` + Promise 化 resolver：编辑器已有标题时弹「覆盖/保留」，真冲突才弹、无冲突静默设，待真机验证）。上一轮:**设置 action 接真实实现(A 组)**：快捷键跳转 `chrome://extensions/shortcuts`、诊断快照导出 JSON、备份/恢复(新模块 `lib/storage/backup.ts`,导出 prefs+options+history+draft、恢复宽松写回)。纯前端,静态预览验证(tabs.create URL / 诊断备份 JSON 结构 / 恢复写回 4 key、无效拒绝)。剩:标题 `ask` 弹窗(B 组,需真机)。上一轮:**批次 C:图片压缩（智能保护 PNG）+ 探针「需刷新」文案（真机验证）**——设置面板诚实化(批次 A/B/C)收官。图片压缩**只压 JPEG 照片**、PNG 截图/文字图保持原样清晰（实测截图压完糊掉后的取舍),压缩打 console 日志;探针 `needs-refresh` 态(当前是 X 页但 content 不应答→提示刷新页面)。上一轮:**全面刷新 README + HANDOFF 文档**（此前停在 M2 早期,严重落后）。上一轮:**批次 B2:scrollTop 接真实实现 + 修 stale-closure / 探针刷新重探**(真机验证):`startImport` useCallback 依赖改为整个 `opts`;探针 `onUpdated` 加 `status==='complete'`。上一轮:**批次 B1:Obsidian 图片 / Wikilink 开关接真实实现**：parser 加 `parseMarkdown(md, opts)`(模块级标志);`obsidianImg` 关时 `![[x]]` 不当图片、`wikilink` 开时行内 `[[x]]`→纯文本(默认开)。8 条 node 用例验证。批次 B 剩 scrollTop(B2,需真机)。设置精简 PR #15 已合并。上一轮:**设置面板诚实化(精简 + 置灰,批次 A,PR #15)**：盘点发现设置里近 2/3 开关「改了不生效」。批次 A **删除 14 个无意义/不可行的项**(altCaption/graphql/tableStrategy/h4Plus/inlineCode/tweetUrl/divider/imgFail/strict/pace/htmlBlock/footnote/codeLang/concurrency,config 行+options 字段一并移除)+ **置灰保留**未接的(codeStrategy/taskList/punct/zhConvert/retries,标「规划中」/「当前固定」);`SettingsTab` 加 disabled 渲染。纯 UI,静态预览验证(删除项消失、保留项置灰、批次 B/C 项保持可交互)。批次 B(低成本接:scrollTop/wikilink/obsidianImg)、批次 C(图片压缩)随后。上一轮:自动填图片 ALT 尝试后搁置(三路皆不通,代码已回退)。PR #10~#14 已合并 main。
 
 ---
 
@@ -26,8 +26,8 @@
   - ✅ **本地图按需授权**（分支 `feat/session-vault-folder`，真机验证）：两级文件夹 `active`（素材板「本篇图片文件夹」）+ `persistent`（设置默认），读取优先级 active > persistent > 降级；素材板就地连接/更换/清除本篇专用文件夹；浏览器重启权限回落后「一键恢复」复用存量 handle（`requestPermission`，免重选文件夹）。
   - ✅ **探针自动重探**（PR #10，真机验证）：监听标签页事件自动更新连接状态,免手动刷新;tab 定位改为跟随当前活动标签。
   - ✅ **设置面板诚实化**（PR #15/#16/#17，批次 A/B）：盘点发现近 2/3 开关「改了不生效」→ 删 14 个无意义/不可行项 + 置灰未接项;`obsidianImg`/`wikilink`/`scrollTop` 接真实实现;修 stale-closure（切开关不改 md 即时生效）+ 探针刷新后自动重探。
-- **本次刚做**：**列表语义补齐 + 能力面板诚实化 + Toast 溢出修复**——① **嵌套列表**接 Draft 原生 `depth`(栈式换算,2/4 空格与 Tab 通吃),此前缩进项会掉进段落、正文留字面量 `  - 二级`(内容错乱);② **任务列表** `- [ ]` 接通早已存在却被置灰的 `taskList` 设置(☐/☑ 符号 or 纯文本),加前缀时整体平移 offset;③ **能力面板补齐此前静默/撒谎的语法告知**(多级列表/任务列表/行内图/脚注/HTML/数学),兑现 README「不会导入完才发现丢了」的核心承诺;④ Toast 长文案不再溢出侧边栏；⑤ **setext 标题**（CommonMark 标准语法，此前整段退化成段落、`===` 字面量进正文）解析 + 标题抽取/去重全通。〔上一轮〕批次三 · 导入报告失败明细(v0.2.2)——每张失败图报「序号/来源/阶段/原因」,含封面(index=-1)与序号还原;附带修复 `sweepMarkers`「假干净」缺陷(连续两轮 clean 才收工 + 残留审计 `marker-residue` 上报)。QA T7 全过(T6 ×6 零残留)。
-- **还没做**：QA 未跑项 T3 砖化兜底(手动写坏 `chrome.storage`);数学块 `$$`(X 有原生 LaTeX 块可接,见 §11 第九次会话);行内图片(需 Draft 行内 atomic,成本较高,已在能力面板如实告知)。
+- **本次刚做**：**数学块 `$$` → X 原生 LaTeX**——真机 dump 确认 X 有原生 `LATEX` atomic 块（`data:{}`、公式在块 `text`、逐字符挂同一 entity key）。① parser 新增块级 `$$…$$` 识别（`matchMathOpen`：单行 `$$ x $$` / 多行 `$$\n…\n$$` / 未闭合回退当文本 / `$$100` 行内双美元假阳性防线 / 围栏内不误判 / 空公式回退）；② injector atomic 分支支持 LATEX 真实文本 + 逐字符挂 entity（与 LINK entity 逐字符挂法同理）；③ 能力面板「数学公式」从 warn「未接」改 **native「原生 LaTeX 块」**，新增「未闭合公式」warn 条目（收窄 `RE_MATH_RESIDUE` 只认裸 `$$` 行，消除 `$$100` 假阳性）。行内 `$…$` 本批不做（X 无行内原生承载，与行内代码/图片同策略）。单测 293→307。**已真机验证**：`$$\nE = mc^2\n$$` 导入后 X 原生渲染出 LaTeX 公式块（带原生 Edit/Close 控件）。〔上一轮 v0.3.0〕**列表语义补齐 + 能力面板诚实化 + Toast 溢出修复**——① **嵌套列表**接 Draft 原生 `depth`；② **任务列表** `- [ ]` 接通 `taskList` 设置；③ **能力面板补 7 类语法告知**；④ Toast 溢出修复；⑤ **setext 标题**解析 + 标题抽取全通。
+- **还没做**：QA 未跑项 T3 砖化兜底(手动写坏 `chrome.storage`);行内数学 `$…$` / 行内图片(需 Draft 行内 atomic,成本较高,已在能力面板如实告知)。
 - **真机验证(本轮,已通过)**：setext 标题两种下划线均成标题且不多出分割线 · 任务列表 ☐/☑ 正确、加粗精确落在文字上未被符号带偏 · `[x]无空格` 原样保留 · 全角空格列表项正常 · emoji/CJK 后的加粗 offset 精确 · 远程图上传 + 封面设置成功（含带查询参数的 `pbs.twimg.com` URL）· 推文嵌入 / 表格 / 代码块 / 分割线均原生。
   - 期间一次图片上传失败经排查为**该 Wikimedia URL 本身不可达**，非代码问题；降级链路如实把 markdown 原文写回正文、未丢内容，行为符合设计。样例已改用 `pbs.twimg.com`。
 - **真机结论(本轮)**：**X 忽略 Draft `ContentBlock.depth`**——嵌套列表渲染成扁平列表,有序列表还会被连续重编号。能力面板「多级列表」据此从暂定的 `special` 落为 `warn`、文案改为确定的「X 不支持列表层级 · 已扁平化(内容不丢)」。**depth 保留照写**:语义正确、零成本,X 日后支持即自动生效。
@@ -157,7 +157,8 @@ background（开侧栏）                          injector.ts（MAIN world，�
 | ~~嵌套列表~~ | ✅ 已接 Draft 原生 `depth`（栈式换算,上限 4）。**X 的缩进渲染待真机确认**——最坏扁平化,仍优于此前的字面量段落 | 第十六次会话（本轮） |
 | ~~任务列表 `- [ ]`~~ | ✅ 已接通 `taskList` 设置（☐/☑ 符号 / 纯文本）,设置项取消置灰 | 第十六次会话（本轮） |
 | ~~setext 标题（`标题\n===`）~~ | ✅ 已支持:整段升格 header-one;`extractTitle` 认 setext 一级标题、`stripFirstH1` 按行数删两行。能力面板告警条目已随之移除 | 第十六次会话（本轮） |
-| **数学块 `$$`** | ⚠️ 按纯文本写入。X 的 Insert 菜单有原生 LaTeX 块（第九次会话探明）可接。**能力面板已如实告知** | 下一批候选 |
+| ~~数学块 `$$`~~ | ✅ 已接 X 原生 `LATEX` atomic（真机 dump 实证 shape:`data:{}`、公式在块 `text`、逐字符挂 entity）。块级 `$$…$$` 单行/多行/未闭合回退/围栏内不误判/`$$100` 假阳性防线。**已真机验证渲染**（`E = mc^2` 原生渲染成 LaTeX 块） | 第十七次会话（本轮） |
+| **行内数学 `$…$`** | ⚠️ 按纯文本写入（X 的 LaTeX 是块级 Insert,无行内原生承载,与行内代码/图片同策略）。**能力面板已如实告知** | 暂缓 |
 | **行内图片**（段落中的 `![](x)`） | ⚠️ 保留 markdown 原文（仅独占一行的图片会上传）。需 Draft 行内 atomic,成本较高。**能力面板已如实告知** | 暂缓 |
 | 脚注 `[^1]` / 内嵌 HTML | ⚠️ 保留原文（X 均不支持）。**能力面板已如实告知** | 不计划 |
 | `punct` / `zhConvert` / `retries` / `codeStrategy` 设置项 | 仍置灰「规划中 / 当前固定」（诚实占位,非撒谎） | 未定 |
@@ -229,15 +230,13 @@ pnpm build              # → .output/chrome-mv3
 - [x] ~~备份导出 / 恢复、诊断面板、快捷键跳转~~ ✅ 已接真实实现并真机验证（QA T3:合法往返 + 3 类非法文件拒绝）。
 - [x] ~~B5 清 handle 后的断开提示 toast~~ ✅ 已补（真机回归 T2 修复的一部分）。
 - [x] ~~**导入报告失败明细**（QA T6 引出）~~ ✅ 已实现并真机验证(v0.2.2,QA T7;含 marker 残留审计上报)。
-- [x] ~~**嵌套列表 / 任务列表 / 能力面板静默降级**~~ ✅ 本轮实现（离线单测验证；depth 的 X 渲染待真机确认，见下）。
+- [x] ~~**嵌套列表 / 任务列表 / 能力面板静默降级**~~ ✅ 本轮实现（离线单测验证）。
+- [x] ~~**真机确认 X 对 Draft `depth` 的缩进渲染**~~ ✅ **已确认：X 忽略 Draft `depth`，嵌套列表渲染为扁平**（有序列表还会被连续重编号），层级确实丢失。能力面板「多级列表」据此保持 `warn`、文案定为「X 不支持列表层级 · 已扁平化(内容不丢)」。`depth` 仍照写（语义正确、零成本，X 日后支持即自动生效）。即便扁平也远优于此前的字面量 `- 二级` 段落。
 - [ ] QA 未跑项:T3 砖化兜底(手动 `chrome.storage.local.set({markflow_prefs:"corrupted"})` 后面板不白屏)。
-- [ ] **真机确认 X 对 Draft `depth` 的缩进渲染**（本轮唯一待验证项）：真机导入一份 3 级嵌套列表，看 X 是否渲染出层级缩进。
-  - 若**渲染缩进** → 把能力面板「多级列表」条目从 `warn` 改成 `native`、文案改为如实的「原生层级」。
-  - 若**忽略 depth**（扁平） → 保持 `warn`，文案改为更准的「X 不支持层级 · 已扁平化」，并考虑给深层项加缩进符号前缀补偿。
-  - 无论哪种都**不比本轮之前差**（此前是字面量 `- 二级` 段落），故已合并、不阻断。
 
 **下一批候选（本轮盘点发现、已在能力面板如实告知但尚未支持）**
-- [ ] **数学块 `$$`**：X 的 Insert 菜单有原生 LaTeX 块（第九次会话已探明），可接。
+- [x] ~~**数学块 `$$`**~~ ✅ 本轮实现并真机验证：真机 dump 确认 X 原生 `LATEX` atomic 块（`data:{}`、公式在块 `text`、逐字符挂 entity），parser 识别块级 `$$…$$` → injector 直写 → 能力面板标 native。真机导入 `$$\nE = mc^2\n$$` 后 X 原生渲染出 LaTeX 公式块。
+- [ ] 行内数学 `$…$`：X 的 LaTeX 是块级 Insert 项，无行内原生承载，暂只如实告知（与行内代码/行内图片同策略）。
 - [ ] 行内图片（段落中的 `![](x)`）：需要 Draft 行内 atomic，成本较高，暂只如实告知。
 
 **远期**：文章 → Markdown 反向导出（xposter 有范本，§8.1 导出器）。
@@ -258,7 +257,17 @@ pnpm build              # → .output/chrome-mv3
 
 ## 11. 最近一次会话小结
 
-**2026-07-25 · 第十六次会话（本次）· 列表语义补齐 + 能力面板诚实化 + Toast 溢出**：
+**2026-07-25 · 第十七次会话（本次）· 数学块 `$$` → X 原生 LaTeX**：
+- **先真机 dump 定 entity shape,再动手**：X 的 LaTeX 块 entity 形状是本项目 M0 探针清单里一直没做的一项(DIVIDER/MARKDOWN/TWEET 都有源码/dump 实证,唯独 LATEX 没有)。开发前先写 Console dump 脚本(照 injector 的 fiber 定位路径)交用户真机跑,拿到确切 shape:`entityType="LATEX"` / `mutability=IMMUTABLE` / `data={}`(空) / **公式本体在块 `text`** / **每个字符都挂同一 LATEX entity key**。**教训延续**:entity 形状绝不臆造(捏错 X 直接不渲染),先 dump 实证再写。
+- **LATEX 与前三种 atomic 的形状相反**:DIVIDER/MARKDOWN/TWEET 的数据在 entity `data`、块文本恒单空格(injector 硬编码);LATEX 反过来——`data` 空、公式在 `text`。故 protocol 给 LATEX 变体独有 `text` 字段;injector atomic 分支按 `entityType==='LATEX'` 分流:公式文本逐字符挂同一 entityKey(与既有 LINK entity 逐字符挂法同理),其余三种保持单空格。
+- **parser 块级 `$$` 识别**(`matchMathOpen`):单行 `$$ x $$` 就地成块、多行 `$$\n…\n$$` 找裸 `$$` 闭合行、未闭合回退当文本(与未闭合围栏一致)、空公式回退。**假阳性主防线**:`$$100 涨到` 这类行内双美元其后非空 → 判 null 不进块判定、也不当段落边界(沿用本项目「`$$` 须行首」口径)。放在围栏之后(围栏内 `$$` 已被吃掉)、其余 atomic 之前。
+- **能力面板诚实化**:「数学公式」从 warn「未接」改 **native「原生 LaTeX 块」**;新增「未闭合公式」warn 条目。计数从产出块取(LATEX atomic → native),文本残留的裸 `$$` 起行 → warn;`RE_MATH_RESIDUE` 收窄到**只认裸 `$$` 行**,替换旧 `/^\$\$/m` 的宽松匹配,消除 `$$100` 假阳性(沿用本项目「计数从 parseMarkdown 产出取,不另起正则」doctrine)。
+- **自查 + 独立 review 各揪一条,均反证钉住**:① 自查发现单行分支 `line.slice(2,-2)` 未先 `trimEnd`,`$$ x $$ `(尾随空格)会切出 `x $$` 脏结果——修为先 trimEnd 再切,补回归测试(bug 版跑测试确实红);② review agent 揪出 multi 分支「起行 `$$` 后带内容」是**死代码**(`matchMathOpen` 对 `$$x` 判 null,永远进不来)且注释虚假宣称支持——复现确认后删死代码 + 订正注释。两条都自己复现/反证后才动手,不采信 agent 自述。
+- **行内 `$…$` 不做**:X 的 LaTeX 是块级 Insert 项,无行内原生承载,如实告知降级(与行内代码/行内图片同策略)。
+- 单测 293→307(块级 $$ 多行/单行/未闭合/空公式/围栏内/缩进/尾随空格/`$$100` 假阳性 + capability native/warn 拆分)。tsc/build 全绿。**已真机验证**:导入 `$$\nE = mc^2\n$$` 后 X 原生渲染出 LaTeX 公式块(带原生 Edit/Close 控件),LATEX atomic 直写路径成立。
+- **顺带**:订正 §9 里「真机确认 X 对 depth 渲染」的遗留 checkbox(顶部结论早已写明确认扁平、面板已落 warn,但 §9 checkbox 未同步勾掉)。
+
+**2026-07-25 · 第十六次会话· 列表语义补齐 + 能力面板诚实化 + Toast 溢出**：
 - **起点是一次主动盘点**：文档当时只剩 QA T3 一项待办，但直接把常见 Markdown 喂给 `parseMarkdown` 实跑后，发现一批**文档未记录**的缺口。最要命的两条是**内容错乱而非降级**：嵌套列表的二级项掉进段落分支、正文留字面量 `  - 二级`；任务列表正文留 `[ ]` 字面量，而**能力面板还把它标绿「原生列表」**——面板在撒谎，直接违背 README 的核心承诺。**教训：文档记的待办 ≠ 真实欠账，隔几轮该拿真实输入实跑一遍核心纯函数。**
 - **嵌套列表**：`TextBlock.depth` → Draft 原生 `ContentBlock.depth`。缩进→层级用**栈式**换算而非除法（除法必须假定固定 2 或 4 空格，混用就整体错）；有序无序共用一个栈；上限 4。`depth` 可选且仅 > 0 时写入 → 顶层项产出零变化、旧 injector 读不到只退化为扁平。
 - **任务列表**：接通早已存在却被置灰的 `taskList` 设置；`shiftInline` 在加 ☐/☑ 前缀时整体平移 offset（否则 `- [ ] **粗体**` 的加粗区间会砸到前缀上）。
