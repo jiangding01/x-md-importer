@@ -27,7 +27,7 @@
   - ✅ **探针自动重探**（PR #10，真机验证）：监听标签页事件自动更新连接状态,免手动刷新;tab 定位改为跟随当前活动标签。
   - ✅ **设置面板诚实化**（PR #15/#16/#17，批次 A/B）：盘点发现近 2/3 开关「改了不生效」→ 删 14 个无意义/不可行项 + 置灰未接项;`obsidianImg`/`wikilink`/`scrollTop` 接真实实现;修 stale-closure（切开关不改 md 即时生效）+ 探针刷新后自动重探。
 - **本次刚做**：**数学块 `$$` → X 原生 LaTeX**——真机 dump 确认 X 有原生 `LATEX` atomic 块（`data:{}`、公式在块 `text`、逐字符挂同一 entity key）。① parser 新增块级 `$$…$$` 识别（`matchMathOpen`：单行 `$$ x $$` / 多行 `$$\n…\n$$` / 未闭合回退当文本 / `$$100` 行内双美元假阳性防线 / 围栏内不误判 / 空公式回退）；② injector atomic 分支支持 LATEX 真实文本 + 逐字符挂 entity（与 LINK entity 逐字符挂法同理）；③ 能力面板「数学公式」从 warn「未接」改 **native「原生 LaTeX 块」**，新增「未闭合公式」warn 条目（收窄 `RE_MATH_RESIDUE` 只认裸 `$$` 行，消除 `$$100` 假阳性）。行内 `$…$` 本批不做（X 无行内原生承载，与行内代码/图片同策略）。单测 293→307。**已真机验证**：`$$\nE = mc^2\n$$` 导入后 X 原生渲染出 LaTeX 公式块（带原生 Edit/Close 控件）。〔上一轮 v0.3.0〕**列表语义补齐 + 能力面板诚实化 + Toast 溢出修复**——① **嵌套列表**接 Draft 原生 `depth`；② **任务列表** `- [ ]` 接通 `taskList` 设置；③ **能力面板补 7 类语法告知**；④ Toast 溢出修复；⑤ **setext 标题**解析 + 标题抽取全通。
-- **还没做**：QA 未跑项 T3 砖化兜底(手动写坏 `chrome.storage`);行内数学 `$…$` / 行内图片(需 Draft 行内 atomic,成本较高,已在能力面板如实告知)。
+- **还没做**：QA 未跑项 T3 砖化兜底(手动写坏 `chrome.storage`);行内数学 `$…$` / 行内图片(需 Draft 行内 atomic,成本较高,已在能力面板如实告知)。**多行公式已验证无问题**(见 §8,`\n` 链路正常、无需修复)。
 - **真机验证(本轮,已通过)**：setext 标题两种下划线均成标题且不多出分割线 · 任务列表 ☐/☑ 正确、加粗精确落在文字上未被符号带偏 · `[x]无空格` 原样保留 · 全角空格列表项正常 · emoji/CJK 后的加粗 offset 精确 · 远程图上传 + 封面设置成功（含带查询参数的 `pbs.twimg.com` URL）· 推文嵌入 / 表格 / 代码块 / 分割线均原生。
   - 期间一次图片上传失败经排查为**该 Wikimedia URL 本身不可达**，非代码问题；降级链路如实把 markdown 原文写回正文、未丢内容，行为符合设计。样例已改用 `pbs.twimg.com`。
 - **真机结论(本轮)**：**X 忽略 Draft `ContentBlock.depth`**——嵌套列表渲染成扁平列表,有序列表还会被连续重编号。能力面板「多级列表」据此从暂定的 `special` 落为 `warn`、文案改为确定的「X 不支持列表层级 · 已扁平化(内容不丢)」。**depth 保留照写**:语义正确、零成本,X 日后支持即自动生效。
@@ -207,6 +207,7 @@ pnpm build              # → .output/chrome-mv3
 - **凡「扫原始 md」的统计,必须和 `parseMarkdown` 用同一套跳过口径**：`forEachContentLine` 只跳**围栏**、**不跳 frontmatter**。capability 的 setext 计数曾直接扫原文，把「frontmatter 体末行 + 闭合 `---`」当成 setext 标题，**任何带 frontmatter 的文档**都凭空多一条假告警。frontmatter 判定已抽成 `frontmatterBodyStart()` 导出、两处共用——再有新的"扫原文"需求一律复用它，别另写一套（本项目已在 frontmatter/围栏判定上栽过两次"第二套实现漂移"）。
 - **列表缩进有门槛,别去掉**（`canBeListItem`）：已在列表 run 中 → 任意缩进算嵌套项；不在列表中 → 仅 ≤3 列才起列表（CommonMark 规则，≥4 列属缩进代码块领域）。去掉门槛后，正文里**粘贴的 4 空格缩进代码/日志**中的 `- x` 会被拆成列表项、丢掉原始缩进语境。
 - **给块文本加前缀必须整体平移 offset**（任务列表 ☐/☑ 前缀，见 `shiftInline`）：`inlineStyleRanges`/`links` 的 offset 是相对「加前缀之前的文本」算的，直接字符串拼接会让 `- [ ] **粗体**` 的加粗区间砸到前缀符号上。offset 单位是 UTF-16 码元（见下条）。
+- **LATEX 块的多行公式:链路正常,`\n` 不需要处理**（2026-07-25 真机验证，`docs/qa/测试样例-多行公式.md`）：多行公式体会让 `AtomicBlock.text` 带 `\n`，X **原样传给 LaTeX 渲染器**，`aligned` / 矩阵 / 分段函数（含多个 `\n` + `\\`）全部正确渲染换行与对齐。**「两行独立公式连排」是标准 LaTeX 语义、不是缺陷**——数学模式下换行符即空白（KaTeX/MathJax 同理），要换行须用 `\\` 且在支持换行的环境里。**曾考虑把 `\n` 换成空格，已否决**：既是 no-op（渲染器本就当空白），若进一步改成插真换行更有害——同一 markdown 在 Obsidian/GitHub 里也是连排，我们单独换行反而与用户本地预览不一致。忠实搬运即正确。
 - **标题打分（setTitle）**：关键词（title/标题）是**硬门槛**，否则会误命中正文大 contenteditable，overwrite 时清空正文。别放宽。
 - **frontmatter**：parser 跳过与 `extractTitle` 抽取的边界判定必须一致（都用**顶格 `^---`**）；H1 抽取/移除都要**跳过代码块**。
 - **content script 更新不自动生效**：改 content/injector 后必须刷新 X 页面；症状①「三灯绿但写入报未连接」= 页面跑旧 content；症状②「正文写入了却报 `images undefined` 崩溃 / 图片不上传」= 新 injector + 旧 content（旧 content 注入新 injector 但自己不带 images 字段）。injector 已对 images 默认 `[]` 防御（崩溃→降级），但**真正上传图片必须刷新页面**加载新 content。
