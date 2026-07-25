@@ -296,8 +296,8 @@ export default defineUnlistedScript(() => {
     return found;
   };
 
-  /** atomic entity 的 mutability 映射(值为 xposter 源码实证,见 §2.2)。 */
-  const atomicMutability = (entityType: 'DIVIDER' | 'MARKDOWN' | 'TWEET'): string =>
+  /** atomic entity 的 mutability 映射(值为 xposter 源码实证 / LATEX 真机 dump 实证,见 §2.2)。 */
+  const atomicMutability = (entityType: 'DIVIDER' | 'MARKDOWN' | 'TWEET' | 'LATEX'): string =>
     entityType === 'MARKDOWN' ? 'MUTABLE' : 'IMMUTABLE';
 
   // -------------------------------------------------------------------------
@@ -872,16 +872,23 @@ export default defineUnlistedScript(() => {
           });
           built.push([key, nextBlock]);
         } else if (block.kind === 'atomic') {
-          // 代码块 / 分割线 / 推文:M1 单趟构造(无需 marker,这三类不走异步上传)。
+          // 代码块 / 分割线 / 推文 / 数学公式:单趟构造(无需 marker,这四类不走异步上传)。
           const mutability = atomicMutability(block.entityType);
           nextContent = nextContent.createEntity(block.entityType, mutability, block.data);
           const entityKey = nextContent.getLastCreatedEntityKey();
-          const char = sample.set('style', emptyStyle).set('entity', entityKey);
+          // 文本承载分两种形态(真机 dump 实证,见 protocol AtomicBlock):
+          //  - LATEX:公式本体在块 text,**每个字符都挂同一 LATEX entity key**(与 X 原生插入一致);
+          //    空公式兜底退单空格(parser 已挡空公式,这里双保险防空 characterList / 空块崩)。
+          //  - DIVIDER/MARKDOWN/TWEET:约定单空格文本,该 1 字符挂 entity key、数据在 entity data。
+          const atomicText = block.entityType === 'LATEX' && block.text !== '' ? block.text : ' ';
+          const atomicChar = sample.set('style', emptyStyle).set('entity', entityKey);
+          let atomicCharList = emptyCharList;
+          for (let ci = 0; ci < atomicText.length; ci += 1) atomicCharList = atomicCharList.push(atomicChar);
           const nextBlock = sampleBlock.merge({
             key,
             type: 'atomic',
-            text: ' ', // atomic 块约定单空格文本,该字符挂 entity key
-            characterList: emptyCharList.push(char),
+            text: atomicText,
+            characterList: atomicCharList,
             depth: 0,
             data: emptyBlockData,
           });

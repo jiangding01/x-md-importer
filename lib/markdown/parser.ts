@@ -81,6 +81,26 @@ const RE_SETEXT_DASH = /^-+[ \t]*$/;
 /** ASCII 标点集合:反斜杠转义仅在其后紧跟 ASCII 标点时生效(字母/CJK 前的反斜杠保留原样)。 */
 const RE_PUNCT = /[!-/:-@[-`{-~]/;
 
+/**
+ * 块级数学公式 `$$` 的**起行**判定(GitHub/CommonMark math),返回起行形态或 null。
+ * 真机 dump 确认 X 有原生 LATEX atomic 块,公式本体写进块 text(见 protocol AtomicBlock)。
+ *
+ * **顶格 `$$` 开头**(与 RE_DIVIDER 同样严格,不容前导空白),再按其后内容分形态:
+ *  - `'multi'`:`$$` 之后仅空白 → 多行公式起行,向下找裸 `$$` 闭合行(见主循环)。
+ *  - `'single'`:`$$ 公式 $$` 同行闭合且中间非空 → 单行公式块。
+ *  - `null`:其余(含 `$$100 涨到` 这类**行内双美元**——其后非空且不以 `$$` 收尾)。
+ *    这条严格规则是**假阳性的主防线**:口语化的 `$$100` 既不进块判定、也不当段落边界,
+ *    与本项目一贯「`$$` 须行首、`includes` 会误报」的口径一致(见 capability 注释)。
+ */
+function matchMathOpen(line: string): 'single' | 'multi' | null {
+  if (!line.startsWith('$$')) return null;
+  const rest = line.slice(2).trim();
+  if (rest === '') return 'multi';
+  // 同行闭合:去掉收尾 `$$` 后中间非空才算(排除 `$$$$` / `$$ $$` 空公式)。
+  if (rest.endsWith('$$') && rest.slice(0, -2).trim() !== '') return 'single';
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // 主入口
 // ---------------------------------------------------------------------------
@@ -265,6 +285,45 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
         continue;
       }
       // 未闭合:视为普通文本,继续走后续块级逻辑处理本行(不 continue)
+    }
+
+    // 1.5 块级数学公式 `$$…$$` → LATEX atomic(真机 dump 确认 X 原生渲染,公式写进块 text)。
+    //      放在围栏之后(围栏内的 `$$` 已被上面吃掉、不解析)、其余 atomic 之前(同级块元素)。
+    //      单行 `$$ x $$` 就地成块;多行则向下找裸 `$$` 闭合行(闭合行须顶格、去空白后恰为 `$$`)。
+    //      **找不到闭合 → 回退**当普通文本(不 continue,与未闭合围栏一致);`$$100 涨到` 这类
+    //      行内双美元被 matchMathOpen 判 null,天然不进这里。
+    const mathOpen = matchMathOpen(line);
+    if (mathOpen === 'single') {
+      // `$$ 公式 $$`:剥首尾 `$$`,中间为公式原文(matchMathOpen 已确保中间非空)。
+      // 先 trimEnd 再切:否则收尾 `$$` 后的尾随空白会把 `slice(-2)` 顶偏、切出 `x $$` 脏结果。
+      const formula = line.trimEnd().slice(2, -2).trim();
+      blocks.push({ kind: 'atomic', entityType: 'LATEX', data: {}, text: formula });
+      i += 1;
+      continue;
+    }
+    if (mathOpen === 'multi') {
+      let j = i + 1;
+      let closed = false;
+      while (j < lines.length) {
+        // 闭合行:顶格 `$$`、去尾随空白后恰为 `$$`(不含额外内容)。
+        if ((lines[j] ?? '').startsWith('$$') && (lines[j] ?? '').slice(2).trim() === '') {
+          closed = true;
+          break;
+        }
+        j += 1;
+      }
+      if (closed) {
+        // 公式体 = 起行 `$$` 之后到闭合行之前的所有行(保留内部换行,原样交 X 渲染)。
+        // multi 形态的起行仅含 `$$`(matchMathOpen 保证其后仅空白),故公式体就是中间各行。
+        const inner = lines.slice(i + 1, j).join('\n').trim();
+        // 空公式(`$$\n$$`)不产 LATEX 块,回退当普通文本(不 continue)。
+        if (inner !== '') {
+          blocks.push({ kind: 'atomic', entityType: 'LATEX', data: {}, text: inner });
+          i = j + 1;
+          continue;
+        }
+      }
+      // 未闭合 / 空公式:回退,本行按普通文本继续走后续逻辑(不 continue)。
     }
 
     // 2. 分割线
@@ -536,6 +595,7 @@ function isBlockBoundary(line: string): boolean {
   if (line.trim() === '') return true;
   if (matchFenceOpen(line)) return true;
   if (RE_DIVIDER.test(line)) return true;
+  if (matchMathOpen(line) !== null) return true;
   if (RE_TWEET.test(line)) return true;
   if (matchImageLine(line.trim()) !== null) return true;
   if (RE_LINKED_IMAGE_LINE.test(line.trim())) return true;

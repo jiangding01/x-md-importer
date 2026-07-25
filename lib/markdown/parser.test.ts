@@ -562,6 +562,94 @@ describe('代码围栏', () => {
   });
 });
 
+describe('数学块 $$ (LATEX atomic)', () => {
+  it('多行 $$ 公式产生 LATEX atomic,公式本体在 text', () => {
+    const md = '$$\nE = mc^2\n$$';
+    const blocks = parseMarkdown(md);
+    expect(blocks).toHaveLength(1);
+    const b = asAtomic(blocks[0]);
+    expect(b.entityType).toBe('LATEX');
+    if (b.entityType === 'LATEX') {
+      expect(b.text).toBe('E = mc^2');
+      expect(b.data).toEqual({});
+    }
+  });
+
+  it('多行公式保留内部换行', () => {
+    const md = '$$\n\\begin{aligned}\na &= b \\\\\nc &= d\n\\end{aligned}\n$$';
+    const b = asAtomic(parseMarkdown(md)[0]);
+    if (b.entityType === 'LATEX') {
+      expect(b.text).toBe('\\begin{aligned}\na &= b \\\\\nc &= d\n\\end{aligned}');
+    }
+  });
+
+  it('同行闭合 $$ 公式 $$ 也识别', () => {
+    const b = asAtomic(parseMarkdown('$$ E = mc^2 $$')[0]);
+    expect(b.entityType).toBe('LATEX');
+    if (b.entityType === 'LATEX') expect(b.text).toBe('E = mc^2');
+  });
+
+  it('公式内的 --- 不被拆成分割线(整段吃进 LATEX)', () => {
+    const md = '$$\na --- b\n$$';
+    const blocks = parseMarkdown(md);
+    expect(blocks).toHaveLength(1);
+    const b = asAtomic(blocks[0]);
+    expect(b.entityType).toBe('LATEX');
+    if (b.entityType === 'LATEX') expect(b.text).toBe('a --- b');
+  });
+
+  it('未闭合 $$ 回退为普通段落文本(不产 LATEX)', () => {
+    const blocks = parseMarkdown('$$\nE = mc^2');
+    expect(blocks.some((b) => b.kind === 'atomic' && b.entityType === 'LATEX')).toBe(false);
+    expect(asText(blocks[0]).type).toBe('unstyled');
+  });
+
+  it('空公式 $$\\n\\n$$ 回退为文本(不产空 LATEX)', () => {
+    const blocks = parseMarkdown('$$\n\n$$');
+    expect(blocks.some((b) => b.kind === 'atomic' && b.entityType === 'LATEX')).toBe(false);
+  });
+
+  it('行首 $$100 不误判为数学块(行内双美元假阳性防线)', () => {
+    const blocks = parseMarkdown('$$100 涨到 $$200 了');
+    expect(blocks.some((b) => b.kind === 'atomic' && b.entityType === 'LATEX')).toBe(false);
+    expect(asText(blocks[0]).type).toBe('unstyled');
+  });
+
+  it('围栏内的 $$ 不被当数学块(围栏优先保护)', () => {
+    const md = '```\n$$\nx\n$$\n```';
+    const blocks = parseMarkdown(md);
+    expect(blocks).toHaveLength(1);
+    expect(asAtomic(blocks[0]).entityType).toBe('MARKDOWN');
+  });
+
+  it('缩进的 $$ 不是数学块起行(须顶格)', () => {
+    const blocks = parseMarkdown('  $$\nx\n  $$');
+    expect(blocks.some((b) => b.kind === 'atomic' && b.entityType === 'LATEX')).toBe(false);
+  });
+
+  it('$$ 前后的段落各自成块', () => {
+    const md = '前言\n\n$$\nx = 1\n$$\n\n后语';
+    const blocks = parseMarkdown(md);
+    expect(asText(blocks[0]).text).toBe('前言');
+    expect(asAtomic(blocks[1]).entityType).toBe('LATEX');
+    expect(asText(blocks[2]).text).toBe('后语');
+  });
+
+  it('$$ 起行终止上文段落收集(无空行分隔也不吞入段落)', () => {
+    const md = '一段话\n$$\nx\n$$';
+    const blocks = parseMarkdown(md);
+    expect(asText(blocks[0]).text).toBe('一段话');
+    expect(asAtomic(blocks[1]).entityType).toBe('LATEX');
+  });
+
+  it('同行公式尾随空白不污染公式体(review 边界:slice(2,-2) 须先 trimEnd)', () => {
+    // `$$ x $$` 后跟空格时,若直接 line.slice(2,-2),-2 被尾随空格顶偏 → 切出 "x $$" 脏结果。
+    const b = asAtomic(parseMarkdown('$$ E = mc^2 $$   ')[0]);
+    expect(b.entityType).toBe('LATEX');
+    if (b.entityType === 'LATEX') expect(b.text).toBe('E = mc^2');
+  });
+});
+
 describe('图片行', () => {
   it('裸图片行产生图片块', () => {
     const b = asImage(parseMarkdown('![描述](https://h/a.png)')[0]);

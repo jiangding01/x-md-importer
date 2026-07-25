@@ -45,13 +45,17 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions): C
   let inlineImages = 0; // 文本块残留的行内图片(独占一行的已被解析成 ImageBlock,不在此列)
   let footnotes = 0; // 文本块内的脚注标记 [^xxx]
   let htmlBlocks = 0; // 以 `<字母` 开头、被当普通段落写入的 HTML 块
-  let mathBlocks = 0; // 含 $$ 的文本块(LaTeX 块级公式)
+  let mathBlocks = 0; // 原生 LATEX atomic 块(块级公式 $$…$$,parser 已识别)
+  let mathResidue = 0; // 文本块内残留的 $$ 起行(未闭合公式的开头,已降级为普通文本)
 
   const RE_INLINE_CODE = /`[^`]+`/g;
   const RE_INLINE_IMAGE = /!\[[^\]]*\]\([^)]*\)/g;
   const RE_FOOTNOTE = /\[\^[^\]]+\]/g;
   const RE_HTML_BLOCK_START = /^<[A-Za-z]/;
-  const RE_MATH_BLOCK = /^\$\$/m;
+  // 残留 $$:仅认**裸 `$$` 行**(顶格、其后仅空白)——这是未闭合多行公式的开头签名,
+  // 与 parser 的 matchMathOpen('multi') 同源。收窄到裸行天然排除 `$$100` 这类行内双美元
+  // 假阳性(其后非空),不再需要旧 `/^\$\$/m` 那种"行首即算"的宽松匹配。
+  const RE_MATH_RESIDUE = /^\$\$[ \t]*$/m;
 
   for (const b of blocks) {
     if (b.kind === 'image') {
@@ -61,6 +65,7 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions): C
     if (b.kind === 'atomic') {
       if (b.entityType === 'DIVIDER') dividers += 1;
       else if (b.entityType === 'TWEET') tweets += 1;
+      else if (b.entityType === 'LATEX') mathBlocks += 1;
       else if (b.entityType === 'MARKDOWN') {
         // MARKDOWN atomic 承载「代码块」与「表格」两类:以围栏开头者为代码块,否则表格。
         if (/^(`{3,}|~{3,})/.test(b.data.markdown)) codeBlocks += 1;
@@ -90,9 +95,10 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions): C
     inlineImages += (b.text.match(RE_INLINE_IMAGE) || []).length;
     footnotes += (b.text.match(RE_FOOTNOTE) || []).length;
     if (RE_HTML_BLOCK_START.test(b.text.trim())) htmlBlocks += 1;
-    // `$$` 须在**行首**才算数学块:行中的 `$$` 多是口语化的双美元符(如「$$100」),
-    // 用 includes 会误报。块级公式 `$$\n…\n$$` 的文本恒以 `$$` 起行,不受影响。
-    if (RE_MATH_BLOCK.test(b.text)) mathBlocks += 1;
+    // 真公式已被 parser 识别成 LATEX atomic(上面单独计 mathBlocks);落到文本块的只剩
+    // **未闭合多行公式的开头**(裸 `$$` 行)——如实标降级。`$$100` 这类行内双美元其后非空、
+    // 不匹配裸行正则,天然不误计(旧 `/^\$\$/m` 会误报,已随本批收窄)。
+    if (RE_MATH_RESIDUE.test(b.text)) mathResidue += 1;
   }
 
 
@@ -197,8 +203,14 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions): C
   add(
     en ? 'Math blocks' : '数学公式',
     mathBlocks,
+    'native',
+    en ? 'Native LaTeX block' : '原生 LaTeX 块',
+  );
+  add(
+    en ? 'Unclosed math' : '未闭合公式',
+    mathResidue,
     'warn',
-    en ? 'X has no LaTeX support · kept as-is' : 'X LaTeX 块未接 · 保留原文',
+    en ? 'Unclosed $$ · kept as text' : '未闭合 $$ · 按文本保留',
   );
 
   return items;
