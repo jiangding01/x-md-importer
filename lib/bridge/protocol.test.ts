@@ -135,6 +135,17 @@ describe('消息守卫', () => {
       ).toBe(true);
     });
 
+    it('带 expectedArticleId(B2-1 双钥)的写入请求同样通过判别', () => {
+      expect(
+        isImportRequest({
+          type: IMPORT_REQUEST_TYPE,
+          blocks: [],
+          mode: 'replace',
+          expectedArticleId: '1234567890123456789',
+        }),
+      ).toBe(true);
+    });
+
     it('type 不匹配时拒绝', () => {
       expect(isImportRequest({ type: PROBE_REQUEST_TYPE })).toBe(false);
     });
@@ -188,5 +199,23 @@ describe('消息守卫', () => {
       expect(messageScope(null)).toBe('persistent');
       expect(messageScope(undefined)).toBe('persistent');
     });
+  });
+});
+
+describe('ImportResult / ImportResponse 的 committed 契约(B2-2)', () => {
+  it('失败分支类型上必须可携带 committed(编译期契约:删掉该字段此文件即红)', () => {
+    // 契约完全在类型层:下面两个注解若因 committed 字段被移除而不再合法,tsc/vitest 转译即失败。
+    const engineFail = {
+      ok: false,
+      error: 'verify: only 1/2 blocks landed',
+      committed: true,
+    } satisfies import('./protocol').ImportResult;
+    const channelFail = {
+      ok: false,
+      error: 'article-switched',
+      committed: false,
+    } satisfies import('./protocol').ImportResponse;
+    expect(engineFail.committed).toBe(true);
+    expect(channelFail.committed).toBe(false);
   });
 });

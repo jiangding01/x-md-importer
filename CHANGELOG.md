@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+### 批次二 · 写入安全(对应审查报告 P1-1/P1-2/P1-3/P2-2/P2-5 + P3 dataURI)
+
+- **目标钉死双钥 tabId + articleId(P1-1)**:`writeX` 两条路径(ask 与直写)都在进入任何挂起窗口(确认弹窗 / host 权限申请)**之前**探测并钉死目标;`import` 消息带 `expectedArticleId`,injector 在入口、主提交前、每张图前、清扫前、封面前**持续复查**当前文章 id,SPA 同 tab 切文章立即停手(新错误码 `article-switched`,专属文案提示)。堵住「探 A 写 B」竞态在正文通道的复发(B1 修过标题通道)。
+- **提交后失败可区分(P1-3)**:`ImportResult`/`ImportResponse` 失败分支新增 `committed`;verify 不达标/图片阶段异常时正文已落地,UI 改用「正文可能已写入,请先检查再重试」文案族(通道 timeout 同样归入——injector 可能仍在后台完成提交),阻止「按失败直觉重试」造成整篇重复。
+- **marker 清扫保文本(P2-2)**:清扫只认**完整 marker 形状**并单事务**剥离**而非整块删除——用户在占位行内打过的字保留、正文恰含 `__MARKFLOW_IMG_` 字面量的内容不再被误删;残留审计改为始终执行并新增「残片」检测(console 告警)。
+- **injector 单例守卫(P2-5)**:`Symbol.for` 标记防双注入并发直写同一 blockMap。
+- **编辑器定位分级(P1-2 降级)**:逗号并集(实为 DOM 顺序)改**有序层级**逐级尝试(`data-testid="composer"` → `.public-DraftEditor-content` → `role=textbox` → 裸 contenteditable,删除永不命中的原第一级),级内取面积最大者。
+- **dataURI 16MB 上限(P3)**:对齐远程/本地;超限报「超出大小上限」而非「无效」,percent-encoding 按解码后字节数量(不误拒)。
+- **失败路径文件夹校准**:涉本地图的导入失败后同样就地校准素材板/设置的文件夹状态(content 无论成败都清 vault handle,此前失败分支 UI 撒谎)。
+
 ### 批次一 · 上线阻断修复(对应 docs/review/上线前全面审查-2026-08-18.md)
 
 - **存储写失败可见化(P0-1)**:`setItem` 不再吞错;草稿/历史写失败按来源记账并在草稿页亮**常驻错误条**(附「导出当前草稿」自救按钮);手动「保存」await 成功才提示、失败如实报错;设置/偏好写失败落 console。新增 store.ts 错误传播单测(`vi.resetModules` + chrome stub 动态导入,钉住 chrome 路径)。

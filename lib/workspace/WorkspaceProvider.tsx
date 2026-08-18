@@ -181,6 +181,8 @@ export function WorkspaceProvider({
   // 双击间隔内两次 writeX 都可能读到陈旧的 importing=false)。ref 写入同步生效,
   // 只做「进入即锁、结束即解」的闸门作用,UI 展示仍用 importing state。
   const importingRef = useRef(false);
+  // B2-1:ask 弹窗挂起期间钉死的写入目标(tabId + articleId 双钥),确认/取消后即清。
+  const pendingAskTarget = useRef<{ tabId: number; articleId: string | null } | null>(null);
 
   const showToast = useCallback((msg: string) => {
     if (timers.current.toast) clearTimeout(timers.current.toast);
@@ -537,7 +539,7 @@ export function WorkspaceProvider({
   }, []);
 
   const startImport = useCallback(
-    async (mode: ImportMode) => {
+    async (mode: ImportMode, pinnedTarget?: { tabId: number; articleId: string | null }) => {
       // 同步闸门优先于一切:极快双击时第二次调用在这里直接短路,
       // 不会重复触发下载阶段(在任何 await 之前完成拦截)。
       if (importingRef.current) return;
@@ -591,22 +593,26 @@ export function WorkspaceProvider({
         // 远程图 / 封面 host 权限:必须在用户手势内、任何其它 await 之前(上面全同步)。
         await requestRemoteImagePermissions(md, coverSource ? [coverSource] : []);
 
-        // review B1:正文写入前解析目标 X 标签**一次**并全程钉死。放在权限申请(首个 await)
-        // 之后而非之前——权限申请必须是手势链首个 await(见 imagePermissions 注释),此处再解析
+        // review B1 + B2-1:正文写入前解析目标 X 标签**一次**并全程钉死。ask 流程传入
+        // pinnedTarget(writeX 探测时已钉的 tabId+articleId 双钥)则直接用——目标在弹窗
+        // 弹出**之前**就定死,挂起期间切 tab/切文章都写不到别处(articleId 由 injector
+        // 在 commit 前终验)。未传时(非 ask 路径)维持原逻辑:放在权限申请(首个 await)
+        // 之后解析——权限申请必须是手势链首个 await(见 imagePermissions 注释),此处再解析
         // 不消耗手势;且权限弹窗结束时焦点仍在当前 X 草稿,此刻定位即准。拿不到(切走了/非 X)
         // → 按 disconnected 提前返回,importing 由 finally 复位。
-        const pinnedTabId = await resolveTargetXTab();
+        const pinnedTabId = pinnedTarget?.tabId ?? (await resolveTargetXTab());
         if (pinnedTabId === null) {
           showToast(importErrorText('disconnected', t));
           return;
         }
+        const expectedArticleId = pinnedTarget?.articleId ?? null;
 
         // 写入中(等待 content → injector 直写)
         setStageLabel(t.stBody);
         setStagePct(75);
         // 压缩参数:compress 开时传 { maxEdge, quality };关时 null(content 侧不压)。
         const compress = opts.compress ? { maxEdge: opts.maxEdge, quality: Number(opts.quality) } : null;
-        const res = await importToXTab(blocks, mode, coverSource, opts.scrollTop, compress, pinnedTabId);
+        const res = await importToXTab(blocks, mode, coverSource, opts.scrollTop, compress, pinnedTabId, expectedArticleId);
         if (res.ok) {
           setStagePct(100);
           // #7:所选 append 但引擎实际降级为 replace(编辑器为空)→ 明确提示,不静默。
@@ -652,7 +658,22 @@ export function WorkspaceProvider({
           finishImport(toastMsg, res.imageFail, res.blockCount, imageFailures);
         } else {
           // 失败:不写成功记录,以可读中文/英文提示错误(复位在 finally 统一处理)。
-          showToast(importErrorText(res.error, t));
+          // B2-2:提交后失败(committed)或通道超时(injector 可能仍在后台完成提交,content
+          // 无从得知)→ 用「正文可能已写入」文案族,阻止用户按「失败」直觉重试造成整篇重复;
+          // 并重探一次让状态条反映编辑器真实内容。
+          const maybeCommitted = res.committed === true || res.error === 'timeout';
+          if (maybeCommitted) {
+            showToast(t.errFailedButCommitted);
+            void refreshProbe();
+          } else if (res.error === 'article-switched') {
+            showToast(t.errArticleSwitched);
+          } else {
+            showToast(importErrorText(res.error, t));
+          }
+          // B5 的失败路径同步(review 修复):content 对「涉本地图的导入」**无论成败**都会清
+          // vault handle,此前只有成功分支校准文件夹 UI——失败后素材板仍显示「已连接」,
+          // 下次导入本地图静默找不到文件。失败也就地校准,UI 不撒谎。
+          if (usesLocalImage) void recalibrateFolders();
         }
       } catch (err) {
         // 解析异常(如超深嵌套导致栈溢出)等意外:兜底提示,不留残局。
@@ -669,7 +690,7 @@ export function WorkspaceProvider({
     // setCover/coverKeep/scrollTop/obsidianImg/wikilink…),逐列极易漏(漏了会 stale-closure
     // 读到旧值——切开关后不改 md 就点写入即失效)。setOpt 每次产生新 opts 引用,依赖整个 opts
     // 让任一设置切换都重建回调,正确且防再漏。
-    [md, en, t, opts, finishImport, showToast, askTitleConflict, recalibrateFolders],
+    [md, en, t, opts, finishImport, showToast, askTitleConflict, recalibrateFolders, refreshProbe],
   );
 
   const writeX = useCallback(async () => {
@@ -679,35 +700,55 @@ export function WorkspaceProvider({
       // 即时探一次拿新鲜 hasContent,而非依赖 useConnection 的 editorHasContent 快照。
       // 这几个 tab-API await 不消耗手势(仅 permissions.request 消耗),后续 startImport 里
       // 权限申请仍在手势窗口内(见其内注释)。
+      // B2-1:探测的同时拿到 {tabId, articleId} 双钥并钉死——此前 pinnedTabId 在用户点
+      // 「覆盖」**之后**才解析,确认弹窗挂起期间切到另一篇草稿 B,hasContent 检查的是 A、
+      // blockMap.clear() 砸的却是 B(B1 修过标题通道的同款竞态,正文通道当时没堵)。
       const fresh = await probeXTabContent();
       void refreshProbe(); // 同步刷新共享状态条,与写入决策使用同一真相
-      if (!fresh.connected) {
+      if (!fresh.connected || fresh.tabId === null) {
         // 新鲜探测发现已断开 → 中止,并明确告知(P2-20:此前静默 return,按钮「点了没反应」)。
         showToast(importErrorText('disconnected', t));
         return;
       }
+      const pinned = { tabId: fresh.tabId, articleId: fresh.articleId };
       if (fresh.hasContent) {
+        pendingAskTarget.current = pinned; // 弹窗确认后透传给 startImport,取消时清掉
         setAskOverwrite(true);
         return;
       }
-      // 编辑器确为空 → 直接整体写入(与原空态行为一致:replace)。
-      void startImport('replace');
+      // 编辑器确为空 → 直接整体写入(与原空态行为一致:replace),沿用刚探测的目标。
+      void startImport('replace', pinned);
       return;
     }
-    // 非询问模式:按设置直接决定模式(总是追加 / 总是覆盖)。
+    // 非询问模式:按设置直接决定模式(总是追加 / 总是覆盖)。同样先探测钉死双钥
+    // (review 修复):此路径虽无确认弹窗,但 startImport 里的 host 权限申请是**无限期**
+    // 等用户决定的挂起窗口,期间切文章同样会「探 A 写 B」。probe 的 tab-API await 不消耗
+    // 手势,权限申请仍是 startImport 内手势链首个 await,约束不破坏。
     const mode: ImportMode = opts.onExisting === 'append' ? 'append' : 'replace';
-    void startImport(mode);
+    const freshDirect = await probeXTabContent();
+    if (!freshDirect.connected || freshDirect.tabId === null) {
+      showToast(importErrorText('disconnected', t));
+      return;
+    }
+    void startImport(mode, { tabId: freshDirect.tabId, articleId: freshDirect.articleId });
   }, [md, importing, connected, opts.onExisting, startImport, refreshProbe, showToast, t]);
 
   const overwriteAppend = useCallback(() => {
     setAskOverwrite(false);
-    void startImport('append');
+    const pinned = pendingAskTarget.current;
+    pendingAskTarget.current = null;
+    void startImport('append', pinned ?? undefined);
   }, [startImport]);
   const overwriteConfirm = useCallback(() => {
     setAskOverwrite(false);
-    void startImport('replace');
+    const pinned = pendingAskTarget.current;
+    pendingAskTarget.current = null;
+    void startImport('replace', pinned ?? undefined);
   }, [startImport]);
-  const overwriteCancel = useCallback(() => setAskOverwrite(false), []);
+  const overwriteCancel = useCallback(() => {
+    setAskOverwrite(false);
+    pendingAskTarget.current = null; // 必须清:否则下一次写入可能误用陈旧目标
+  }, []);
   const titleOverwriteConfirm = useCallback(() => settleTitleAsk(true), [settleTitleAsk]);
   const titleOverwriteKeep = useCallback(() => settleTitleAsk(false), [settleTitleAsk]);
 
