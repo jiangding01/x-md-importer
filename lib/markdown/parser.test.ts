@@ -144,6 +144,71 @@ describe('块级映射', () => {
   });
 });
 
+// B3-5(P2-7):`- - -` / `* * *` / `___` 是 CommonMark 的标准分割线,此前分别落成
+// 垃圾列表项(`* * *` 还是「单空格 + ITALIC」的纯垃圾块)与段落字面量。
+// 只放宽**字符集与内部空格**,divider 依旧要求顶格(见 RE_DIVIDER 注释:放开缩进会让
+// `- item\n  ---` 变分割线)。
+describe('分割线变体(B3-5)', () => {
+  it('下划线 `___` 顶格成 DIVIDER', () => {
+    expect(asAtomic(parseMarkdown('___')[0]).entityType).toBe('DIVIDER');
+    expect(asAtomic(parseMarkdown('_____')[0]).entityType).toBe('DIVIDER');
+  });
+
+  it('空格分隔的 `- - -` / `* * *` / `_ _ _` 成 DIVIDER', () => {
+    for (const md of ['- - -', '* * *', '_ _ _', '-  -  -', '- - - - -']) {
+      expect([md, asAtomic(parseMarkdown(md)[0]).entityType]).toEqual([md, 'DIVIDER']);
+    }
+  });
+
+  it('尾随空白不阻断 DIVIDER', () => {
+    expect(asAtomic(parseMarkdown('--- ')[0]).entityType).toBe('DIVIDER');
+  });
+
+  it('不足三个标记 / 混合字符不是 DIVIDER', () => {
+    // `- -` 只有两个标记 → 仍走列表分支(与本改动前逐字节一致);`-*-` 谁都不是 → 段落。
+    expect(asText(parseMarkdown('- -')[0]).type).toBe('unordered-list-item');
+    expect(asText(parseMarkdown('-*-')[0]).type).toBe('unstyled');
+  });
+
+  // 四象限回归:段落下方的 `---` 归 setext(下划线),`- - -` 归 hr(不是下划线形态)。
+  it('四象限 · 段落 + `- - -` → 段落 + hr', () => {
+    const blocks = parseMarkdown('前面一段\n- - -\n后面一段');
+    expect(asText(blocks[0]).type).toBe('unstyled');
+    expect(asText(blocks[0]).text).toBe('前面一段');
+    expect(asAtomic(blocks[1]).entityType).toBe('DIVIDER');
+    expect(asText(blocks[2]).text).toBe('后面一段');
+  });
+
+  it('四象限 · 段落 + `---` → setext 标题(优先级不变)', () => {
+    const blocks = parseMarkdown('前面一段\n---\n后面一段');
+    expect(asText(blocks[0]).type).toBe('header-one');
+    expect(asText(blocks[0]).text).toBe('前面一段');
+    expect(asText(blocks[1]).text).toBe('后面一段');
+  });
+
+  it('四象限 · 顶格 `***` / `___` / `- - -`(独立成块)→ hr', () => {
+    for (const md of ['***', '___', '- - -']) {
+      expect([md, asAtomic(parseMarkdown(md)[0]).entityType]).toEqual([md, 'DIVIDER']);
+    }
+  });
+
+  it('四象限 · 缩进的 `  ---` / `  - - -` 维持现状(不是 DIVIDER)', () => {
+    // 缩进形态一律不升格为分割线:`  ---` 落段落、`  - - -` 落列表项(均与改动前一致)。
+    expect(asText(parseMarkdown('  ---')[0]).type).toBe('unstyled');
+    expect(asText(parseMarkdown('  - - -')[0]).type).toBe('unordered-list-item');
+    // 列表项下方缩进的 `---` 不得变成分割线(RE_DIVIDER 顶格约束的存在理由)
+    const blocks = parseMarkdown('- item\n  ---');
+    expect(asText(blocks[0]).type).toBe('unordered-list-item');
+    expect(blocks.every((b) => b.kind !== 'atomic')).toBe(true);
+  });
+
+  it('`* * *` 不再落成列表项 + ITALIC 垃圾块', () => {
+    const blocks = parseMarkdown('* * *');
+    expect(blocks).toHaveLength(1);
+    expect(asAtomic(blocks[0]).entityType).toBe('DIVIDER');
+  });
+});
+
 describe('嵌套列表 depth', () => {
   /** 把解析结果压成 `type简写:depth` 序列,便于一行断言整段列表的层级形状。 */
   const shape = (md: string): string[] =>
@@ -362,6 +427,48 @@ describe('任务列表', () => {
   });
 });
 
+// B3-11(P2-13):CommonMark 只允许 `1.` 打断段落。此前任意数字都能打断,
+// 软折行段落里以「2024. 」开头的行被硬切成列表项,原编号还被 X 重编为 1(内容失真)。
+describe('有序列表打断段落的收紧(B3-11)', () => {
+  it('段落中的 `2024. ` 行不再打断段落(整段并为一个 unstyled 块)', () => {
+    const blocks = parseMarkdown('那年冬天特别冷,\n2024. 冬天的第一场雪来得很晚,\n我们都记得。');
+    expect(blocks).toHaveLength(1);
+    const b = asText(blocks[0]);
+    expect(b.type).toBe('unstyled');
+    expect(b.text).toBe('那年冬天特别冷,\n2024. 冬天的第一场雪来得很晚,\n我们都记得。');
+  });
+
+  it('`1.` 仍可打断段落(与 CommonMark 一致)', () => {
+    const blocks = parseMarkdown('前面一段\n1. 第一项\n2. 第二项');
+    expect(asText(blocks[0]).type).toBe('unstyled');
+    expect(asText(blocks[1]).type).toBe('ordered-list-item');
+    expect(asText(blocks[2]).type).toBe('ordered-list-item');
+  });
+
+  it('独立起块时任意数字仍是有序列表(只收紧「打断段落」这一处)', () => {
+    expect(asText(parseMarkdown('2024. 年度总结')[0]).type).toBe('ordered-list-item');
+    expect(asText(parseMarkdown('前面一段\n\n3. 第三项')[1]).type).toBe('ordered-list-item');
+  });
+
+  it('无序列表仍可被任意标记打断(不受本收紧影响)', () => {
+    expect(asText(parseMarkdown('前面一段\n- 项目')[1]).type).toBe('unordered-list-item');
+  });
+
+  it('setext 联动:`2024. ` 行成为合法段落行后,其下 `---` 把整段升格为标题', () => {
+    const blocks = parseMarkdown('前面一段\n2024. 冬\n---');
+    expect(blocks).toHaveLength(1);
+    const b = asText(blocks[0]);
+    expect(b.type).toBe('header-one');
+    expect(b.text).toBe('前面一段\n2024. 冬');
+  });
+
+  it('块首的 `2024. 冬` + `===` 仍按有序列表处理(与 extractTitle 口径不分裂)', () => {
+    const blocks = parseMarkdown('2024. 冬\n===');
+    expect(asText(blocks[0]).type).toBe('ordered-list-item');
+    expect(asText(blocks[1]).text).toBe('===');
+  });
+});
+
 describe('setext 标题', () => {
   it('=== 下划线 → header-one,下划线行被吃掉', () => {
     const blocks = parseMarkdown('我的标题\n===\n\n正文');
@@ -435,10 +542,48 @@ describe('推文 URL', () => {
     if (b.entityType === 'TWEET') expect(b.data.tweetId).toBe('77');
   });
 
-  it('带 query 参数的推文不匹配,降级为段落', () => {
-    const b = asText(parseMarkdown('https://x.com/u/status/123?s=20')[0]);
-    expect(b.type).toBe('unstyled');
-    expect(b.text).toBe('https://x.com/u/status/123?s=20');
+  // B3-2(P1-5):X 官方「复制链接」默认带 `?s=20`,旧正则 `\/?$` 收尾 → 100% 漏判,
+  // 整行落成 unstyled 死文本(连 LINK 都不是)。
+  it('带 query 参数(X 分享按钮默认形态)的推文识别', () => {
+    const b = asAtomic(parseMarkdown('https://x.com/u/status/123?s=20')[0]);
+    expect(b.entityType).toBe('TWEET');
+    if (b.entityType === 'TWEET') expect(b.data.tweetId).toBe('123');
+  });
+
+  it('带 fragment 的推文识别', () => {
+    expect(asAtomic(parseMarkdown('https://x.com/u/status/123#m')[0]).entityType).toBe('TWEET');
+  });
+
+  it('mobile. 子域识别', () => {
+    const b = asAtomic(parseMarkdown('https://mobile.twitter.com/u/status/456')[0]);
+    expect(b.entityType).toBe('TWEET');
+    if (b.entityType === 'TWEET') expect(b.data.tweetId).toBe('456');
+  });
+
+  it('行尾空白不再阻断识别(匹配前 trim)', () => {
+    expect(asAtomic(parseMarkdown('https://x.com/u/status/123  ')[0]).entityType).toBe('TWEET');
+    expect(asAtomic(parseMarkdown('  https://x.com/u/status/123')[0]).entityType).toBe('TWEET');
+  });
+
+  // 行为外溢(有意接受,测试钉住语义):`(?:[/?#]\S*)?` 尾缀让子路径链接也成 TWEET 块。
+  // X 的嵌入卡片按 tweetId 渲染,渲染结果与主帖一致,故可接受。
+  it('/photo/1、/analytics 等子路径链接也成为 TWEET 块(有意的行为外溢)', () => {
+    const photo = asAtomic(parseMarkdown('https://x.com/u/status/123/photo/1')[0]);
+    expect(photo.entityType).toBe('TWEET');
+    if (photo.entityType === 'TWEET') expect(photo.data.tweetId).toBe('123');
+    expect(asAtomic(parseMarkdown('https://x.com/u/status/123/analytics')[0]).entityType).toBe('TWEET');
+  });
+
+  it('status 段非纯数字 / 含空格仍不匹配', () => {
+    expect(asText(parseMarkdown('https://x.com/u/status/abc')[0]).type).toBe('unstyled');
+    expect(asText(parseMarkdown('https://x.com/u/status/123 后面还有字')[0]).type).toBe('unstyled');
+  });
+
+  it('段落下方紧跟带 query 的推文行 → 段落在此断开(isBlockBoundary 同步)', () => {
+    const blocks = parseMarkdown('前面一段\nhttps://x.com/u/status/123?s=20\n后面一段');
+    expect(asText(blocks[0]).text).toBe('前面一段');
+    expect(asAtomic(blocks[1]).entityType).toBe('TWEET');
+    expect(asText(blocks[2]).text).toBe('后面一段');
   });
 });
 
@@ -707,6 +852,43 @@ describe('图片行', () => {
   });
 });
 
+// B3-1(P1-4):CommonMark 的可选 title(`url "标题"`)是 Typora/Pandoc/HTML→md 的默认输出,
+// 未剥离时整个 `url "标题"` 进 source → 远程 fetch 404 / 本地 vault 查不到,整图降级。
+describe('图片 destination 的可选 title 剥离', () => {
+  it('双引号 title 被剥离', () => {
+    const b = asImage(parseMarkdown('![描述](https://h/a.png "标题")')[0]);
+    expect(b.source).toBe('https://h/a.png');
+    expect(b.alt).toBe('描述');
+  });
+
+  it('单引号 title 被剥离', () => {
+    expect(asImage(parseMarkdown("![](https://h/a.png 'title')")[0]).source).toBe('https://h/a.png');
+  });
+
+  it('title 与 URL 之间多个空格 / Tab 同样剥离', () => {
+    expect(asImage(parseMarkdown('![](a.png   "t")')[0]).source).toBe('a.png');
+    expect(asImage(parseMarkdown('![](a.png\t"t")')[0]).source).toBe('a.png');
+  });
+
+  it('`(标题)` 形态**不剥**——与 `photo (1).png` 这类文件名歧义,保守起见原样保留', () => {
+    expect(asImage(parseMarkdown('![](photo (1).png)')[0]).source).toBe('photo (1).png');
+  });
+
+  it('含空格的本地路径(无引号)不被误截', () => {
+    expect(asImage(parseMarkdown('![](my file.png)')[0]).source).toBe('my file.png');
+  });
+
+  it('`<>` 包裹分支不受影响:尖括号内原样,`>` 之后的 title 本就被忽略', () => {
+    expect(asImage(parseMarkdown('![](<images/a b.png> "标题")')[0]).source).toBe('images/a b.png');
+  });
+
+  it('带链接图片 `[![](img "t")](link)` 的内层图片同样剥 title', () => {
+    const b = asImage(parseMarkdown('[![说明](https://i/img.png "标题")](https://link)')[0]);
+    expect(b.source).toBe('https://i/img.png');
+    expect(b.alt).toBe('说明');
+  });
+});
+
 describe('isImageLine', () => {
   it('裸/带链接/Obsidian 图片行均返回 true', () => {
     expect(isImageLine('![](x.png)')).toBe(true);
@@ -911,6 +1093,83 @@ describe('frontmatter', () => {
   });
 });
 
+// B3-6(P2-8):CommonMark 允许块级元素前有 0-3 个空格。此前一律要求顶格,缩进的标题/引用/
+// 围栏全部降级成段落,前导空格还以字面量进正文。divider / setext / 块级公式**仍维持顶格**
+// (它们的顶格约束是有意的,见各自注释)。
+describe('0-3 空格缩进的块级元素(B3-6)', () => {
+  it('缩进 1-3 空格的 ATX 标题仍是标题,前导空格不进文本', () => {
+    for (const md of [' # 标题', '  # 标题', '   # 标题']) {
+      const b = asText(parseMarkdown(md)[0]);
+      expect([md, b.type, b.text]).toEqual([md, 'header-one', '标题']);
+    }
+    expect(asText(parseMarkdown('   ### 三级')[0]).type).toBe('header-two');
+  });
+
+  it('缩进 ≥4 空格的 `#` 仍是段落,且原样保留缩进(粘贴的代码/日志不毁)', () => {
+    const b = asText(parseMarkdown('    # 不是标题')[0]);
+    expect(b.type).toBe('unstyled');
+    expect(b.text).toBe('    # 不是标题');
+  });
+
+  it('缩进 1-3 空格的引用仍是 blockquote', () => {
+    for (const md of [' > 引用', '  > 引用', '   > 引用']) {
+      const b = asText(parseMarkdown(md)[0]);
+      expect([md, b.type, b.text]).toEqual([md, 'blockquote', '引用']);
+    }
+  });
+
+  it('缩进围栏成代码块,且**语言标记不丢**(info 规范化正则须同步放宽)', () => {
+    const b = asAtomic(parseMarkdown('  ```ts\nconst x = 1;\n  ```')[0]);
+    expect(b.entityType).toBe('MARKDOWN');
+    if (b.entityType === 'MARKDOWN') {
+      expect(b.data.markdown.startsWith('```ts')).toBe(true);
+      expect(b.data.markdown).toContain('const x = 1;');
+    }
+  });
+
+  it('缩进的闭栏行仍能闭合(matchFenceClose 须同步放宽,否则整段吞进正文)', () => {
+    const blocks = parseMarkdown('```\ncode\n  ```\n围栏之后的正文');
+    expect(asAtomic(blocks[0]).entityType).toBe('MARKDOWN');
+    expect(asText(blocks[1]).text).toBe('围栏之后的正文');
+  });
+
+  it('缩进围栏内部的内容不被解析(与顶格围栏一致)', () => {
+    const b = asAtomic(parseMarkdown('   ```\n# 里面的井号\n---\n   ```')[0]);
+    expect(b.entityType).toBe('MARKDOWN');
+    if (b.entityType === 'MARKDOWN') expect(b.data.markdown).toContain('# 里面的井号');
+  });
+
+  it('段落行的前导空白逐行剥离,最多 3 列', () => {
+    const b = asText(parseMarkdown('  段落第一行\n   段落第二行\n段落第三行')[0]);
+    expect(b.type).toBe('unstyled');
+    expect(b.text).toBe('段落第一行\n段落第二行\n段落第三行');
+  });
+
+  it('段落里 ≥4 空格的行原样保留(粘贴的缩进日志不被剥)', () => {
+    const b = asText(parseMarkdown('日志如下:\n    2026-08-18 ERROR x\n     缩进更深的一行')[0]);
+    expect(b.text).toBe('日志如下:\n    2026-08-18 ERROR x\n     缩进更深的一行');
+  });
+
+  it('前导空白剥离发生在行内解析之前,offset 不错位', () => {
+    const b = asText(parseMarkdown('  **粗体**开头')[0]);
+    expect(b.text).toBe('粗体开头');
+    expect(b.inlineStyleRanges).toEqual([{ offset: 0, length: 2, style: 'BOLD' }]);
+  });
+
+  it('divider / setext / 块级公式维持顶格(不随本条放宽)', () => {
+    expect(asText(parseMarkdown('  ---')[0]).type).toBe('unstyled'); // 不是 DIVIDER
+    expect(asText(parseMarkdown('标题\n  ===')[0]).type).toBe('unstyled'); // 不是 setext
+    expect(asText(parseMarkdown('  $$ x $$')[0]).type).toBe('unstyled'); // 不是 LATEX
+  });
+
+  it('缩进标题可打断段落(isBlockBoundary 随 RE_HEADING/RE_BLOCKQUOTE 同步)', () => {
+    const blocks = parseMarkdown('前面一段\n  # 标题\n  > 引用');
+    expect(asText(blocks[0]).text).toBe('前面一段');
+    expect(asText(blocks[1]).type).toBe('header-one');
+    expect(asText(blocks[2]).type).toBe('blockquote');
+  });
+});
+
 describe('对抗与边界', () => {
   it('深度嵌套链接不抛异常也不超时,降级纯文本', () => {
     const s = '['.repeat(5000) + 'x' + '](u)'.repeat(5000);
@@ -971,6 +1230,59 @@ describe('forEachContentLine', () => {
     });
     expect(visited).toEqual(['```', 'x']);
   });
+
+  // B3-3(P1-6):frontmatter 跳过是**显式开关**,默认不跳——语义不隐式变更,
+  // 需要跳过的消费方(标题抽取链)自己声明,免得别的消费方被悄悄改语义。
+  it('默认不跳过 frontmatter(语义不变)', () => {
+    const lines = ['---', '# 元数据区', 'foo: bar', '---', '# 真标题'];
+    const visited: string[] = [];
+    forEachContentLine(lines, (line) => {
+      visited.push(line);
+    });
+    expect(visited).toEqual(lines);
+  });
+
+  it('skipFrontmatter=true 时跳过文首 frontmatter 整块', () => {
+    const lines = ['---', '# 元数据区', 'foo: bar', '---', '# 真标题'];
+    const visited: string[] = [];
+    forEachContentLine(
+      lines,
+      (line) => {
+        visited.push(line);
+      },
+      { skipFrontmatter: true },
+    );
+    expect(visited).toEqual(['# 真标题']);
+  });
+
+  it('skipFrontmatter=true 时 index 仍是**原始行下标**(splice 才不会删错行)', () => {
+    const lines = ['---', 'foo: bar', '---', '正文', '# 真标题'];
+    const seen: Array<[string, number]> = [];
+    forEachContentLine(
+      lines,
+      (line, index) => {
+        seen.push([line, index]);
+      },
+      { skipFrontmatter: true },
+    );
+    expect(seen).toEqual([
+      ['正文', 3],
+      ['# 真标题', 4],
+    ]);
+  });
+
+  it('skipFrontmatter=true 但无 frontmatter → 从头遍历', () => {
+    const lines = ['# 标题', '正文'];
+    const visited: string[] = [];
+    forEachContentLine(
+      lines,
+      (line) => {
+        visited.push(line);
+      },
+      { skipFrontmatter: true },
+    );
+    expect(visited).toEqual(['# 标题', '正文']);
+  });
 });
 
 describe('stripFirstImageLine', () => {
@@ -1021,5 +1333,38 @@ describe('wikilink 开关', () => {
   it('关闭时 [[x|y]] 也保留字面量', () => {
     const off = asText(parseMarkdown('[[t|y]]', { wikilink: false })[0]);
     expect(off.text).toBe('[[t|y]]');
+  });
+});
+
+describe('批次三 code review 修复回归', () => {
+  it('推文链接后直接接 CJK 正文(无空格)→ 整行回落普通文本,正文一字不丢', () => {
+    const blocks = parseMarkdown('https://x.com/user/status/123?s=20这条推文说得好');
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]!.kind).toBe('text');
+    expect((blocks[0] as { text: string }).text).toContain('这条推文说得好');
+  });
+
+  it('推文链接尾随句号「。」→ 不匹配 TWEET,整行保留', () => {
+    const blocks = parseMarkdown('https://x.com/user/status/123?s=20。');
+    expect(blocks[0]!.kind).toBe('text');
+  });
+
+  it('纯 ASCII query 推文链接仍是 TWEET 块(收口不误伤)', () => {
+    const blocks = parseMarkdown('https://x.com/user/status/123?s=20&t=abc');
+    expect(blocks[0]!.kind).toBe('atomic');
+  });
+
+  it('闭栏行尾随全角空格 U+3000(CJK 输入法常见)仍闭合围栏', () => {
+    const blocks = parseMarkdown('```js\nconst a = 1;\n```　\n\n正文');
+    expect(blocks[0]!.kind).toBe('atomic'); // 代码块完整成块
+    expect(blocks.some((b) => b.kind === 'text' && (b as { text: string }).text === '正文')).toBe(true);
+  });
+
+  it('Tab 分隔的分割线 `-\\t-\\t-` 与尾随 Tab 的 `- - -\\t` 均识别为 hr', () => {
+    for (const md of ['-\t-\t-', '- - -\t']) {
+      const blocks = parseMarkdown(md);
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0]!.kind).toBe('atomic');
+    }
   });
 });

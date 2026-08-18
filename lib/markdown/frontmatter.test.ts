@@ -39,6 +39,56 @@ describe('extractTitle · 引号剥离', () => {
   });
 });
 
+// B3-9(P2-11):YAML block scalar 与行内注释此前直接进标题——`title: >` 产出标题 `">"`,
+// `title: 我的标题 # 草稿` 把注释一起写进 X。
+describe('extractTitle · YAML block scalar 与行内注释(B3-9)', () => {
+  it('title 值为 `>` / `|` 及其变体 → 视为未命中,回落 H1', () => {
+    for (const v of ['>', '|', '>-', '|-', '>+', '|+', '>2']) {
+      const md = `---\ntitle: ${v}\n  多行标题\n---\n\n# 真标题\n`;
+      expect([v, extractTitle(md)]).toEqual([v, { title: '真标题', source: 'h1' }]);
+    }
+  });
+
+  it('行内注释被剥离(`#` 前有空白且值未加引号)', () => {
+    expect(extractTitle('---\ntitle: 我的标题 # 草稿\n---\n')).toEqual({
+      title: '我的标题',
+      source: 'frontmatter',
+    });
+  });
+
+  it('`title: 前端 #1 技巧` 按 YAML 语义截为「前端」', () => {
+    expect(extractTitle('---\ntitle: 前端 #1 技巧\n---\n')).toEqual({
+      title: '前端',
+      source: 'frontmatter',
+    });
+  });
+
+  it('`#` 前无空白(如 `C#`)不剥', () => {
+    expect(extractTitle('---\ntitle: C# 入门\n---\n')?.title).toBe('C# 入门');
+  });
+
+  it('加引号的值不剥注释,闭引号之后的注释丢弃', () => {
+    expect(extractTitle('---\ntitle: "前端 #1 技巧"\n---\n')?.title).toBe('前端 #1 技巧');
+    expect(extractTitle('---\ntitle: "我的标题" # 草稿\n---\n')?.title).toBe('我的标题');
+  });
+
+  it('加引号的 `title: ">"` 是字面量,不当 block scalar', () => {
+    expect(extractTitle('---\ntitle: ">"\n---\n')).toEqual({ title: '>', source: 'frontmatter' });
+  });
+
+  it('值本身就是注释(`title: # 注释`)→ 视为空,回落 H1', () => {
+    expect(extractTitle('---\ntitle: # 注释\n---\n\n# 真标题\n')).toEqual({
+      title: '真标题',
+      source: 'h1',
+    });
+  });
+
+  it('注释剥离**不外溢到 cover**(共用 stripQuotes,不许截断含 # 的封面路径)', () => {
+    expect(extractCover('---\ncover: assets/图 #1.png\n---\n')).toBe('assets/图 #1.png');
+    expect(extractCover('---\ncover: assets/a#1.png\n---\n')).toBe('assets/a#1.png');
+  });
+});
+
 describe('extractTitle · 空值与缺失', () => {
   it('title 值为空 → 视为未命中,回落到正文 H1', () => {
     const md = '---\ntitle:\n---\n\n# Fallback H1\n';
@@ -94,6 +144,58 @@ describe('extractTitle · H1 抽取跳过代码围栏', () => {
   it('## 二级标题不被当作 H1(仅 # 后紧跟空白才命中)', () => {
     const md = '## 这是二级标题\n\n# 这才是 H1\n';
     expect(extractTitle(md)).toEqual({ title: '这才是 H1', source: 'h1' });
+  });
+});
+
+describe('extractTitle · H1 抽取跳过文首 frontmatter(B3-3 / P1-6)', () => {
+  // `# 注释` 是合法 YAML 注释(Obsidian 模板常见)。此前 findFirstH1 从第 0 行扫起,
+  // frontmatter 内的注释被抽成文章标题;h1Handle=remove 时还会从 frontmatter **内部**删行。
+  it('frontmatter 内的 YAML 注释 `# x` 不被当作标题', () => {
+    const md = '---\n# 元数据区\nfoo: bar\n---\n\n# 真标题\n';
+    expect(extractTitle(md)).toEqual({ title: '真标题', source: 'h1' });
+  });
+
+  it('frontmatter 内的注释 + 正文无 H1 → null(不误抽)', () => {
+    const md = '---\n# 元数据区\nfoo: bar\n---\n\n只有正文。\n';
+    expect(extractTitle(md)).toBeNull();
+  });
+
+  it('frontmatter 末行 + 闭合 `---` 不构成 setext 标题', () => {
+    // 闭合行是 `---`(二级)本就不作标题,这里钉住的是「frontmatter 体不进标题扫描」这条口径。
+    const md = '---\nfoo: bar\n---\n\n正文';
+    expect(extractTitle(md)).toBeNull();
+  });
+
+  it('stripFirstH1 不从 frontmatter 内部删行', () => {
+    const md = '---\n# 元数据区\nfoo: bar\n---\n\n# 真标题\n\n正文';
+    const stripped = stripFirstH1(md);
+    expect(stripped).toContain('# 元数据区'); // frontmatter 完整保留
+    expect(stripped).not.toContain('# 真标题');
+  });
+});
+
+// B3-6(P2-8):H1 判定必须与 parser 的 RE_HEADING 同步放宽,否则出现
+// 「parser 认成标题、extractTitle 抽不到」的分裂(HANDOFF §8 记过两次同类教训)。
+describe('extractTitle · 0-3 空格缩进的 H1(B3-6)', () => {
+  it('缩进 1-3 空格的 `# x` 仍被抽为标题', () => {
+    for (const md of [' # 标题', '  # 标题', '   # 标题']) {
+      expect([md, extractTitle(md)]).toEqual([md, { title: '标题', source: 'h1' }]);
+    }
+  });
+
+  it('缩进 ≥4 空格的 `# x` 不作标题(与 parser 一致:那是缩进代码领域)', () => {
+    expect(extractTitle('    # 不是标题')).toBeNull();
+  });
+
+  it('stripFirstH1 删掉的正是那行缩进 H1', () => {
+    expect(stripFirstH1('  # 标题\n\n正文')).toBe('\n正文');
+  });
+
+  it('缩进围栏内的 `# x` 仍被跳过(forEachContentLine 的围栏判定同步放宽)', () => {
+    expect(extractTitle('  ```\n  # 假标题\n  ```\n\n# 真标题')).toEqual({
+      title: '真标题',
+      source: 'h1',
+    });
   });
 });
 
@@ -202,5 +304,39 @@ describe('extractCover', () => {
   it('[[x]](无 ! 的内链)同样剥壳', () => {
     const md = '---\ncover: [[wiki.png]]\n---\n';
     expect(extractCover(md)).toBe('wiki.png');
+  });
+
+  // B3-10(P2-12):`![[path|alt]]` 的 `|alt` 是图注/尺寸,不是路径的一部分。
+  // 不切分则封面查找必败,且与 parser 对同一语法的处理(matchObsidianImageLine)不一致。
+  it('`![[path|alt]]` 剥壳后再切掉 `|别名`', () => {
+    expect(extractCover('---\ncover: "![[assets/a.png|封面图]]"\n---\n')).toBe('assets/a.png');
+    expect(extractCover('---\ncover: ![[a.png|300]]\n---\n')).toBe('a.png');
+  });
+
+  it('`[[path|alt]]`(无 !)同样切掉别名', () => {
+    expect(extractCover('---\ncover: [[assets/b.png|别名]]\n---\n')).toBe('assets/b.png');
+  });
+
+  it('无 `|` 的 wiki 路径不受影响', () => {
+    expect(extractCover('---\ncover: ![[assets/c.png]]\n---\n')).toBe('assets/c.png');
+  });
+});
+
+describe('批次三 code review 修复回归 · 引号内转义', () => {
+  it('双引号值内的 \\" 转义引号不截断标题', () => {
+    const r = extractTitle('---\ntitle: "He said \\"hi\\" ok"\n---\n\n正文');
+    expect(r?.title).toContain('hi');
+    expect(r?.title).toContain('ok');
+  });
+
+  it("单引号值内的 '' 转义引号不截断标题", () => {
+    const r = extractTitle("---\ntitle: 'It''s me'\n---\n\n正文");
+    expect(r?.title).toContain('s me');
+  });
+
+  it('带转义引号的值后跟行内注释仍正确剥离注释', () => {
+    const r = extractTitle('---\ntitle: "a \\"b\\" c" # 草稿\n---\n\n正文');
+    expect(r?.title).not.toContain('草稿');
+    expect(r?.title).toContain('c');
   });
 });

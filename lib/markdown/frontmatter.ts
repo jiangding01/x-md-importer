@@ -7,7 +7,7 @@
  * `title:` / `Title:` / `标题:`,不支持嵌套 YAML、不支持多行值。
  */
 
-import { forEachContentLine, isParagraphLine, setextUnderlineLevel } from './parser';
+import { forEachContentLine, frontmatterBodyStart, isParagraphLine, setextUnderlineLevel } from './parser';
 
 /** 抽取结果:命中标题及其来源(供上层决定是否从正文移除 H1)。 */
 export interface ExtractedTitle {
@@ -35,36 +35,94 @@ function stripQuotes(raw: string): string {
  * frontmatter(把「正文」误抽为 title/cover),而 parser 却按分割线+正文处理,两边漂移。
  */
 function frontmatterBody(md: string): string | null {
+  // 判定完全委托 parser.frontmatterBodyStart(review 修复:此前这里是靠注释纪律手工对齐的
+  // 第二套实现——B3-7 刚消灭了 Preview 里的第三套,这里没道理再留一套)。
+  // 返回值约定:0=无 frontmatter;否则为闭合 `---` 的下一行 → 体 = 行 1 ~ start-2。
   const lines = md.split(/\r?\n/);
-  if (!/^---[ \t]*$/.test(lines[0] ?? '')) return null;
-  const body: string[] = [];
-  for (let j = 1; j < lines.length; j += 1) {
-    const l = lines[j] ?? '';
-    if (/^---[ \t]*$/.test(l)) return body.join('\n'); // 闭合
-    if (l.trim() === '') return null; // 空行前未闭合 → 非 frontmatter
-    body.push(l);
-  }
-  return null; // 未闭合
+  const start = frontmatterBodyStart(lines);
+  if (start === 0) return null;
+  return lines.slice(1, start - 1).join('\n');
 }
 
-/** 在 frontmatter 里按 key 列表取第一个命中的值(去引号);无 / 空 → null。 */
-function frontmatterValue(md: string, keys: readonly string[]): string | null {
+/**
+ * YAML 行内注释剥离(B3-9 / P2-11)。**只给 title 用**——cover 共用 stripQuotes,
+ * 若在那里也剥,`cover: assets/图 #1.png` 这类合法路径会被截断。
+ *
+ * 按 YAML 规则:`#` 只有在**前面有空白**时才开启注释,且**加引号的值内不认注释**。
+ * 传入的是**未 trim 的原始值**(`key:` 之后的整串),前导空白是判定 `title: # 注释`
+ * (值为空)所必需的。
+ */
+function stripInlineComment(raw: string): string {
+  const trimmed = raw.trim();
+  const quote = trimmed[0];
+  if (quote === '"' || quote === "'") {
+    // 找**真正的**闭引号(review 修复):双引号内 `\"` 是转义、单引号内 `''` 是转义——
+    // naive indexOf 会把首个内嵌引号当闭合,`"He said \"hi\" ok"` 被截成 `He said \`。
+    // 引号内的 `#` 是标题的一部分;真闭引号之后的内容(通常是 ` # 注释`)丢弃。
+    for (let i = 1; i < trimmed.length; i += 1) {
+      const ch = trimmed[i];
+      if (quote === '"' && ch === '\\') {
+        i += 1; // 跳过被转义的下一个字符
+        continue;
+      }
+      if (ch === quote) {
+        if (quote === "'" && trimmed[i + 1] === "'") {
+          i += 1; // `''` = 单引号值内的字面量引号,继续找
+          continue;
+        }
+        return trimmed.slice(0, i + 1);
+      }
+    }
+    return trimmed; // 未闭合:原样返回,交 stripQuotes 按既有规则兜底
+  }
+  const m = /\s#/.exec(raw);
+  return m ? raw.slice(0, m.index).trim() : trimmed;
+}
+
+/**
+ * YAML block scalar 的起始标记(`>` / `|`,可带缩进指示与 chomping 修饰):值在**下面几行**,
+ * 本行取到的只是标记本身。此前直接当标题用,产出 `">"` 这种垃圾标题;现视为未命中(回落 H1)——
+ * 多行标题不在本模块的「简易 frontmatter」支持范围内,宁可回落也不写错。
+ */
+const RE_BLOCK_SCALAR = /^[>|][0-9]*[-+]?$/;
+
+/**
+ * 在 frontmatter 里按 key 列表取第一个命中的值(去引号);无 / 空 → null。
+ * `titleSemantics`(B3-9):仅 title 分支启用的 YAML 语义——剥行内注释 + 拒绝 block scalar 标记。
+ */
+function frontmatterValue(
+  md: string,
+  keys: readonly string[],
+  opts: { titleSemantics?: boolean } = {},
+): string | null {
   const body = frontmatterBody(md);
   if (body === null) return null;
   const keyRe = new RegExp(`^(${keys.join('|')})[ \\t]*:(.*)$`);
   for (const line of body.split(/\r?\n/)) {
     const kv = keyRe.exec(line);
     if (kv) {
-      const value = stripQuotes(kv[2] ?? '');
+      const raw = kv[2] ?? '';
+      const shaped = opts.titleSemantics ? stripInlineComment(raw) : raw;
+      // block scalar 判定在**剥引号之前**:加了引号的 `title: ">"` 按 YAML 是字面量 `>`,不是标记。
+      if (opts.titleSemantics && RE_BLOCK_SCALAR.test(shaped)) return null;
+      const value = stripQuotes(shaped);
       return value.length > 0 ? value : null;
     }
   }
   return null;
 }
 
-/** 从文首 frontmatter 块解析 title;无块 / 无命中 / 值为空 → null。 */
+/** 从文首 frontmatter 块解析 title;无块 / 无命中 / 值为空 / block scalar → null。 */
 function fromFrontmatter(md: string): string | null {
-  return frontmatterValue(md, ['title', 'Title', '标题']);
+  return frontmatterValue(md, ['title', 'Title', '标题'], { titleSemantics: true });
+}
+
+/**
+ * wiki 语法 `[[path|alt]]` 剥壳后取**路径部分**(B3-10 / P2-12):`|` 之后是图注/尺寸,
+ * 不切分则封面按 `path|alt` 去查找必然失败,且与 parser 对同一语法的处理(块级 `![[x|alt]]`)分裂。
+ */
+function wikiTarget(inner: string): string {
+  return (inner.split('|')[0] ?? '').trim();
 }
 
 /**
@@ -76,10 +134,10 @@ export function extractCover(md: string): string | null {
   if (raw === null) return null;
   // 兼容 ![[assets/x.png]] 包裹(先于 [[x]] 判断,避免被误剥成 !x)
   const wiki = /^!\[\[(.+?)\]\]$/.exec(raw);
-  if (wiki) return (wiki[1] ?? '').trim();
+  if (wiki) return wikiTarget(wiki[1] ?? '');
   // 兼容 Obsidian 无 ! 的内链 [[assets/x.png]]
   const wikiLink = /^\[\[(.+?)\]\]$/.exec(raw);
-  if (wikiLink) return (wikiLink[1] ?? '').trim();
+  if (wikiLink) return wikiTarget(wikiLink[1] ?? '');
   const md2 = /^!\[[^\]]*\]\((.+)\)$/.exec(raw);
   if (md2) return (md2[1] ?? '').trim();
   return raw;
@@ -100,8 +158,13 @@ function findFirstH1(lines: string[]): { index: number; lineCount: number; title
   let found: { index: number; lineCount: number; title: string } | null = null;
   // 复用 parser 的严格围栏遍历(与解析主循环同源):`~~~` 与 ``` 不互闭、闭栏须裸行且数量足够,
   // 代码块内的 `# 注释` 不会被误当文章标题。`/^#\s+/` 只匹配 H1(`## ` 因 `#` 后非空白不命中)。
+  // skipFrontmatter(B3-3 / P1-6):文首 YAML 块不参与标题扫描——`# 元数据区` 这类合法 YAML
+  // 注释此前会被抽成文章标题,h1Handle=remove 时还从 frontmatter 内部删行。判定与 parser 的
+  // frontmatterBodyStart 同源(即与 frontmatterBody 同源),不新开第二套。
   forEachContentLine(lines, (line, index) => {
-    const h1 = /^#\s+(.+)$/.exec(line);
+    // `^ {0,3}` 与 parser 的 RE_HEADING 同步放宽(B3-6):否则缩进一格的 `# 标题` 会出现
+    // 「parser 认成标题、extractTitle 抽不到」的分裂。≥4 空格同样不认(缩进代码领域)。
+    const h1 = /^ {0,3}#\s+(.+)$/.exec(line);
     if (h1) {
       const title = (h1[1] ?? '').trim();
       if (title.length > 0) {
@@ -122,7 +185,7 @@ function findFirstH1(lines: string[]): { index: number; lineCount: number; title
         return true;
       }
     }
-  });
+  }, { skipFrontmatter: true });
   return found;
 }
 

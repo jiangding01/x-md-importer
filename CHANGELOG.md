@@ -7,6 +7,22 @@
 
 ## [Unreleased]
 
+### 批次三 · 解析正确性(对应审查报告 P1-4~P1-7、P2-7~P2-14;12 项全修)
+
+- **图片 title 剥离(P1-4)**:`![](url "标题")`(Typora/Pandoc 默认输出)不再把 title 吞进 src 导致上传必败;只剥 `"…"`/`'…'`,统一落在 `normalizeImageSrc`(裸图行与带链接图共用)。
+- **推文正则(P1-5)**:X 官方「复制链接」的 `?s=20` 带参形态、`mobile.` 子域、行尾空格均正确识别为 TWEET 嵌入;尾缀只认可打印 ASCII——「URL 直接接中文正文」整行回落文本,正文不丢。
+- **标题抽取跳过 frontmatter(P1-6)**:YAML `# 注释` 不再被抽成文章标题/被 `h1Handle=remove` 误删;`forEachContentLine` 加显式 `skipFrontmatter` 参数(不隐式改语义)。
+- **权限申请改块级源(P1-7)**:`requestRemoteImagePermissions(blocks, …)` 与实际上传同源;`<>` 包裹远程图不再漏申请 host 权限;`capability.images()` 全文正则连同测试删除。
+- **hr 变体(P2-7)**:`- - -`/`* * *`/`___`(含 Tab 分隔/尾随)识别为分割线,不再产出垃圾列表项;divider 保持顶格(列表下缩进 `---` 语义不变),段落+`---`=setext 四象限回归钉死。
+- **0-3 空格缩进块(P2-8)**:标题/引用/围栏按 CommonMark 接受 0-3 空格缩进;围栏三处判定同源化(`RE_FENCE_LINE` 单一来源);段落前导空白逐行剥(≤3 列,≥4 空格原样保留);闭栏行尾随全角空格 U+3000 仍闭合。
+- **Preview frontmatter 复用 parser 判定(P2-9)**:CRLF 文档预览不再把 frontmatter 当正文;`frontmatter.ts` 的判定同样委托 `frontmatterBodyStart`——三套平行实现收敛为一。
+- **预览语义标注(P2-10 低成本)**:预览顶部注明「以能力面板为准」;完整对齐列 backlog。
+- **frontmatter 值健壮性(P2-11)**:`title: >`/`|` block scalar 回落 H1;行内 ` # 注释` 按 YAML 规则剥离(仅 title 分支、引号值不剥、`\"`/`''` 转义引号正确处理不截断)。
+- **cover wiki 别名(P2-12)**:`cover: "![[x.png|封面]]"` 剥 `|alt`,与 parser 口径一致。
+- **有序列表打断段落收紧(P2-13)**:软折行段落中 `2024. ` 不再被硬切成列表(仅 `1.` 可打断);块首起列表仍任意数字。
+- **历史标题口径统一(P2-14)**:`firstTitle` 复用 `extractTitle`——frontmatter-only/setext 标题的历史条目不再显示「未命名草稿」。
+- 单测 377 → **463**(+86,全部红→绿驱动),新增 imagePermissions/preview 两个测试文件。
+
 ### 批次二 · 写入安全(对应审查报告 P1-1/P1-2/P1-3/P2-2/P2-5 + P3 dataURI)
 
 - **目标钉死双钥 tabId + articleId(P1-1)**:`writeX` 两条路径(ask 与直写)都在进入任何挂起窗口(确认弹窗 / host 权限申请)**之前**探测并钉死目标;`import` 消息带 `expectedArticleId`,injector 在入口、主提交前、每张图前、清扫前、封面前**持续复查**当前文章 id,SPA 同 tab 切文章立即停手(新错误码 `article-switched`,专属文案提示)。堵住「探 A 写 B」竞态在正文通道的复发(B1 修过标题通道)。

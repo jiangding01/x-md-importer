@@ -33,6 +33,9 @@ const zh = {
   import: '导入 .md',
   edit: '编辑',
   preview: '预览',
+  // B3-8(P2-10):预览用的是通用 Markdown 渲染器(完整 CommonMark),与本项目解析器的
+  // 子集语义系统性不一致(裸 URL、行内图片、H4-6、`- - -` 等)。能力面板才是写入真相。
+  previewNote: '预览为通用 Markdown 渲染,与 X 实际效果以能力面板为准',
   placeholder: '在这里粘贴或输入 Markdown…',
   step1: '打开 X 文章编辑器',
   step2: '粘贴、拖入或选择 .md 文件',
@@ -195,6 +198,7 @@ const en: Dict = {
   import: 'Import .md',
   edit: 'Edit',
   preview: 'Preview',
+  previewNote: 'Preview uses a generic Markdown renderer — the capability panel is the source of truth for X.',
   placeholder: 'Paste or type Markdown here…',
   step1: 'Open the X article editor',
   step2: 'Paste, drop or pick a .md file',

@@ -30,8 +30,27 @@ interface Fence {
 // 块级正则(集中定义,块级判定与「段落边界探测」共用同一套,避免规则漂移)
 // ---------------------------------------------------------------------------
 
-const RE_DIVIDER = /^(-{3,}|\*{3,})$/;
-const RE_TWEET = /^https?:\/\/(?:www\.)?(?:x|twitter)\.com\/[^/]+\/status\/(\d+)\/?$/;
+/**
+ * 分割线:3 个以上**同一个**标记字符(`-` / `*` / `_`),字符之间允许空格,尾随空白允许。
+ * B3-5(P2-7)放宽了字符集与内部空格——`- - -` / `* * *` / `___` 都是 CommonMark 的标准写法,
+ * 此前分别落成垃圾列表项(`* * *` 是「单空格 + ITALIC」的纯垃圾块)与段落字面量。
+ *
+ * **仍要求顶格,不容前导空白**:放开缩进会让 `- item` 下方缩进的 `  ---` 变成分割线,
+ * 把列表硬切两半(这条约束是有意的,setext 下划线 RE_SETEXT_* 与块级公式同理)。
+ */
+const RE_DIVIDER = /^([-*_])([ \t]*\1){2,}[ \t]*$/;
+/**
+ * 独占一行的推文链接。尾缀 `(?:[/?#]\S*)?`(B3-2 / P1-5)是必需的:X 官方「复制链接」默认
+ * 产出 `?s=20`,旧的 `\/?$` 收尾让这个**最常见形态 100% 漏判**,整行落成 unstyled 死文本。
+ * `mobile.` 子域同理(移动端复制)。
+ *
+ * **有意的行为外溢**:该尾缀让 `/status/123/photo/1`、`/analytics` 等子路径链接也成为 TWEET 块
+ * ——X 的嵌入卡片按 tweetId 渲染,结果与主帖一致,故接受(测试钉住此语义)。
+ */
+// 尾缀只认**可打印 ASCII**(`[!-~]`)而非 `\S`(review 修复):中文写作常见「URL 直接接正文」
+// (`…?s=20这条推文说得好`),`\S*` 会把正文吞进 TWEET 块静默删掉;ASCII 收口后这类行
+// 整行回落普通文本,内容一字不丢。
+const RE_TWEET = /^https?:\/\/(?:www\.|mobile\.)?(?:x|twitter)\.com\/[^/]+\/status\/(\d+)(?:[/?#][!-~]*)?$/;
 /** 独占一行单张裸图片的**前缀** `![alt](`(alt 不含 `]`);其后 src 由 matchImageLine 括号配对扫描。 */
 const RE_IMAGE_LINE_HEAD = /^!\[([^\]]*)\]\(/;
 /**
@@ -46,8 +65,14 @@ const RE_LINKED_IMAGE_LINE = /^\[!\[([^\]]*)\]\((.+)\)\]\((.+)\)$/;
  * 组1 = `path` 或 `path|alt`——由 matchObsidianImageLine 再切分 `|`。
  */
 const RE_OBSIDIAN_IMAGE_LINE = /^!\[\[([^\]]+)\]\]$/;
-const RE_HEADING = /^(#{1,6})\s+(.*)$/;
-const RE_BLOCKQUOTE = /^>/;
+/**
+ * ATX 标题 / 引用:允许 CommonMark 的 **0-3 空格缩进**(B3-6 / P2-8)。此前要求顶格,
+ * 缩进一格的标题、引用整块降级成段落,前导空格还以字面量进正文。≥4 空格仍不认——那是
+ * 缩进代码块的领域(用户粘贴的缩进日志/代码不该被拆成标题)。
+ * **注意**:divider / setext / 块级公式**不**随之放宽,它们的顶格约束是有意的(见各自注释)。
+ */
+const RE_HEADING = /^ {0,3}(#{1,6})\s+(.*)$/;
+const RE_BLOCKQUOTE = /^ {0,3}>/;
 /**
  * 列表项:组1 = 前导缩进(决定嵌套层级)、组2 = 标记后的内容。
  * 允许前导空白是嵌套列表的入口——此前要求顶格,缩进行落到段落分支、
@@ -60,6 +85,8 @@ const RE_BLOCKQUOTE = /^>/;
  */
 const RE_UL = /^([ \t]*)[-*+]\s+(.*)$/;
 const RE_OL = /^([ \t]*)\d+\.\s+(.*)$/;
+/** 打断段落专用的有序列表正则:只认 `1.`(CommonMark 规则,见 isTopLevelListLine)。 */
+const RE_OL_INTERRUPT = /^([ \t]*)1\.\s+(.*)$/;
 
 /** Draft 默认样式表只到 `public-DraftStyleDefault-depth4`,更深不再有额外缩进,故截顶。 */
 const MAX_LIST_DEPTH = 4;
@@ -77,6 +104,13 @@ const isTableSeparator = (line: string): boolean =>
  */
 const RE_SETEXT_EQ = /^=+[ \t]*$/;
 const RE_SETEXT_DASH = /^-+[ \t]*$/;
+
+/**
+ * 围栏行(开栏 / info 规范化共用):0-3 空格缩进 + 3 个以上 ` 或 ~,组1=围栏标记、组2=info。
+ * **单一来源**是有意的:围栏判定散落三处(matchFenceOpen / matchFenceClose / 主循环的 info
+ * 规范化),此前各写一份正则,漏改任一处就会吞掉语言标记或让闭栏失效(B3-6 的主要风险)。
+ */
+const RE_FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 
 /** ASCII 标点集合:反斜杠转义仅在其后紧跟 ASCII 标点时生效(字母/CJK 前的反斜杠保留原样)。 */
 const RE_PUNCT = /[!-/:-@[-`{-~]/;
@@ -165,12 +199,19 @@ export function frontmatterBodyStart(lines: string[]): number {
  *
  * 抽出此 helper 是为消除「三处 fence 追踪各写一份、语义漂移」:frontmatter.findFirstH1、
  * stripFirstImageLine 均改用它,与解析主循环保持同一套严格围栏判定。
+ *
+ * `skipFrontmatter`(B3-3 / P1-6):从 frontmatterBodyStart 起扫,文首 YAML 块整块不交给
+ * visitor——`# 注释` 是合法 YAML 注释(Obsidian 模板常见),否则会被标题抽取当成文章标题、
+ * 甚至被 stripFirstH1 从 frontmatter **内部**删掉一行。**默认关闭**:此开关有意做成显式的,
+ * 不隐式改本 helper 的既有语义(其余消费方的行为必须逐字节不变)。传给 visitor 的 index 始终
+ * 是**原始行下标**(调用方按它 splice 才不会删错行)。
  */
 export function forEachContentLine(
   lines: string[],
   visitor: (line: string, index: number) => boolean | void,
+  opts: { skipFrontmatter?: boolean } = {},
 ): void {
-  let i = 0;
+  let i = opts.skipFrontmatter ? frontmatterBodyStart(lines) : 0;
   while (i < lines.length) {
     const line = lines[i] ?? '';
     const fence = matchFenceOpen(line);
@@ -276,7 +317,9 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
         // `plain text` 会被 X 当成含空格/实体的语言名,渲染出难看的 `plain&#x20;text` 标签。
         // 代码内容(i+1..j)与闭合围栏行原样保留,只重写开栏首行的语言部分。
         const openLine = lines[i] ?? '';
-        const fm = /^(`{3,}|~{3,})(.*)$/.exec(openLine);
+        // 与 matchFenceOpen 同一条正则(B3-6):缩进围栏在此若认不出,marker/lang 双双回退默认值,
+        // 语言标记被静默吞掉。规范化后的开栏行不带前导缩进(块内容原样保留)。
+        const fm = RE_FENCE_LINE.exec(openLine);
         const marker = fm?.[1] ?? '```';
         const lang = normalizeCodeInfo(fm?.[2] ?? '');
         const markdown = [marker + lang, ...lines.slice(i + 1, j + 1)].join('\n');
@@ -334,7 +377,8 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
     }
 
     // 3. 推文(独占一行的裸 URL);url 规范化为 twitter.com/i/web 形式(xposter 实证)
-    const tweet = line.match(RE_TWEET);
+    //    匹配前 trim(B3-2):编辑器/剪贴板常带行尾空白,未 trim 时整行漏判成死文本。
+    const tweet = line.trim().match(RE_TWEET);
     if (tweet) {
       const tweetId = tweet[1] ?? '';
       blocks.push({
@@ -424,7 +468,7 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
 
     // 6. 引用:逐行独立成块(不合并多行)
     if (RE_BLOCKQUOTE.test(line)) {
-      const content = line.replace(/^>\s?/, '');
+      const content = line.replace(/^ {0,3}>\s?/, ''); // 前导缩进与 RE_BLOCKQUOTE 同步剥掉(B3-6)
       blocks.push(textBlock('blockquote', walkInline(content)));
       i += 1;
       continue;
@@ -453,7 +497,8 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
     let k = i + 1;
     while (k < lines.length) {
       const next = lines[k] ?? '';
-      if (isBlockBoundary(next)) break;
+      // interrupting=true:这些行是要去打断**已开启的段落**,有序列表按 CommonMark 只认 `1.`(B3-11)。
+      if (isBlockBoundary(next, true)) break;
       // setext 下划线终止段落收集,交下面判定升格为标题。`---` 已被 isBlockBoundary 的
       // 分割线规则拦下,这里主要拦 `===`(它不匹配任何块级规则,否则会被吸进段落文本)。
       if (setextUnderlineLevel(next) !== null) break;
@@ -464,17 +509,21 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
       k += 1;
     }
 
+    // 前导空白剥离(B3-6)**逐行**做、且在 walkInline **之前**——整体 trim 会漏掉中间各行,
+    // 剥完再解析行内,offset 才是相对最终文本算的。
+    const paraText = para.map(stripParagraphIndent).join('\n');
+
     // setext 标题:段落正下方紧跟 `===` / `---` → 整段升格为标题,并吃掉下划线行。
     // 放在段落收集**之后**判定,天然支持多行 setext 正文;也天然让 `---` 在此处
     // 优先当下划线而非分割线(CommonMark 同序:有前置段落时 setext 胜出)。
     // 级别映射与 ATX 一致:一级/二级同归 header-one(X 只有两级标题,见 TextBlockType)。
     if (k < lines.length && setextUnderlineLevel(lines[k] ?? '') !== null) {
-      blocks.push(textBlock('header-one', walkInline(para.join('\n'))));
+      blocks.push(textBlock('header-one', walkInline(paraText)));
       i = k + 1;
       continue;
     }
 
-    blocks.push(textBlock('unstyled', walkInline(para.join('\n'))));
+    blocks.push(textBlock('unstyled', walkInline(paraText)));
     i = k;
   }
 
@@ -560,10 +609,30 @@ function canBeListItem(stack: number[], indent: string): boolean {
   return stack.length > 0 || indentWidth(indent) <= 3;
 }
 
-/** 顶层语境下该行是否为列表项起始——段落边界判定用(收集段落时定义上不在列表 run 内)。 */
-function isTopLevelListLine(line: string): boolean {
-  const m = RE_UL.exec(line) ?? RE_OL.exec(line);
-  return m !== null && indentWidth(m[1] ?? '') <= 3;
+/**
+ * 顶层语境下该行是否为列表项起始——段落边界判定用(收集段落时定义上不在列表 run 内)。
+ *
+ * `interrupting`(B3-11 / P2-13):本行是否要去**打断一个已开启的段落**。CommonMark 只允许
+ * 序号为 `1.` 的有序列表打断段落——否则软折行段落里「2024. 冬天的第一场雪…」这样的行会被硬切
+ * 成列表项,原编号还被 X 重编成 1(内容失真)。**独立起块**时(interrupting=false)仍认任意
+ * 数字,`3. 第三项` 照常起列表。无序列表不受此限(CommonMark 同样允许它打断段落)。
+ */
+function isTopLevelListLine(line: string, interrupting: boolean): boolean {
+  const ul = RE_UL.exec(line);
+  if (ul) return indentWidth(ul[1] ?? '') <= 3;
+  const ol = (interrupting ? RE_OL_INTERRUPT : RE_OL).exec(line);
+  return ol !== null && indentWidth(ol[1] ?? '') <= 3;
+}
+
+/**
+ * 段落行的前导空白剥离(B3-6 / P2-8):**最多剥 3 列**,≥4 空格的行原样保留。
+ * CommonMark 里 0-3 空格缩进对段落无语义,留着只会让正文平白多出空格;而 ≥4 空格是缩进代码
+ * 的领域——用户粘贴的缩进日志/代码块必须逐字节保住(这是不做 `join` 后整体 trim 的原因)。
+ * 只处理空格不处理 Tab:Tab 的列宽依渲染环境而异,剥掉会改变对齐语义。
+ */
+function stripParagraphIndent(line: string): string {
+  const m = /^ {1,3}(?! )/.exec(line);
+  return m ? line.slice(m[0].length) : line;
 }
 
 /** 缩进宽度(列):Tab 记 4 列,空格记 1 列——与主流编辑器/CommonMark 的 Tab 展开一致。 */
@@ -590,19 +659,24 @@ function listDepth(stack: number[], width: number): number {
   return Math.min(stack.length - 1, MAX_LIST_DEPTH);
 }
 
-/** 段落边界:空行,或任一块级元素的起始行——段落收集到这些行前停止。 */
-function isBlockBoundary(line: string): boolean {
+/**
+ * 段落边界:空行,或任一块级元素的起始行——段落收集到这些行前停止。
+ * `interrupting`:仅段落收集循环传 true(该行要去打断一个已开启的段落),影响有序列表判定,
+ * 见 isTopLevelListLine。`isParagraphLine` 等「块首语境」的消费方保持默认 false,
+ * 口径与主循环块首的列表分支一致(不制造「parser 认列表、extractTitle 认标题」的分裂)。
+ */
+function isBlockBoundary(line: string, interrupting = false): boolean {
   if (line.trim() === '') return true;
   if (matchFenceOpen(line)) return true;
   if (RE_DIVIDER.test(line)) return true;
   if (matchMathOpen(line) !== null) return true;
-  if (RE_TWEET.test(line)) return true;
+  if (RE_TWEET.test(line.trim())) return true; // trim 与主循环的推文分支同源(B3-2)
   if (matchImageLine(line.trim()) !== null) return true;
   if (RE_LINKED_IMAGE_LINE.test(line.trim())) return true;
   if (optObsidianImg && RE_OBSIDIAN_IMAGE_LINE.test(line.trim())) return true;
   if (RE_HEADING.test(line)) return true;
   if (RE_BLOCKQUOTE.test(line)) return true;
-  if (isTopLevelListLine(line)) return true;
+  if (isTopLevelListLine(line, interrupting)) return true;
   return false;
 }
 
@@ -610,8 +684,12 @@ function isBlockBoundary(line: string): boolean {
  * 规范化图片 destination(CommonMark 语义):
  *  - `<...>` 包裹 → 剥尖括号,**尖括号内整体为路径**(保留空格——本地图路径含空格很常见,如
  *    `<images/a b.png>`;URL 含空格时 CommonMark 要求必须用 `<>` 包裹),忽略 `>` 之后的可选 title;
- *  - 未包裹 → 去首尾空白后原样返回(保持既有行为)。
+ *  - 未包裹 → 剥掉尾部的**可选 title**(B3-1 / P1-4),其余空白保留。
  * 注:与行内链接的 normalizeUrl 有意不同——图片**不做**「截到第一个空白」,否则会切断含空格的本地路径。
+ *
+ * title 剥离**保守只认 `"…"` / `'…'` 两种**:`url (标题)` 形态与 `photo (1).png` 这类真实
+ * 文件名无法区分,误剥会把好路径切坏,故不碰。剥离统一落在本函数(裸图片行与「带链接图片」
+ * 两条分支都经它),避免第二套实现漂移;`<>` 分支提前 return,其 `>` 之后的 title 本就被忽略。
  */
 function normalizeImageSrc(raw: string): string {
   const s = raw.trim();
@@ -619,7 +697,7 @@ function normalizeImageSrc(raw: string): string {
     const end = s.indexOf('>');
     if (end >= 0) return s.slice(1, end); // 尖括号内原样(不 trim:空格是路径的一部分)
   }
-  return s;
+  return s.replace(/\s+("[^"]*"|'[^']*')$/, '');
 }
 
 /**
@@ -666,9 +744,13 @@ function matchImageLine(line: string): { alt: string; src: string } | null {
   return { alt, src };
 }
 
-/** 识别开栏:3+ 个 ` 或 ~;反引号围栏的信息串不得含反引号(否则非合法开栏)。 */
+/**
+ * 识别开栏:3+ 个 ` 或 ~;反引号围栏的信息串不得含反引号(否则非合法开栏)。
+ * 允许 0-3 空格缩进(B3-6):**必须与 matchFenceClose、以及主循环里 info 规范化的正则
+ * 三处同改**——漏任一处就会「语言标记丢失」或「闭栏认不出、整段吞进正文」。
+ */
 function matchFenceOpen(line: string): Fence | null {
-  const m = line.match(/^(`{3,}|~{3,})(.*)$/);
+  const m = line.match(RE_FENCE_LINE);
   if (!m) return null;
   const marker = m[1] ?? '';
   const info = m[2] ?? '';
@@ -677,9 +759,10 @@ function matchFenceOpen(line: string): Fence | null {
   return { char, len: marker.length };
 }
 
-/** 识别闭栏:同字符、数量 ≥ 开栏、其后仅允许空白。 */
+/** 识别闭栏:同字符、数量 ≥ 开栏、其后仅允许空白(`\s`:含全角空格 U+3000,CJK 输入法
+ * 易在行尾带出——收窄成 `[ \t]` 会让这类闭栏失效、整段代码块散架,review 修复);缩进规则与开栏同(B3-6)。 */
 function matchFenceClose(line: string, fence: Fence): boolean {
-  const m = line.match(/^(`{3,}|~{3,})\s*$/);
+  const m = line.match(/^ {0,3}(`{3,}|~{3,})\s*$/);
   if (!m) return false;
   const marker = m[1] ?? '';
   return (marker[0] ?? '') === fence.char && marker.length >= fence.len;

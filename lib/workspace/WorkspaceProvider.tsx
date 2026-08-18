@@ -591,7 +591,9 @@ export function WorkspaceProvider({
           (coverSource !== null && classifyImageSource(coverSource) === 'local');
 
         // 远程图 / 封面 host 权限:必须在用户手势内、任何其它 await 之前(上面全同步)。
-        await requestRemoteImagePermissions(md, coverSource ? [coverSource] : []);
+        // 传**已解析的 blocks**(B3-4 / P1-7):权限申请的图片来源与实际上传的来源同一份,
+        // 不再走全文正则(`<>` 包裹的远程图曾被判 local → 该 origin 不申请 → 下载必被拒)。
+        await requestRemoteImagePermissions(blocks, coverSource ? [coverSource] : []);
 
         // review B1 + B2-1:正文写入前解析目标 X 标签**一次**并全程钉死。ask 流程传入
         // pinnedTarget(writeX 探测时已钉的 tabId+articleId 双钥)则直接用——目标在弹窗
