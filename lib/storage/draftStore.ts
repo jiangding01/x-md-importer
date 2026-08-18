@@ -1,7 +1,9 @@
 import { getItem, setItem } from './store';
 import { validateDraft } from './schema';
 
-const KEY = 'markflow:draft';
+/** 导出供 storage.onChanged 监听器引用——禁止在别处硬编码这串字面量(防第二套实现漂移)。 */
+export const DRAFT_KEY = 'markflow:draft';
+const KEY = DRAFT_KEY;
 
 /**
  * 读取当前草稿。**读出即校验**:`getItem` 只在值为 `undefined` 时用 fallback,

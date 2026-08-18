@@ -10,20 +10,15 @@ import type { LangPref } from '@/lib/i18n/dict';
 import type { Options } from '@/lib/settings/options';
 import { clearFolder, connectFolder, getFolderStatus } from '@/lib/bridge/importArticle';
 import { exportBackup, importBackup } from '@/lib/storage/backup';
+import { downloadText } from '@/lib/ui/download';
 
-/** 触发浏览器下载一个 JSON 文件(备份 / 诊断快照共用)。纯前端,失败静默。 */
+/**
+ * 触发浏览器下载一个 JSON 文件(备份 / 诊断快照共用)。
+ * 走统一下载通道 lib/ui/download,**失败向上抛**——此前这里自吞异常,调用方照弹
+ * 「已导出」toast,用户拿着不存在的备份去清数据是最危险的失败形态(P2-17)。
+ */
 function downloadJson(filename: string, data: unknown): void {
-  try {
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  } catch {
-    /* 下载失败(极少见):静默,不影响其它设置 */
-  }
+  downloadText(filename, JSON.stringify(data, null, 2), 'application/json');
 }
 
 function pill(on: boolean): CSSProperties {
@@ -151,17 +146,22 @@ export function SettingsTab() {
       typeof chrome !== 'undefined' && chrome.runtime?.getManifest
         ? chrome.runtime.getManifest().version
         : 'preview';
-    downloadJson(`markflow-diagnostics-${Date.now()}.json`, {
-      app: 'markflow',
-      kind: 'diagnostics',
-      at: new Date().toISOString(),
-      version,
-      ua: navigator.userAgent,
-      probe: { status, result },
-      prefs: { skin, theme, langPref },
-      options: opts,
-    });
-    showToast(t.diagExported);
+    try {
+      downloadJson(`markflow-diagnostics-${Date.now()}.json`, {
+        app: 'markflow',
+        kind: 'diagnostics',
+        at: new Date().toISOString(),
+        version,
+        ua: navigator.userAgent,
+        probe: { status, result },
+        prefs: { skin, theme, langPref },
+        options: opts,
+      });
+      showToast(t.diagExported);
+    } catch (err) {
+      console.error('[MarkFlow] diagnostics export failed:', err);
+      showToast(t.errExportFail);
+    }
   };
 
   /** 备份:导出全部本地数据(偏好/设置/记录/草稿)为 JSON。 */
@@ -294,7 +294,9 @@ export function SettingsTab() {
       }
       if (row.k === 'shortcuts') return openShortcuts();
       if (row.k === 'diag') return exportDiagnostics();
-      showToast(t.demoToast);
+      // 兜底分支:所有 action key 都已被上面接管,走到这里说明加了新 action 没接实现——
+      // 落 console 提醒开发者,不再弹「演示环境」占位 toast(上线产品不该出现演示文案)。
+      console.warn('[MarkFlow] settings action not wired:', row.k);
     };
     return (
       <button

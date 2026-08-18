@@ -5,7 +5,9 @@ import { validateHistory, type HistoryItem } from './schema';
 // 此处 re-export 保持既有导入点(WorkspaceProvider / HistoryTab / backup 等)不变。
 export { type HistoryItem } from './schema';
 
-const KEY = 'markflow:history';
+/** 导出供 storage.onChanged 监听器引用——禁止在别处硬编码这串字面量(防第二套实现漂移)。 */
+export const HISTORY_KEY = 'markflow:history';
+const KEY = HISTORY_KEY;
 
 /**
  * 读取导入历史。**读出即校验**:此前裸信任 storage —— 非数组会让下游 `.map()` 抛,

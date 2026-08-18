@@ -2,6 +2,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -19,8 +20,10 @@ import { capability, firstTitle } from '@/lib/markdown/capability';
 import { extractCover, extractTitle, stripFirstH1 } from '@/lib/markdown/frontmatter';
 import { parseMarkdown } from '@/lib/markdown/parser';
 import { sampleEn, sampleZh } from '@/lib/markdown/sample';
-import { saveDraft } from '@/lib/storage/draftStore';
-import { saveHistory, type HistoryItem } from '@/lib/storage/historyStore';
+import { DRAFT_KEY, saveDraft } from '@/lib/storage/draftStore';
+import { HISTORY_KEY, saveHistory, type HistoryItem } from '@/lib/storage/historyStore';
+import { validateHistory } from '@/lib/storage/schema';
+import { downloadText } from '@/lib/ui/download';
 import type { Tab } from '@/entrypoints/sidepanel/types';
 import type { Dict } from '@/lib/i18n/dict';
 
@@ -39,6 +42,9 @@ interface WorkspaceValue {
   setMode: (mode: Mode) => void;
   dragging: boolean;
   setDragging: (v: boolean) => void;
+  // 持久化健康:任一草稿/历史写入失败(如配额满)时置位,DraftTab 展示常驻错误条(P0-1)。
+  storageError: boolean;
+  exportDraft: () => void;
   save: () => void;
   clear: () => void;
   clearArm: boolean;
@@ -82,7 +88,7 @@ interface WorkspaceValue {
   setHistQ: (q: string) => void;
   loadHistoryItem: (item: HistoryItem) => void;
   copyHistoryItem: (item: HistoryItem) => void;
-  deleteHistoryItem: (id: number) => void;
+  deleteHistoryItem: (id: string | number) => void;
   clearHistory: () => void;
   histClearArm: boolean;
   wipeAll: () => void;
@@ -182,22 +188,162 @@ export function WorkspaceProvider({
     timers.current.toast = setTimeout(() => setToast(null), 2200);
   }, []);
 
-  const setMd = useCallback((v: string) => {
-    setMdState(v);
-    void saveDraft(v);
-    // 内容一变,旧预检 / 导入报告就不对应当前 md 了 → 一并收起,不残留过期结果。
-    // setMd 是所有「内容替换」的唯一入口(清空 / 载入示例 / 读文件 / 载入历史 / 编辑输入),放这一处全覆盖。
-    // 写入流程 startImport 不经 setMd(它自行 setReportVisible(true)),故不会把刚出的报告清掉。
-    setCheckVisible(false);
-    setCheckStep(-1);
-    setReportVisible(false);
+  // ── 草稿持久化(P0-1 + P2-21)──
+  // md 的最新值镜像:onChanged 监听器/flush 以 [] 依赖注册,读闭包 state 会拿到陈旧快照,
+  // 一切「当前草稿是什么」的判断只准读这个 ref。所有 setMdState 写入点必须同步更新它。
+  const mdRef = useRef(initialMd);
+  // 持久化健康:草稿/历史任一写失败(配额满等)置位 → DraftTab 常驻错误条。
+  // 按来源分账(review 修复):草稿 flush 成功只清草稿位——历史写失败后草稿写成功不许把
+  // 错误条清掉(失败的历史列表没有重试队列,直到下次历史变更前始终未落盘,错误条要如实亮着)。
+  const [storageError, setStorageError] = useState(false);
+  const persistFail = useRef({ draft: false, history: false });
+  const markPersist = useCallback((source: 'draft' | 'history', ok: boolean) => {
+    persistFail.current[source] = !ok;
+    setStorageError(persistFail.current.draft || persistFail.current.history);
   }, []);
+  // 250ms trailing 防抖 + 2s max-wait:此前每次键入整串写 storage(长文卡顿 + 写放大)。
+  // trailing 会被连续键入无限顺延,崩溃(OOM/进程被杀,不触发 blur/pagehide)就丢整段——
+  // max-wait 把最坏丢失从「整段连续输入」压回 ≤2s(review 修复)。
+  // pending 非 null = 有未落盘的本地编辑;flush 失败会把值放回 pending 供下次重试。
+  const pendingDraft = useRef<string | null>(null);
+  const pendingSince = useRef(0);
+  const persistTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  const commitHistory = useCallback((next: HistoryItem[]) => {
-    historyRef.current = next; // 同步镜像,供挂起后的 finishImport 读最新值
-    setHistory(next);
-    void saveHistory(next);
-  }, []);
+  const flushDraft = useCallback(async (): Promise<boolean> => {
+    if (persistTimer.current) {
+      clearTimeout(persistTimer.current);
+      persistTimer.current = undefined;
+    }
+    const v = pendingDraft.current;
+    if (v === null) return true;
+    pendingDraft.current = null;
+    try {
+      await saveDraft(v);
+      markPersist('draft', true);
+      return true;
+    } catch (err) {
+      console.error('[MarkFlow] draft persist failed:', err);
+      // 失败值放回 pending(除非期间已有更新的编辑),下次 flush 触发时重试,不静默丢。
+      if (pendingDraft.current === null) pendingDraft.current = v;
+      markPersist('draft', false);
+      return false;
+    }
+  }, [markPersist]);
+
+  const schedulePersist = useCallback(
+    (v: string) => {
+      if (pendingDraft.current === null) pendingSince.current = Date.now();
+      pendingDraft.current = v;
+      if (persistTimer.current) clearTimeout(persistTimer.current);
+      // max-wait:pending 已积压超 2s → 立即落盘,不再顺延。
+      if (Date.now() - pendingSince.current >= 2000) {
+        void flushDraft();
+        return;
+      }
+      persistTimer.current = setTimeout(() => void flushDraft(), 250);
+    },
+    [flushDraft],
+  );
+
+  const setMd = useCallback(
+    (v: string) => {
+      setMdState(v);
+      mdRef.current = v;
+      schedulePersist(v);
+      // 内容一变,旧预检 / 导入报告就不对应当前 md 了 → 一并收起,不残留过期结果。
+      // setMd 是所有「内容替换」的唯一入口(清空 / 载入示例 / 读文件 / 载入历史 / 编辑输入),放这一处全覆盖。
+      // 写入流程 startImport 不经 setMd(它自行 setReportVisible(true)),故不会把刚出的报告清掉。
+      setCheckVisible(false);
+      setCheckStep(-1);
+      setReportVisible(false);
+    },
+    [schedulePersist],
+  );
+
+  const commitHistory = useCallback(
+    (next: HistoryItem[]) => {
+      historyRef.current = next; // 同步镜像,供挂起后的 finishImport 读最新值
+      setHistory(next);
+      // 写失败必须可见(P0-1):按来源记账,亮/清常驻错误条(见 persistFail 注释)。
+      saveHistory(next).then(
+        () => markPersist('history', true),
+        (err) => {
+          console.error('[MarkFlow] history persist failed:', err);
+          markPersist('history', false);
+        },
+      );
+    },
+    [markPersist],
+  );
+
+  // flush 触发点:防抖到点之外,面板隐藏/卸载/失焦(用户点回 X 页面)都立即落盘——
+  // 侧边栏被关闭时卸载事件不保证给足异步 IPC 时间,所以尽量在还活着的时机就写完。
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') void flushDraft();
+    };
+    const onPageHide = () => void flushDraft();
+    const onBlur = () => void flushDraft();
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('blur', onBlur);
+      void flushDraft();
+    };
+  }, [flushDraft]);
+
+  // ── 双窗口同步(P0-2)──
+  // 每个浏览器窗口一个 sidePanel 实例,此前各实例持挂载时快照、整体覆写 last-write-wins:
+  // 窗口 A 写了半小时,回到 B 敲一个字符就用陈旧内容覆盖掉。订阅 onChanged 让非活跃实例跟随。
+  useEffect(() => {
+    if (typeof chrome === 'undefined' || !chrome.storage?.onChanged) return;
+    const handler = (
+      changes: Record<string, chrome.storage.StorageChange>,
+      areaName: string,
+    ) => {
+      if (areaName !== 'local') return;
+      const draftChange = changes[DRAFT_KEY];
+      if (draftChange && typeof draftChange.newValue === 'string') {
+        const incoming = draftChange.newValue;
+        // 采纳条件(顺序即优先级):非 echo、本地无未落盘编辑、非导入中。
+        // 有 pending 时不采纳:本地更新,随后 flush 会写回并再广播,吞掉 pending 才是丢数据。
+        // 导入中不采纳:startImport 闭包依赖 md 一致性(blocks/历史都取自它)。
+        // **不看 hasFocus**(review 修复):onChanged 是边沿触发,「聚焦时拒收」的更新永远不会
+        // 再送达——A 窗口 blur-flush 的广播若晚于 B 获得焦点,B 会永远停在陈旧草稿上,
+        // 第一次键入就把 A 的整段编辑覆盖回去(正是 P0-2 要堵的丢法)。聚焦但无 pending
+        // = 本地已全部落盘,采纳外部新值是安全的;真正的并发编辑由 pending 闸门保护。
+        const adoptable =
+          incoming !== mdRef.current &&
+          pendingDraft.current === null &&
+          !importingRef.current;
+        if (adoptable) {
+          mdRef.current = incoming;
+          setMdState(incoming);
+          setCheckVisible(false);
+          setCheckStep(-1);
+          setReportVisible(false);
+          showToast(t.draftSynced);
+        }
+      }
+      const histChange = changes[HISTORY_KEY];
+      if (histChange && Array.isArray(histChange.newValue)) {
+        const incoming = validateHistory(histChange.newValue);
+        const cur = historyRef.current;
+        // echo 判定:长度 + id 序列一致即本窗口刚写入的回声(条目不可变,只有增删)。
+        const same =
+          incoming.length === cur.length && incoming.every((it, i) => it.id === cur[i]?.id);
+        if (!same) {
+          historyRef.current = incoming;
+          setHistory(incoming);
+        }
+      }
+    };
+    chrome.storage.onChanged.addListener(handler);
+    return () => chrome.storage.onChanged.removeListener(handler);
+  }, [showToast, t.draftSynced]);
 
   const playSound = useCallback(() => {
     if (!opts.sound || opts.soundStyle === 'mute') return;
@@ -220,10 +366,23 @@ export function WorkspaceProvider({
   }, [opts.sound, opts.soundStyle]);
 
   // ── 草稿动作 ──
+  // 手动保存 = 强制 flush 并如实汇报:此前无条件 toast「已保存」,写失败也谎报成功(P0-1)。
   const save = useCallback(() => {
-    void saveDraft(md);
-    showToast(t.savedToast);
-  }, [md, showToast, t.savedToast]);
+    pendingDraft.current = mdRef.current; // 即便无变更也强制写一次,让「保存」语义真实
+    void flushDraft().then((ok) => showToast(ok ? t.savedToast : t.errStorageWrite));
+  }, [flushDraft, showToast, t.savedToast, t.errStorageWrite]);
+
+  // 常驻错误条上的自救出口:把当前草稿(读 ref,含未落盘的 pending 值)下载成 .md 文件。
+  const exportDraft = useCallback(() => {
+    try {
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+      downloadText(`markflow-draft-${stamp}.md`, mdRef.current, 'text/markdown');
+      showToast(t.draftExported);
+    } catch (err) {
+      console.error('[MarkFlow] draft export failed:', err);
+      showToast(t.errExportFail);
+    }
+  }, [showToast, t.draftExported, t.errExportFail]);
 
   const clear = useCallback(() => {
     if (!clearArm) {
@@ -321,7 +480,8 @@ export function WorkspaceProvider({
     const deg = cap.filter((c) => c.badge === 'warn').reduce((a, c) => a + c.count, 0);
     const now = new Date();
     const item: HistoryItem = {
-      id: now.getTime(),
+      // UUID 而非 Date.now():双窗口同毫秒导入会撞 number id(React key 冲突、删除连删两条)。
+      id: crypto.randomUUID(),
       title: firstTitle(md, en),
       date: `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')} ${now.toTimeString().slice(0, 5)}`,
       ok,
@@ -334,7 +494,9 @@ export function WorkspaceProvider({
     };
 
     setImporting(false);
-    setReportVisible(opts.autoReport !== 'never');
+    // autoReport 三档如实生效(P1-10):此前只区分 never/非 never,「仅异常时」(默认值)形同 always。
+    const hasAnomaly = deg > 0 || imageFail > 0;
+    setReportVisible(opts.autoReport === 'always' || (opts.autoReport === 'anomaly' && hasAnomaly));
 
     const limit = opts.histLimit === 'inf' ? Infinity : Number(opts.histLimit);
     // 读 historyRef.current(最新值)而非闭包 history:标题 ask 弹窗挂起期间用户可能已在记录页
@@ -519,7 +681,11 @@ export function WorkspaceProvider({
       // 权限申请仍在手势窗口内(见其内注释)。
       const fresh = await probeXTabContent();
       void refreshProbe(); // 同步刷新共享状态条,与写入决策使用同一真相
-      if (!fresh.connected) return; // 新鲜探测发现已断开 → 中止,不误写
+      if (!fresh.connected) {
+        // 新鲜探测发现已断开 → 中止,并明确告知(P2-20:此前静默 return,按钮「点了没反应」)。
+        showToast(importErrorText('disconnected', t));
+        return;
+      }
       if (fresh.hasContent) {
         setAskOverwrite(true);
         return;
@@ -531,7 +697,7 @@ export function WorkspaceProvider({
     // 非询问模式:按设置直接决定模式(总是追加 / 总是覆盖)。
     const mode: ImportMode = opts.onExisting === 'append' ? 'append' : 'replace';
     void startImport(mode);
-  }, [md, importing, connected, opts.onExisting, startImport, refreshProbe]);
+  }, [md, importing, connected, opts.onExisting, startImport, refreshProbe, showToast, t]);
 
   const overwriteAppend = useCallback(() => {
     setAskOverwrite(false);
@@ -580,7 +746,7 @@ export function WorkspaceProvider({
     [showToast, t.copiedToast],
   );
   const deleteHistoryItem = useCallback(
-    (id: number) => commitHistory(history.filter((h) => h.id !== id)),
+    (id: string | number) => commitHistory(history.filter((h) => h.id !== id)),
     [history, commitHistory],
   );
   const clearHistory = useCallback(() => {
@@ -610,6 +776,8 @@ export function WorkspaceProvider({
       setMode,
       dragging,
       setDragging,
+      storageError,
+      exportDraft,
       save,
       clear,
       clearArm,
@@ -652,7 +820,7 @@ export function WorkspaceProvider({
       wipeAll,
     }),
     [
-      tab, toast, showToast, md, setMd, mode, dragging, save, clear, clearArm, loadSample, readFile,
+      tab, toast, showToast, md, setMd, mode, dragging, storageError, exportDraft, save, clear, clearArm, loadSample, readFile,
       pendingLoad, loadConfirm, loadCancel,
       capOpen, checkVisible, checkStep, runCheck, closeCheck, importing, stageIdx, stagePct, stageLabel,
       writeX, askOverwrite, overwriteAppend, overwriteConfirm, overwriteCancel,

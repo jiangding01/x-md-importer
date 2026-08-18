@@ -5,6 +5,22 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 批次一 · 上线阻断修复(对应 docs/review/上线前全面审查-2026-08-18.md)
+
+- **存储写失败可见化(P0-1)**:`setItem` 不再吞错;草稿/历史写失败按来源记账并在草稿页亮**常驻错误条**(附「导出当前草稿」自救按钮);手动「保存」await 成功才提示、失败如实报错;设置/偏好写失败落 console。新增 store.ts 错误传播单测(`vi.resetModules` + chrome stub 动态导入,钉住 chrome 路径)。
+- **草稿写入防抖(P2-21)**:每键整串写 storage 改为 250ms trailing + **2s max-wait**(连续输入不再无限顺延,崩溃最坏丢 ≤2s);blur / visibilitychange(hidden) / pagehide / 手动保存均强制 flush。
+- **双窗口同步(P0-2)**:订阅 `chrome.storage.onChanged`(仅 local 区),草稿/历史外部变更采纳回灌;echo 以 mdRef / id 序列判定;本地有未落盘编辑或导入进行中不采纳(pending 闸门保数据);采纳时 toast 告知。draftStore/historyStore 导出 `DRAFT_KEY`/`HISTORY_KEY` 供监听引用(防 key 漂移)。
+- **历史 id 改 UUID**:双窗口同毫秒导入不再撞 number id;`HistoryItem.id: string | number`,校验器双形状兼容(旧时间戳照收);备份 `version` 随之 bump 到 **2**。
+- **`unlimitedStorage`(P1-8)**:历史全文累积不再受 10MB 配额压顶(storage 权限本就有,零额外弹窗)。
+- **崩溃恢复屏自救出口(P1-9)**:新增「导出数据备份」(自包含实现,导出为**可被「设置 → 恢复」直接吃下的 BackupData 形状** + 附全量 raw dump);「重置」改为先自动导出、等下载发起再清;导出失败有内联反馈,且需二次点击才强制重置。
+- **`autoReport=anomaly` 生效(P1-10)**:「仅异常时」如实只在有降级/失败时自动展开报告(此前与 always 等价)。
+- **删除「演示环境」占位(P1-11)**:素材卡封面「更换」死按钮移除;SettingsTab 不可达兜底改 console.warn;`demoToast` 词条删除。
+- **键盘焦点可见(P1-12)**:`:focus-visible` 焦点环替代一刀切 `outline:none`。
+- **ask 断开有反馈(P2-20)**:覆盖询问前的即时探测发现断开时 toast 提示,不再静默无响应。
+- **导出通道统一 + 假成功修复(P2-17 前置)**:新增 `lib/ui/download`(失败必抛);SettingsTab 的 `downloadJson` 迁移其上,备份/诊断导出失败不再谎报成功。
+
 ## [0.4.0] - 2026-07-25
 
 ### 新增 · 数学块 `$$…$$` → X 原生 LaTeX 块

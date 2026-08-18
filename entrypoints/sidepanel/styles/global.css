@@ -86,11 +86,21 @@ input::placeholder {
   background: transparent;
 }
 
+/* 焦点可见性(P1-12):只在键盘导航(:focus-visible)时画焦点环,鼠标点击不画——
+   此前一刀切 outline:none 且无替代样式,键盘用户完全看不到焦点在哪。 */
 select,
 button,
 input,
 textarea {
   outline: none;
+}
+select:focus-visible,
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: 2px;
 }
 
 /* ── 交互原语（inline style 无法处理 :hover，统一在此挂 hover 态）── */

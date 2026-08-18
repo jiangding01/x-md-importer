@@ -27,7 +27,8 @@ export function SettingsProvider({ initial = defaultOptions, children }: Setting
   const setOpt = useCallback(<K extends keyof Options>(key: K, value: Options[K]) => {
     setState((prev) => {
       const next = { ...prev, [key]: value };
-      void saveOptions(next);
+      // 设置写失败低危(下次改动会重写),不占 UI,但不许静默吞——落 console 便于诊断(P0-1 配套)。
+      saveOptions(next).catch((err) => console.error('[MarkFlow] options persist failed:', err));
       return next;
     });
   }, []);

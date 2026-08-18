@@ -32,7 +32,7 @@ export {
 export interface BackupData {
   app: 'markflow';
   kind: 'backup';
-  version: 1;
+  version: number; // 2=当前(id 可为 UUID string);1=旧版(id 为 number)。恢复侧按版本分支兼容。
   exportedAt: string;
   prefs: Prefs;
   options: Options;
@@ -48,7 +48,7 @@ export async function exportBackup(): Promise<BackupData> {
     loadHistory(),
     loadDraft(),
   ]);
-  return { app: 'markflow', kind: 'backup', version: 1, exportedAt: new Date().toISOString(), prefs, options, history, draft };
+  return { app: 'markflow', kind: 'backup', version: 2, exportedAt: new Date().toISOString(), prefs, options, history, draft };
 }
 
 /**

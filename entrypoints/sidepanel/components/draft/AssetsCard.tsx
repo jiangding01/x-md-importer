@@ -215,13 +215,6 @@ export function AssetsCard() {
             {coverSource}
           </span>
         </div>
-        <button
-          className="mf-btn mf-hover-soft"
-          onClick={() => showToast(t.demoToast)}
-          style={{ border: '1px solid var(--line)', padding: '4px 10px', borderRadius: 'var(--rEl)', font: '500 10px var(--fUI)', color: 'var(--ink2)' }}
-        >
-          {t.change}
-        </button>
       </div>
 
       {hasLocal && <LocalFolderRow />}

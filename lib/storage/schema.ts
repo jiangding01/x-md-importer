@@ -39,9 +39,13 @@ export const defaultPrefs: Prefs = {
   lang: 'auto',
 };
 
-/** 一条导入历史。 */
+/**
+ * 一条导入历史。
+ * id:新记录用 `crypto.randomUUID()`(string,双窗口同毫秒导入不再撞 key);
+ * 旧记录是 `Date.now()`(number),读入照收——两种形状都是合法主键。
+ */
 export interface HistoryItem {
-  id: number;
+  id: string | number;
   title: string;
   date: string;
   ok: number;
@@ -172,16 +176,21 @@ export function validateImageFailures(raw: unknown): ImageFailure[] | undefined 
 
 /**
  * 校验历史记录:逐项校验必需字段,合格项规整为标准 HistoryItem,不合格的项**丢弃**。
- * id(number)是主键 / React key / 删除依据,缺失即无法安全承载 → 丢弃;title/md/date/数值
- * 缺失则补默认(不丢整项),保证下游 toLowerCase / 渲染不再抛。
+ * id 是主键 / React key / 删除依据,缺失即无法安全承载 → 丢弃;合法形状 = 非空 string
+ * (新版 UUID)或有限 number(旧版时间戳)。title/md/date/数值缺失则补默认(不丢整项),
+ * 保证下游 toLowerCase / 渲染不再抛。
  */
 export function validateHistory(raw: unknown): HistoryItem[] {
   if (!Array.isArray(raw)) return [];
   const out: HistoryItem[] = [];
   for (const it of raw) {
-    if (!isObj(it) || typeof it.id !== 'number' || !Number.isFinite(it.id)) continue;
+    if (!isObj(it)) continue;
+    const idOk =
+      (typeof it.id === 'string' && it.id.length > 0 && it.id.length <= 64) ||
+      (typeof it.id === 'number' && Number.isFinite(it.id));
+    if (!idOk) continue;
     out.push({
-      id: it.id,
+      id: it.id as string | number,
       title: typeof it.title === 'string' ? it.title : '',
       date: typeof it.date === 'string' ? it.date : '',
       ok: pickNum(it.ok, 0),
