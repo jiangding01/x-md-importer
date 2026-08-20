@@ -2,6 +2,8 @@
 :root {
   --deskBg: radial-gradient(circle, rgba(25, 27, 31, 0.055) 1px, transparent 1px) 0 0 / 22px 22px, #ece9e2;
   --p: #fbfaf9;
+  /* P2-30:不透明面板色回退值(玻璃主题外与 --p 同值,见 lib/theme/themes.ts skinVars)。 */
+  --pSolid: #fbfaf9;
   --pBorder: rgba(25, 27, 31, 0.12);
   --p2: #f2f0eb;
   --ink: #191b1f;

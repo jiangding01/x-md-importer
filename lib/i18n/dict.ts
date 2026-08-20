@@ -8,11 +8,9 @@ export type LangPref = 'auto' | Lang;
 
 const zh = {
   brandSub: 'MARKDOWN → X 文章',
-  deskHint: '← 模拟的 X 文章编辑页(演示环境)',
   tabDraft: '待发布',
   tabHistory: '记录',
   tabSettings: '设置',
-  pbPage: '页面',
   pbEditor: '编辑器',
   pbDraft: 'Draft 实例',
   pbUpload: '上传通道',
@@ -36,6 +34,9 @@ const zh = {
   // B3-8(P2-10):预览用的是通用 Markdown 渲染器(完整 CommonMark),与本项目解析器的
   // 子集语义系统性不一致(裸 URL、行内图片、H4-6、`- - -` 等)。能力面板才是写入真相。
   previewNote: '预览为通用 Markdown 渲染,与 X 实际效果以能力面板为准',
+  // P2-31:工具栏「插入表格」按钮的模板文本(此前硬编码中文,英文界面也插入中文列名)。
+  tableTemplate: '\n| 列 A | 列 B |\n|---|---|\n| … | … |\n',
+  ariaToggleTheme: '切换主题',
   placeholder: '在这里粘贴或输入 Markdown…',
   step1: '打开 X 文章编辑器',
   step2: '粘贴、拖入或选择 .md 文件',
@@ -130,6 +131,8 @@ const zh = {
   errExportFail: '导出失败',
   draftSynced: '草稿已从另一窗口同步',
   errWipeFail: '清除失败:部分数据可能未删除,请重试',
+  errReadFail: '文件读取失败',
+  errCopyFail: '复制失败',
   chars: '字',
   lines: '行',
   historyTitle: '导入记录',
@@ -137,6 +140,8 @@ const zh = {
   histEmpty: '暂无匹配记录',
   histLoad: '载入',
   histCopy: '复制',
+  histDelete: '删除',
+  histDeleteConfirm: '确认删除?',
   histClear: '清空全部',
   histClearConfirm: '确认清空?',
   stSkin: '界面主题',
@@ -179,11 +184,9 @@ type Dict = Record<keyof typeof zh, string>;
 
 const en: Dict = {
   brandSub: 'MARKDOWN → X ARTICLES',
-  deskHint: '← Simulated X article editor (demo)',
   tabDraft: 'Compose',
   tabHistory: 'History',
   tabSettings: 'Settings',
-  pbPage: 'PAGE',
   pbEditor: 'EDITOR',
   pbDraft: 'DRAFT',
   pbUpload: 'UPLOAD',
@@ -205,6 +208,8 @@ const en: Dict = {
   edit: 'Edit',
   preview: 'Preview',
   previewNote: 'Preview uses a generic Markdown renderer — the capability panel is the source of truth for X.',
+  tableTemplate: '\n| Col A | Col B |\n|---|---|\n| … | … |\n',
+  ariaToggleTheme: 'Toggle theme',
   placeholder: 'Paste or type Markdown here…',
   step1: 'Open the X article editor',
   step2: 'Paste, drop or pick a .md file',
@@ -299,6 +304,8 @@ const en: Dict = {
   errExportFail: 'Export failed',
   draftSynced: 'Draft synced from another window',
   errWipeFail: 'Wipe failed: some data may remain — please retry',
+  errReadFail: 'File read failed',
+  errCopyFail: 'Copy failed',
   chars: 'chars',
   lines: 'lines',
   historyTitle: 'Import history',
@@ -306,6 +313,8 @@ const en: Dict = {
   histEmpty: 'No matching records',
   histLoad: 'Load',
   histCopy: 'Copy',
+  histDelete: 'Delete',
+  histDeleteConfirm: 'Delete?',
   histClear: 'Clear all',
   histClearConfirm: 'Confirm?',
   stSkin: 'Interface theme',

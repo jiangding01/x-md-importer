@@ -7,6 +7,21 @@
 
 ## [Unreleased]
 
+### 批次五 · 体验打磨(对应审查报告 P2-22~P2-24、P2-26、P2-29~P2-31 + 相关 P3;限定清单 10 项)
+
+- **AudioContext 用后释放(P2-22)**:`playSound` 音效播放结束后 `osc.onended` 里 `ctx.close()`——Chrome 对并存 AudioContext 数量有硬上限,此前多次导入后新建静默失败,音效开关看似开着却哑掉。
+- **预览模式禁用工具栏(P2-23)**:`EditorCard` 预览态下 textarea 已卸载,点工具栏此前会走 `insert()` 兜底分支把 `**`/表格模板等静默拼到正文末尾、预览里看不出来。改为预览态整体 `disabled` + 置灰。
+- **拖拽态修复(P2-24)**:`onDrop` 无条件先 `setDragging(false)`(此前只在 `readFile` 的 `onload` 里清,拖入非文件/读取失败会让遮罩永久卡住);`readFile` 补 `reader.onerror`(清 dragging + `errWriteFail` 错误 toast);`onDragLeave` 判 `relatedTarget` 是否仍在容器内,滑过工具栏/文本框等子元素不再闪烁。
+- **历史单条删除二次确认(P2-26)**:`HistoryTab` 单删改 arm 式(按 `id` 记录武装态,不是一个全局布尔——点开一条不会把整份列表变红),2.6s 超时自动回落,对齐「清空全部」既有模式;「×」按钮补 `histDelete` 词条(zh「删除」/en "Delete")做 title/aria-label。
+- **`--ink3` 四主题对比度提到 ≥3:1(P2-29)**:极简浅色 `#A6ABB2→#7D8086`(2.16:1→3.80:1)、极简暗色 `#5F666E→#686F77`(3.06:1→3.49:1,原值压线故一并留余量)、控制台 `#4E5A64→#65717B`(2.57:1→3.64:1)、纸感浅色 `#A08D74→#93816A`(2.97:1→3.49:1)、玻璃浅色 alpha `.42→.55`(合成后约 2.5:1→3.6:1)、玻璃暗色 alpha `.4→.48`(约 2.6:1→4.3:1,原实现四套里最低)。均维持低于 `--ink2` 的对比度,信息层级不变,只调色值。
+- **玻璃主题不透明面板 `--pSolid`(P2-30)**:非玻璃主题与 `--p` 同值,玻璃主题给出不透明版本(浅色 `#FFFFFF`、暗色 `#161C2A`);`OverwriteDialog`/`TitleConflictDialog`/`LoadConfirmDialog` 三个弹窗背景、`Toast`/`Header` logo 的前景文字色改用它——弹窗无 backdrop-filter 时半透明 `--p` 会把身后内容透上来糊字,玻璃皮下 60% 透明前景文字对比度不足,均已修复。
+- **表格模板 + `toggle theme` aria-label 进 dict(P2-31)**:`EditorCard` 硬编码中文表格模板(`| 列 A | 列 B |`)改从 `t.tableTemplate` 取(zh/en 各自模板,英文界面不再插入中文列名);`Header.tsx` 的 `aria-label="toggle theme"` 改 `t.ariaToggleTheme`。
+- **死代码清理(P3)**:`checkStep`/`stageIdx` 及 `runCheck` 里 `260ms × 5` 的逐步动画定时器链——grep 确认全仓零消费(`PreflightCard` 只读 `checkVisible`)后连同 `Timers.check` 一并删除,`runCheck`/`closeCheck` 本身保留(预检卡开合仍用);dict 死词条 `deskHint`/`pbPage` 同样 grep 确认零消费后删除。
+- **clipboard 复制真实结果(P3)**:`copyHistoryItem` 的 `navigator.clipboard.writeText` 改 promise 链,成功才 toast `copiedToast`,失败 toast(`errWriteFail`,error 型)——此前无条件 toast 成功,reject 也照样谎报。
+- **compress 联动置灰(P3)**:`SettingsTab` 里 `compress` 关闭时 `maxEdge`/`quality` 两行控件 `disabled` + 置灰,但不强制展示成第一档(与静态「未接实现」装饰项的 `disabled` 语义区分——重新打开 compress 后仍显示用户之前选的档位)。
+- **code review 追加修复 6 项**:AudioContext suspended 态守卫 + 1s 兜底关闭(自动播放策略下 onended 不触发,泄漏原样发生);单删武装态改专属文案 `histDeleteConfirm`「确认删除?」(误用「确认清空?」会被当成清空全部)且 aria-label 同步切换(读屏可感知两步确认);文件读取失败/复制失败改专属词条(不再误报「写入失败」);clipboard 不存在时(非安全上下文)先判存在再调用,不抛同步 TypeError;`insert()` 的无编辑器兜底从「拼到全文末尾」改 no-op(危险行为不留作 fallback)。arm 模式已存在五处手写副本,抽共享 hook 列入 backlog。
+- 单测 488 保持全绿(本批未新增/修改测试用例——UI 组件此前即无 RTL 测试覆盖,逻辑改动均在既有测试路径内)。
+
 ### 批次四 · 信任一致性(对应审查报告 P2-15~P2-19、P2-25、P2-27)
 
 - **备份导入校验(P2-15)**:`importBackup` 断言 `kind==='backup'`(诊断快照不再被当备份「恢复成功」);version 分支 2 原生 / 1 兼容 / 其他明确拒收;四类错误码各有专属文案。

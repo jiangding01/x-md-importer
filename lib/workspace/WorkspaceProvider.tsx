@@ -81,12 +81,10 @@ interface WorkspaceValue {
   toggleCap: () => void;
   // 预检
   checkVisible: boolean;
-  checkStep: number;
   runCheck: () => void;
   closeCheck: () => void;
   // 导入
   importing: boolean;
-  stageIdx: number;
   stagePct: number;
   stageLabel: string;
   writeX: () => void;
@@ -121,7 +119,6 @@ const WorkspaceContext = createContext<WorkspaceValue | null>(null);
 
 interface Timers {
   toast?: ReturnType<typeof setTimeout>;
-  check?: ReturnType<typeof setTimeout>;
   celebrate?: ReturnType<typeof setTimeout>;
   clearArm?: ReturnType<typeof setTimeout>;
   histArm?: ReturnType<typeof setTimeout>;
@@ -175,9 +172,7 @@ export function WorkspaceProvider({
   const [clearArm, setClearArm] = useState(false);
   const [capOpen, setCapOpen] = useState(false);
   const [checkVisible, setCheckVisible] = useState(false);
-  const [checkStep, setCheckStep] = useState(-1);
   const [importing, setImporting] = useState(false);
-  const [stageIdx, setStageIdx] = useState(0);
   const [stagePct, setStagePct] = useState(0);
   const [stageLabel, setStageLabel] = useState('');
   const [reportVisible, setReportVisible] = useState(false);
@@ -284,7 +279,6 @@ export function WorkspaceProvider({
       // setMd 是所有「内容替换」的唯一入口(清空 / 载入示例 / 读文件 / 载入历史 / 编辑输入),放这一处全覆盖。
       // 写入流程 startImport 不经 setMd(它自行 setReportVisible(true)),故不会把刚出的报告清掉。
       setCheckVisible(false);
-      setCheckStep(-1);
       setReportVisible(false);
       // B4-6:报告快照与 reportVisible 同生命周期——内容一变,快照就不再代表「当前草稿」,
       // 一并清空(而不是留着一份对不上号的旧快照,靠 reportVisible=false 隐藏 UI 兜底)。
@@ -358,7 +352,6 @@ export function WorkspaceProvider({
           mdRef.current = incoming;
           setMdState(incoming);
           setCheckVisible(false);
-          setCheckStep(-1);
           setReportVisible(false);
           setLastRunSnapshot(null); // 与 setMd 的清空逻辑保持一致(B4-6):外部值替换同样使旧报告失真
           showToast(t.draftSynced);
@@ -399,8 +392,21 @@ export function WorkspaceProvider({
       gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
       osc.connect(gain);
       gain.connect(ctx.destination);
+      // P2-22:用后即关——Chrome 对同时存活的 AudioContext 有硬上限,不 close 的话
+      // 多次导入攒够数量后新建会静默失败(不抛错、也不出声),音效开关看似开着却哑掉。
+      // suspended 守卫(review 修复):自动播放策略下(长导入后用户激活已过期)context 可能
+      // 生而 suspended——振荡器根本不会播,onended 永不触发,泄漏原样发生。suspended 直接
+      // 关掉放弃这次音效;再加 1s 兜底定时关,onended 无论如何丢失都不留活 context。
+      if (ctx.state === 'suspended') {
+        void ctx.close();
+        return;
+      }
       osc.start();
       osc.stop(ctx.currentTime + 0.4);
+      osc.onended = () => void ctx.close();
+      setTimeout(() => {
+        if (ctx.state !== 'closed') void ctx.close();
+      }, 1000);
     } catch {
       /* WebAudio 不可用则静默 */
     }
@@ -459,29 +465,29 @@ export function WorkspaceProvider({
         if (md.trim() && incoming !== md) setPendingLoad(() => apply);
         else apply();
       };
+      // P2-24:读取失败(权限被拒/文件被移动等)此前无 onerror,拖拽高亮会永久卡住——
+      // 清 dragging 并如实提示。专用「文件读取失败」词条(review 修复):报「写入失败」会让
+      // 用户误以为是草稿持久化出了问题,实际坏的是拖进来的文件。
+      reader.onerror = () => {
+        setDragging(false);
+        console.error('[MarkFlow] file read failed:', reader.error);
+        showToast(`${t.errReadFail}: ${String(reader.error?.message ?? reader.error)}`, 'error');
+      };
       reader.readAsText(file);
     },
-    [md, setMd, showToast, t.importedToast],
+    [md, setMd, showToast, t.importedToast, t.errReadFail],
   );
 
   // ── 预检 ──
+  // P3 死代码清理:此前这里有 checkStep/`260ms × 5` 的逐步动画链,但 PreflightCard 只读
+  // checkVisible(见其组件,grep 全仓零消费 checkStep)——动画状态从未被任何 UI 渲染,
+  // 纯粹空转定时器。runCheck/closeCheck 本身保留(预检卡仍要开合),砍掉的只是这条死链。
   const runCheck = useCallback(() => {
     setCheckVisible(true);
-    setCheckStep(0);
-    let step = 0;
-    const tick = () => {
-      step += 1;
-      if (step > 5) return;
-      setCheckStep(step);
-      timers.current.check = setTimeout(tick, 260);
-    };
-    timers.current.check = setTimeout(tick, 260);
   }, []);
 
   const closeCheck = useCallback(() => {
-    if (timers.current.check) clearTimeout(timers.current.check);
     setCheckVisible(false);
-    setCheckStep(-1);
   }, []);
 
   // ── 导入 ──
@@ -591,7 +597,6 @@ export function WorkspaceProvider({
       importingRef.current = true;
       setImporting(true);
       setReportVisible(false);
-      setStageIdx(0);
       try {
         setStageLabel(t.stParse);
         setStagePct(40);
@@ -824,14 +829,23 @@ export function WorkspaceProvider({
   const loadCancel = useCallback(() => setPendingLoad(null), []);
   const copyHistoryItem = useCallback(
     (item: HistoryItem) => {
-      try {
-        void navigator.clipboard.writeText(item.md || '');
-      } catch {
-        /* 剪贴板不可用则静默 */
+      // P3:此前无条件 toast「已复制」,clipboard reject(权限被拒/非安全上下文等)也照样
+      // 谎报成功。改 promise 链——成功才提示成功,失败提示真实失败(error 型 toast,
+      // 专用「复制失败」词条,不误报成「写入失败」)。clipboard 本身可能整个不存在
+      // (非安全上下文/精简 webview,review 修复:直接点访问会同步 TypeError),先判存在。
+      if (!navigator.clipboard?.writeText) {
+        showToast(t.errCopyFail, 'error');
+        return;
       }
-      showToast(t.copiedToast);
+      navigator.clipboard.writeText(item.md || '').then(
+        () => showToast(t.copiedToast),
+        (err) => {
+          console.error('[MarkFlow] clipboard write failed:', err);
+          showToast(t.errCopyFail, 'error');
+        },
+      );
     },
-    [showToast, t.copiedToast],
+    [showToast, t.copiedToast, t.errWriteFail],
   );
   const deleteHistoryItem = useCallback(
     (id: string | number) => commitHistory(history.filter((h) => h.id !== id)),
@@ -904,11 +918,9 @@ export function WorkspaceProvider({
       capOpen,
       toggleCap: () => setCapOpen((v) => !v),
       checkVisible,
-      checkStep,
       runCheck,
       closeCheck,
       importing,
-      stageIdx,
       stagePct,
       stageLabel,
       writeX,
@@ -938,7 +950,7 @@ export function WorkspaceProvider({
     [
       tab, toast, showToast, md, setMd, mode, dragging, storageError, exportDraft, save, clear, clearArm, loadSample, readFile,
       pendingLoad, loadConfirm, loadCancel,
-      capOpen, checkVisible, checkStep, runCheck, closeCheck, importing, stageIdx, stagePct, stageLabel,
+      capOpen, checkVisible, runCheck, closeCheck, importing, stagePct, stageLabel,
       writeX, askOverwrite, overwriteAppend, overwriteConfirm, overwriteCancel,
       askTitleOverwrite, pendingTitle, titleOverwriteConfirm, titleOverwriteKeep,
       editorHasContent, reportVisible, lastRunSnapshot, celebrating, history, histQ, loadHistoryItem, copyHistoryItem,

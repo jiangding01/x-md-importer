@@ -250,7 +250,12 @@ export function SettingsTab() {
     }
   };
 
-  const renderControl = (row: SettingRow) => {
+  // P3:compress 关闭时 maxEdge/quality 两行不再生效,视觉与交互都应联动置灰——但与
+  // config.ts 里静态的「装饰项(未接实现)」disabled 语义不同:这两项是真实可用的设置,
+  // 只是当前不生效,重新打开 compress 后要看到用户之前选的档位,而非被强制展示成第一项
+  // (那是 row.disabled 分支的行为)。故不复用 row.disabled,单独传 forceDisabled——只影响
+  // disabled 属性与置灰样式,不触碰「val 固定为 opts[0]」那段仅服务于静态装饰项的逻辑。
+  const renderControl = (row: SettingRow, forceDisabled = false) => {
     if (row.t === 'toggle') {
       // 装饰开关(未接实现)→ 置灰 + 固定显示 off、不可点(诚实呈现「未生效」)。
       const on = row.disabled ? false : Boolean(opts[row.k as keyof Options]);
@@ -271,16 +276,17 @@ export function SettingsTab() {
       if (row.k === 'appearance') val = theme;
       // 装饰 select 置灰:固定展示「生效档」(opts 首位),不读可能过期的存储值。
       if (row.disabled) val = row.opts[0]?.v ?? val;
+      const disabled = row.disabled || forceDisabled;
       const onChange = (v: string) => {
         if (row.k === 'lang') setLang(v as LangPref);
         else if (row.k === 'appearance') setTheme(v as ThemeMode);
         else setOptRaw(row.k, v);
       };
       return (
-        <div style={{ position: 'relative', flex: 'none', ...(row.disabled ? { opacity: 0.4 } : null) }}>
+        <div style={{ position: 'relative', flex: 'none', ...(disabled ? { opacity: 0.4 } : null) }}>
           <select
             value={val}
-            disabled={row.disabled}
+            disabled={disabled}
             onChange={(e) => onChange(e.target.value)}
             style={{
               appearance: 'none',
@@ -291,7 +297,7 @@ export function SettingsTab() {
               padding: '5px 24px 5px 10px',
               font: '500 11px var(--fUI)',
               color: 'var(--ink)',
-              cursor: row.disabled ? 'not-allowed' : 'pointer',
+              cursor: disabled ? 'not-allowed' : 'pointer',
               maxWidth: 150,
             }}
           >
@@ -457,7 +463,7 @@ export function SettingsTab() {
                     <span style={{ font: '500 12px var(--fUI)', color: 'var(--ink)' }}>{row.label}</span>
                     <span style={{ font: '400 10.5px/1.5 var(--fUI)', color: 'var(--ink2)' }}>{row.desc}</span>
                   </div>
-                  {renderControl(row)}
+                  {renderControl(row, (row.k === 'maxEdge' || row.k === 'quality') && !opts.compress)}
                 </div>
               ))}
           </div>

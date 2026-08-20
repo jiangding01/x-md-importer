@@ -12,7 +12,9 @@ export function OverwriteDialog() {
       <div
         style={{
           width: '100%',
-          background: 'var(--p)',
+          // P2-30:弹窗没有自己的 backdrop-filter,半透明的 --p 会把底下(#root 内其余
+          // 内容)透上来糊字——改用不透明的 --pSolid(其余主题与 --p 同值,零视觉变化)。
+          background: 'var(--pSolid)',
           border: '1px solid var(--pBorder)',
           borderRadius: 'calc(var(--rEl) + 6px)',
           padding: 20,

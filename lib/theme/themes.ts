@@ -50,11 +50,15 @@ export function skinVars(skin: Skin, dark: boolean, accent: Accent): ThemeVars {
     return {
       '--deskBg': 'linear-gradient(rgba(91,209,255,.03) 1px,transparent 1px) 0 0/100% 24px,#0B0E11',
       '--p': '#12161B',
+      // P2-30:不透明面板色(弹窗/前景文字用)。非玻璃主题永远不透明,直接与 --p 同值。
+      '--pSolid': '#12161B',
       '--pBorder': 'rgba(233,240,246,.12)',
       '--p2': '#181E25',
       '--ink': '#E8EEF3',
       '--ink2': '#9AA7B2',
-      '--ink3': '#4E5A64',
+      // P2-29:原 #4E5A64 on #12161B ≈2.6:1,提到 #65717B ≈3.64:1(仍明显低于 --ink2 的 7.39:1,
+      // 信息层级不变)。
+      '--ink3': '#65717B',
       '--line': 'rgba(233,240,246,.10)',
       '--lsoft': 'rgba(233,240,246,.055)',
       '--acc': '#5BD1FF',
@@ -80,11 +84,13 @@ export function skinVars(skin: Skin, dark: boolean, accent: Accent): ThemeVars {
     return {
       '--deskBg': '#E9DFCE',
       '--p': '#FBF6EC',
+      '--pSolid': '#FBF6EC',
       '--pBorder': 'rgba(62,50,40,.22)',
       '--p2': '#F2EADA',
       '--ink': '#2B2420',
       '--ink2': '#6D5C4A',
-      '--ink3': '#A08D74',
+      // P2-29:原 #A08D74 on #FBF6EC ≈2.97:1,提到 #93816A ≈3.49:1(仍低于 --ink2 的 5.94:1)。
+      '--ink3': '#93816A',
       '--line': 'rgba(62,50,40,.16)',
       '--lsoft': 'rgba(62,50,40,.08)',
       '--acc': '#B4552D',
@@ -112,11 +118,16 @@ export function skinVars(skin: Skin, dark: boolean, accent: Accent): ThemeVars {
           '--deskBg':
             'radial-gradient(circle at 15% 20%,#28406B 0%,transparent 55%),radial-gradient(circle at 85% 15%,#43315F 0%,transparent 50%),radial-gradient(circle at 70% 90%,#1E4A40 0%,transparent 55%),#101420',
           '--p': 'rgba(22,28,42,.66)',
+          // P2-30:不透明版——取 --p 的底色去掉透明度,弹窗/Toast/Header 前景文字用它,
+          // 不再被身后内容透出来。
+          '--pSolid': '#161C2A',
           '--pBorder': 'rgba(255,255,255,.14)',
           '--p2': 'rgba(255,255,255,.07)',
           '--ink': '#E8ECF5',
           '--ink2': 'rgba(232,236,245,.62)',
-          '--ink3': 'rgba(232,236,245,.4)',
+          // P2-29:原 alpha .4(合成到面板底色上估算 ≈2.6:1 量级,四套主题里最低),
+          // 提到 .48(合成后约 4.3:1,仍明显低于 --ink2 的 .62)。
+          '--ink3': 'rgba(232,236,245,.48)',
           '--line': 'rgba(255,255,255,.10)',
           '--lsoft': 'rgba(255,255,255,.06)',
           '--acc': '#6FB9F7',
@@ -140,11 +151,16 @@ export function skinVars(skin: Skin, dark: boolean, accent: Accent): ThemeVars {
           '--deskBg':
             'radial-gradient(circle at 15% 20%,#BFD9F7 0%,transparent 55%),radial-gradient(circle at 85% 15%,#D7C8F5 0%,transparent 50%),radial-gradient(circle at 70% 90%,#BEE8DC 0%,transparent 55%),#E8ECF2',
           '--p': 'rgba(255,255,255,.6)',
+          // P2-30:不透明版——取 --p 的底色去掉透明度,弹窗/Toast/Header 前景文字用它,
+          // 不再被身后内容透出来。
+          '--pSolid': '#FFFFFF',
           '--pBorder': 'rgba(255,255,255,.85)',
           '--p2': 'rgba(255,255,255,.6)',
           '--ink': '#1C2430',
           '--ink2': 'rgba(28,36,48,.62)',
-          '--ink3': 'rgba(28,36,48,.42)',
+          // P2-29:原 alpha .42(合成到面板底色上估算 ≈2.5:1),提到 .55(合成后约 3.6:1,
+          // 仍明显低于 --ink2 的 .62)。
+          '--ink3': 'rgba(28,36,48,.55)',
           '--line': 'rgba(28,36,48,.10)',
           '--lsoft': 'rgba(28,36,48,.055)',
           '--acc': '#1D9BF0',
@@ -171,11 +187,14 @@ export function skinVars(skin: Skin, dark: boolean, accent: Accent): ThemeVars {
     ? {
         '--deskBg': 'radial-gradient(circle,rgba(233,235,238,.05) 1px,transparent 1px) 0 0/22px 22px,#0A0B0D',
         '--p': '#15181C',
+        '--pSolid': '#15181C',
         '--pBorder': 'rgba(233,235,238,.10)',
         '--p2': '#1C2026',
         '--ink': '#E9EBEE',
         '--ink2': '#9AA1A9',
-        '--ink3': '#5F666E',
+        // P2-29:原 #5F666E on #15181C ≈3.06:1(压线),提到 #686F77 ≈3.49:1 留出安全余量
+        // (仍低于 --ink2 的 6.82:1)。
+        '--ink3': '#686F77',
         '--line': 'rgba(233,235,238,.10)',
         '--lsoft': 'rgba(233,235,238,.055)',
         '--acc': accent,
@@ -198,11 +217,13 @@ export function skinVars(skin: Skin, dark: boolean, accent: Accent): ThemeVars {
     : {
         '--deskBg': 'radial-gradient(circle,rgba(25,27,31,.055) 1px,transparent 1px) 0 0/22px 22px,#ECE9E2',
         '--p': '#FBFAF9',
+        '--pSolid': '#FBFAF9',
         '--pBorder': 'rgba(25,27,31,.12)',
         '--p2': '#F2F0EB',
         '--ink': '#191B1F',
         '--ink2': '#70767E',
-        '--ink3': '#A6ABB2',
+        // P2-29:原 #A6ABB2 on #FBFAF9 ≈2.16:1,提到 #7D8086 ≈3.80:1(仍低于 --ink2 的 4.40:1)。
+        '--ink3': '#7D8086',
         '--line': 'rgba(25,27,31,.10)',
         '--lsoft': 'rgba(25,27,31,.055)',
         '--acc': accent,

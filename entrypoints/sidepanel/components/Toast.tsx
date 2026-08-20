@@ -24,7 +24,9 @@ export function Toast() {
         gap: 9,
         padding: '9px 15px 9px 11px',
         background: 'var(--ink)',
-        color: 'var(--p)',
+        // P2-30:同 Header logo——玻璃主题下 --p 半透明,前景文字被 --ink 底透出、可读性下降,
+        // 改用不透明的 --pSolid(其余主题与 --p 同值,视觉零变化)。
+        color: 'var(--pSolid)',
         // 单行时 toast 高约 35px（半高 17.7px），18 仍 ≥ 半高，浏览器按半高钳制后与原来的 99
         // 渲染完全一致（短文案截图逐字节相同，零视觉回归）；而文案换行成多行后，99 的超大圆角
         // 会侵入首尾行的文字区域，18 才能保持圆角矩形的正常观感。

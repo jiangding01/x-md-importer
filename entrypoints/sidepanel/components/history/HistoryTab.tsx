@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useI18n } from '@/lib/i18n/useI18n';
 import { useWorkspace } from '@/lib/workspace/WorkspaceProvider';
 
@@ -22,6 +22,24 @@ export function HistoryTab() {
     clearHistory,
     histClearArm,
   } = useWorkspace();
+
+  // P2-26:单条删除此前一点即删,记录可能是文章唯一副本。改 arm 式二次确认,对齐清空
+  // 全部(histClearArm)的既有模式——但按 id 记录武装态(而非一个全局布尔),否则点开
+  // 任意一条的删除会把整份列表都变成「确认?」态。2.6s 超时未二次点击则自动回落。
+  const [armedId, setArmedId] = useState<string | number | null>(null);
+  const armTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => { if (armTimer.current) clearTimeout(armTimer.current); }, []);
+  const handleDelete = (id: string | number) => {
+    if (armedId !== id) {
+      setArmedId(id);
+      if (armTimer.current) clearTimeout(armTimer.current);
+      armTimer.current = setTimeout(() => setArmedId(null), 2600);
+      return;
+    }
+    if (armTimer.current) clearTimeout(armTimer.current);
+    setArmedId(null);
+    deleteHistoryItem(id);
+  };
 
   const q = histQ.trim().toLowerCase();
   const filtered = history.filter(
@@ -121,7 +139,19 @@ export function HistoryTab() {
               <button className="mf-btn mf-hover-ink" onClick={() => copyHistoryItem(h)} title={t.histCopy} style={smallBtn}>
                 {t.histCopy}
               </button>
-              <button className="mf-btn mf-hover-danger-text" onClick={() => deleteHistoryItem(h.id)} title="×" style={{ ...smallBtn, font: '500 11px var(--fUI)' }}>
+              <button
+                className="mf-btn mf-hover-danger-text"
+                onClick={() => handleDelete(h.id)}
+                title={armedId === h.id ? t.histDeleteConfirm : t.histDelete}
+                aria-label={armedId === h.id ? t.histDeleteConfirm : t.histDelete}
+                style={{
+                  ...smallBtn,
+                  font: '500 11px var(--fUI)',
+                  ...(armedId === h.id
+                    ? { color: 'var(--dgr)', background: 'color-mix(in oklab,var(--dgr),transparent 88%)' }
+                    : null),
+                }}
+              >
                 ×
               </button>
             </div>

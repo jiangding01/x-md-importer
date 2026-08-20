@@ -62,10 +62,10 @@ export function EditorCard({ onImport }: { onImport: () => void }) {
 
   const insert = (before: string, after: string) => {
     const ta = taRef.current;
-    if (!ta) {
-      setMd(md + before + after);
-      return;
-    }
+    // P2-23 收尾(review 修复):工具栏在预览模式已整体禁用,ta 不该为 null;万一未来某个
+    // 调用路径在无编辑器时触达,这里必须是 no-op——旧的「拼到全文末尾」兜底正是当年
+    // 静默污染文档尾部的元凶,不能把危险行为留作 fallback。
+    if (!ta) return;
     const s = ta.selectionStart || 0;
     const e = ta.selectionEnd || 0;
     const next = md.slice(0, s) + before + md.slice(s, e) + after + md.slice(e);
@@ -80,13 +80,28 @@ export function EditorCard({ onImport }: { onImport: () => void }) {
     e.preventDefault();
     if (!dragging) setDragging(true);
   };
+  // P2-24:onDrop 无条件先清 dragging——此前只在 readFile 内部的 onload 里清,若拖入的
+  // 不是文件(files 为空)或读取失败,遮罩会永久卡住。readFile 自身对空 file 直接 no-op,
+  // 这里的清除与它互不冲突,只是把「拖拽态收起」从异步回调里提前到同步事件处理。
   const onDrop = (e: DragEvent) => {
     e.preventDefault();
+    setDragging(false);
     readFile(e.dataTransfer.files?.[0]);
+  };
+  // P2-24:dragLeave 在容器内滑过子元素(工具栏/文本框)时也会触发,若不判断 relatedTarget
+  // 是否仍在容器内,遮罩会一路闪烁。relatedTarget 为 null(拖出窗口外)按“离开”处理。
+  const onDragLeave = (e: DragEvent<HTMLDivElement>) => {
+    const next = e.relatedTarget as Node | null;
+    if (next && e.currentTarget.contains(next)) return;
+    setDragging(false);
   };
 
   const empty = !md.trim();
   const showEmpty = empty && mode === 'edit';
+  // P2-23:预览模式下 textarea 已卸载(taRef.current 为 null),点工具栏按钮会走 insert()
+  // 的兜底分支——把 `**`/表格模板等直接拼到 md 末尾,预览区又看不出正文被静默改动。
+  // 工具栏在预览态整体禁用 + 置灰,而不是让用户凭空点出一个看不见的改动。
+  const toolsDisabled = mode === 'preview';
 
   const tools: { key: string; label: React.ReactNode; onClick: () => void; font?: string }[] = [
     { key: 'b', label: 'B', onClick: () => insert('**', '**'), font: "700 11px var(--fDisp)" },
@@ -94,23 +109,27 @@ export function EditorCard({ onImport }: { onImport: () => void }) {
     { key: 'h', label: 'H#', onClick: () => insert('\n## ', ''), font: '600 10px var(--fMono)' },
     { key: 'code', label: '</>', onClick: () => insert('`', '`'), font: '500 8.5px var(--fMono)' },
   ];
+  const toolBtnStyle: CSSProperties = {
+    ...iconBtn,
+    ...(toolsDisabled ? { opacity: 0.4, cursor: 'not-allowed' } : null),
+  };
 
   return (
     <div style={{ margin: '0 18px', border: '1px solid var(--line)', borderRadius: 'calc(var(--rEl) + 4px)', overflow: 'hidden' }}>
       <div style={toolbar}>
         {tools.map((tool) => (
-          <button key={tool.key} className="mf-btn mf-hover-soft" onClick={tool.onClick} style={{ ...iconBtn, font: tool.font }}>
+          <button key={tool.key} className="mf-btn mf-hover-soft" disabled={toolsDisabled} onClick={tool.onClick} style={{ ...toolBtnStyle, font: tool.font }}>
             {tool.label}
           </button>
         ))}
-        <button className="mf-btn mf-hover-soft" onClick={() => insert('[', '](https://)')} style={iconBtn} aria-label="link">
+        <button className="mf-btn mf-hover-soft" disabled={toolsDisabled} onClick={() => insert('[', '](https://)')} style={toolBtnStyle} aria-label="link">
           <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
             <path d="M5.5 8.5l3-3" />
             <path d="M6.8 3.8l1-1a2.3 2.3 0 013.3 3.3l-1 1" />
             <path d="M7.2 10.2l-1 1a2.3 2.3 0 01-3.3-3.3l1-1" />
           </svg>
         </button>
-        <button className="mf-btn mf-hover-soft" onClick={() => insert('\n![alt](image.png)\n', '')} style={iconBtn} aria-label="image">
+        <button className="mf-btn mf-hover-soft" disabled={toolsDisabled} onClick={() => insert('\n![alt](image.png)\n', '')} style={toolBtnStyle} aria-label="image">
           <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2">
             <rect x="1.5" y="2" width="11" height="10" rx="2" />
             <circle cx="5" cy="5.6" r="1.1" />
@@ -119,8 +138,9 @@ export function EditorCard({ onImport }: { onImport: () => void }) {
         </button>
         <button
           className="mf-btn mf-hover-soft"
-          onClick={() => insert('\n| 列 A | 列 B |\n|---|---|\n| … | … |\n', '')}
-          style={iconBtn}
+          disabled={toolsDisabled}
+          onClick={() => insert(t.tableTemplate, '')}
+          style={toolBtnStyle}
           aria-label="table"
         >
           <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2">
@@ -140,7 +160,7 @@ export function EditorCard({ onImport }: { onImport: () => void }) {
         </div>
       </div>
 
-      <div onDragOver={onDragOver} onDragLeave={() => setDragging(false)} onDrop={onDrop} style={{ position: 'relative', height: 236, display: 'flex' }}>
+      <div onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop} style={{ position: 'relative', height: 236, display: 'flex' }}>
         {mode === 'edit' ? (
           <textarea
             ref={taRef}
