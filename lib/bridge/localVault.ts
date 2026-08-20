@@ -39,14 +39,64 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
-function idbRun<T>(mode: IDBTransactionMode, fn: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+/**
+ * (P2-18)坏库状态(如 upgrade 中断后 object store 缺失)下 `db.transaction`/`objectStore`
+ * 会**同步抛**,此前无 try/catch 兜底,Promise 永不 settle——设置页「连接/清除文件夹」按钮
+ * 因此永久 pending。这里统一收口:
+ *  - `db.transaction(...)` 与 `fn(tx.objectStore(...))` 都包 try/catch 转 reject;
+ *  - 补 `tx.onabort`/`tx.onerror`(此前只挂了请求级的 onsuccess/onerror,事务级异常没人接);
+ *  - 用一个 `finish()` 统一 resolve/reject **并** `db.close()`——无论成功还是任一失败路径,
+ *    db 都会被关掉,不再有路径漏关(此前只有 `tx.oncomplete` 一条关库路径)。
+ *
+ * 导出(而非模块私有)是为了让单测能直接喂假 IDBDatabase/IDBTransaction 驱动这里的错误分支
+ * ——本模块其余函数(saveVaultHandle 等)都在函数体内触达真实 indexedDB,不便单测。
+ */
+export function idbRun<T>(
+  mode: IDBTransactionMode,
+  fn: (store: IDBObjectStore) => IDBRequest<T>,
+): Promise<T> {
   return new Promise((resolve, reject) => {
     openDb().then((db) => {
-      const tx = db.transaction(STORE, mode);
-      const rq = fn(tx.objectStore(STORE));
-      rq.onsuccess = () => resolve(rq.result);
-      rq.onerror = () => reject(rq.error);
-      tx.oncomplete = () => db.close();
+      // settled 防重复关库:success/error 可能来自不同事件源(rq 与 tx)在极端实现里都触发,
+      // 只认第一次结果,重复调用 db.close() 本身无害但没必要。
+      let settled = false;
+      const finish = (ok: boolean, val: unknown) => {
+        if (settled) return;
+        settled = true;
+        db.close();
+        if (ok) resolve(val as T);
+        else reject(val instanceof Error ? val : new Error(String(val)));
+      };
+      let tx: IDBTransaction;
+      try {
+        tx = db.transaction(STORE, mode);
+      } catch (err) {
+        finish(false, err);
+        return;
+      }
+      tx.onabort = () => finish(false, tx.error ?? new Error('indexedDB transaction aborted'));
+      tx.onerror = () => finish(false, tx.error ?? new Error('indexedDB transaction error'));
+      try {
+        const rq = fn(tx.objectStore(STORE));
+        // 结果在 rq.onsuccess 暂存、**事务 oncomplete 才 resolve**(review 修复):IndexedDB 的
+        // request onsuccess ≠ 已落盘——写事务可能在 commit 阶段才因 QuotaExceeded 中止,
+        // 那时 onabort 会来,但若已在 rq.onsuccess 提前 resolve(settled=true),abort 就被
+        // 吞掉,「文件夹已连接」实际什么都没存。oncomplete 之后才是可信的成功。
+        let result: unknown;
+        let gotResult = false;
+        rq.onsuccess = () => {
+          result = rq.result;
+          gotResult = true;
+        };
+        rq.onerror = () => finish(false, rq.error ?? new Error('indexedDB request error'));
+        tx.oncomplete = () =>
+          gotResult
+            ? finish(true, result)
+            : finish(false, new Error('indexedDB transaction completed without result'));
+      } catch (err) {
+        // fn 本身同步抛(如 object store 名不存在)——同样转 reject,不留悬挂 Promise。
+        finish(false, err);
+      }
     }, reject);
   });
 }

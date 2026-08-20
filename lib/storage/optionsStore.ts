@@ -1,5 +1,5 @@
 import { type Options } from '@/lib/settings/options';
-import { getItem, setItem } from './store';
+import { getItem, removeItem, setItem } from './store';
 import { validateOptions } from './schema';
 
 const KEY = 'markflow:opts';
@@ -15,4 +15,9 @@ export async function loadOptions(): Promise<Options> {
 
 export function saveOptions(opts: Options): Promise<void> {
   return setItem(KEY, opts);
+}
+
+/** 删除导入设置(B4-4/P2-19,供 wipeAll 用)。见 draftStore.removeDraft 同款注释。 */
+export function removeOptions(): Promise<void> {
+  return removeItem(KEY);
 }

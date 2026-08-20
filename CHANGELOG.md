@@ -7,6 +7,18 @@
 
 ## [Unreleased]
 
+### 批次四 · 信任一致性(对应审查报告 P2-15~P2-19、P2-25、P2-27)
+
+- **备份导入校验(P2-15)**:`importBackup` 断言 `kind==='backup'`(诊断快照不再被当备份「恢复成功」);version 分支 2 原生 / 1 兼容 / 其他明确拒收;四类错误码各有专属文案。
+- **恢复安全化(P2-16)**:恢复前 arm 二次确认 + 自动先导出当前数据(导出失败即中止);写回改顺序执行、失败即停,如实报告已恢复/失败切片;部分恢复延迟刷新对齐内存与 storage(防陈旧对象覆写刚恢复的数据)。
+- **导出真实结果(P2-17 收尾)**:备份/诊断导出失败均有明确错误提示(下载通道批次一已统一)。
+- **wipe 对齐文案(P2-19)**:「清除所有数据」真清 4 个 storage key(各 store 新增 remove\*)+ 成功后 reload;失败如实报错不再静默;清除前掐死草稿防抖管线(防 pagehide flush 把刚删的草稿写回);另一窗口经 onChanged 的 key 删除分支同步清空。
+- **Toast 分型(P2-27)**:success/error 两型(✕ 图标 + 危险色);时长按文案长度浮动(2.2s~6s);容器加 `role="status" aria-live="polite"`;全部错误调用点逐一标注。
+- **报告数据源钉死(P2-25)**:导入成功时冻结 `lastRunSnapshot`(md + parseOpts + 真实写入结果),报告卡明细与汇总统一读它——导入期间改稿、切设置开关、删历史记录都不再让报告漂移;HistoryItem 存 `parseOpts` 快照供日后历史回看(schema 就地校验)。
+- **idbRun 加固(P2-18)**:事务创建/objectStore 同步抛转 reject(坏库状态不再悬挂「连接文件夹」按钮);补 onabort/onerror 且所有路径关库;**写事务以 `tx.oncomplete` 为可信成功时机**(request onsuccess ≠ 已落盘,防 Quota abort 被吞成「已连接」);`sendFolderRequest` 超时按类型分型(状态/清除 10s,连接不设——用户选文件夹耗时不可控,content 侧本有 180s 兜底)。
+- **修复一处批次二引入的回归**(本批 code review 抓回):`importToXTab`/`setTitleOnXTab` 的 `pinnedTabId ?? ` 钉死逻辑曾被批量文本替换误还原为无条件重解析——B1 防线只剩注释。已恢复并加警示注释。
+- 单测 463 → **488**(+25),新增 importBackup/importArticle(withTimeout)测试文件与 idbRun 假库错误路径用例。
+
 ### 批次三 · 解析正确性(对应审查报告 P1-4~P1-7、P2-7~P2-14;12 项全修)
 
 - **图片 title 剥离(P1-4)**:`![](url "标题")`(Typora/Pandoc 默认输出)不再把 title 吞进 src 导致上传必败;只剥 `"…"`/`'…'`,统一落在 `normalizeImageSrc`(裸图行与带链接图共用)。

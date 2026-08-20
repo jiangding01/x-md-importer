@@ -20,8 +20,10 @@ import { capability, firstTitle } from '@/lib/markdown/capability';
 import { extractCover, extractTitle, stripFirstH1 } from '@/lib/markdown/frontmatter';
 import { parseMarkdown } from '@/lib/markdown/parser';
 import { sampleEn, sampleZh } from '@/lib/markdown/sample';
-import { DRAFT_KEY, saveDraft } from '@/lib/storage/draftStore';
-import { HISTORY_KEY, saveHistory, type HistoryItem } from '@/lib/storage/historyStore';
+import { DRAFT_KEY, removeDraft, saveDraft } from '@/lib/storage/draftStore';
+import { HISTORY_KEY, removeHistory, saveHistory, type HistoryItem } from '@/lib/storage/historyStore';
+import { removeOptions } from '@/lib/storage/optionsStore';
+import { removePrefs } from '@/lib/storage/prefs';
 import { validateHistory } from '@/lib/storage/schema';
 import { downloadText } from '@/lib/ui/download';
 import type { Tab } from '@/entrypoints/sidepanel/types';
@@ -29,12 +31,32 @@ import type { Dict } from '@/lib/i18n/dict';
 
 type Mode = 'edit' | 'preview';
 
+/** toast 的展示种类(B4-5/P2-27):error 型换图标+危险色、时长按文案长度浮动;
+ * 成功/中性提示不传第二参即为缺省(沿用原有观感)。 */
+export type ToastKind = 'success' | 'error';
+
+/**
+ * 报告卡的数据快照(B4-6/P2-25):导入收尾时钉死,ReportCard 只认它,不读当前 md/当前设置
+ * (会随后续编辑/切换开关跳变),也不读 history[0](用户在「记录」页删除/清空历史会让它
+ * 突然跳变甚至消失)。字段比文档描述的 `{ md, parseOpts }` 更宽——ok/deg/fail/imageFailures
+ * 来自本次写入的真实结果(图片上传是否失败等,单靠重新 parse md 推不出来),一并冻结进快照
+ * 才能让「明细」与「汇总」真正共享同一个不可变数据源,而不是只钉住明细、汇总仍读可变数组。
+ */
+export interface LastRunSnapshot {
+  md: string;
+  parseOpts: { obsidianImg: boolean; wikilink: boolean; taskList: 'symbol' | 'plain' };
+  ok: number;
+  deg: number;
+  fail: number;
+  imageFailures?: ImageFailure[];
+}
+
 interface WorkspaceValue {
   // 全局
   tab: Tab;
   setTab: (tab: Tab) => void;
-  toast: string | null;
-  showToast: (msg: string) => void;
+  toast: { msg: string; kind: ToastKind } | null;
+  showToast: (msg: string, kind?: ToastKind) => void;
   // 草稿
   md: string;
   setMd: (md: string) => void;
@@ -81,6 +103,7 @@ interface WorkspaceValue {
   // 报告 / 庆祝
   reportVisible: boolean;
   closeReport: () => void;
+  lastRunSnapshot: LastRunSnapshot | null;
   celebrating: boolean;
   // 记录
   history: HistoryItem[];
@@ -91,7 +114,7 @@ interface WorkspaceValue {
   deleteHistoryItem: (id: string | number) => void;
   clearHistory: () => void;
   histClearArm: boolean;
-  wipeAll: () => void;
+  wipeAll: () => Promise<void>;
 }
 
 const WorkspaceContext = createContext<WorkspaceValue | null>(null);
@@ -145,7 +168,7 @@ export function WorkspaceProvider({
   const en = lang === 'en';
 
   const [tab, setTab] = useState<Tab>('draft');
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ msg: string; kind: ToastKind } | null>(null);
   const [md, setMdState] = useState(initialMd);
   const [mode, setMode] = useState<Mode>('edit');
   const [dragging, setDragging] = useState(false);
@@ -158,6 +181,8 @@ export function WorkspaceProvider({
   const [stagePct, setStagePct] = useState(0);
   const [stageLabel, setStageLabel] = useState('');
   const [reportVisible, setReportVisible] = useState(false);
+  // B4-6(P2-25):报告卡的不可变数据源,导入收尾时钉死、setMd 时随报告一起清空(见 setMd)。
+  const [lastRunSnapshot, setLastRunSnapshot] = useState<LastRunSnapshot | null>(null);
   const [askOverwrite, setAskOverwrite] = useState(false);
   const [askTitleOverwrite, setAskTitleOverwrite] = useState(false);
   const [pendingTitle, setPendingTitle] = useState<string | null>(null);
@@ -184,10 +209,13 @@ export function WorkspaceProvider({
   // B2-1:ask 弹窗挂起期间钉死的写入目标(tabId + articleId 双钥),确认/取消后即清。
   const pendingAskTarget = useRef<{ tabId: number; articleId: string | null } | null>(null);
 
-  const showToast = useCallback((msg: string) => {
+  const showToast = useCallback((msg: string, kind: ToastKind = 'success') => {
     if (timers.current.toast) clearTimeout(timers.current.toast);
-    setToast(msg);
-    timers.current.toast = setTimeout(() => setToast(null), 2200);
+    setToast({ msg, kind });
+    // 时长按文案长度浮动(B4-5/P2-27):固定 2200ms 读不完 50+ 字的拼接文案(如「文件夹已安全
+    // 断开,下篇导入需重新连接」这类必读提示),但也不能无限长——钳制在 2200~6000ms。
+    const duration = Math.min(6000, Math.max(2200, msg.length * 90));
+    timers.current.toast = setTimeout(() => setToast(null), duration);
   }, []);
 
   // ── 草稿持久化(P0-1 + P2-21)──
@@ -258,6 +286,9 @@ export function WorkspaceProvider({
       setCheckVisible(false);
       setCheckStep(-1);
       setReportVisible(false);
+      // B4-6:报告快照与 reportVisible 同生命周期——内容一变,快照就不再代表「当前草稿」,
+      // 一并清空(而不是留着一份对不上号的旧快照,靠 reportVisible=false 隐藏 UI 兜底)。
+      setLastRunSnapshot(null);
     },
     [schedulePersist],
   );
@@ -308,8 +339,10 @@ export function WorkspaceProvider({
     ) => {
       if (areaName !== 'local') return;
       const draftChange = changes[DRAFT_KEY];
-      if (draftChange && typeof draftChange.newValue === 'string') {
-        const incoming = draftChange.newValue;
+      // newValue 为 undefined = key 被删除(另一窗口 wipeAll)——按空草稿采纳,否则本窗口
+      // 留着旧内容,一次键入就把「已清除」的数据整份写回 storage(review 修复)。
+      if (draftChange && (typeof draftChange.newValue === 'string' || draftChange.newValue === undefined)) {
+        const incoming = typeof draftChange.newValue === 'string' ? draftChange.newValue : '';
         // 采纳条件(顺序即优先级):非 echo、本地无未落盘编辑、非导入中。
         // 有 pending 时不采纳:本地更新,随后 flush 会写回并再广播,吞掉 pending 才是丢数据。
         // 导入中不采纳:startImport 闭包依赖 md 一致性(blocks/历史都取自它)。
@@ -327,10 +360,16 @@ export function WorkspaceProvider({
           setCheckVisible(false);
           setCheckStep(-1);
           setReportVisible(false);
+          setLastRunSnapshot(null); // 与 setMd 的清空逻辑保持一致(B4-6):外部值替换同样使旧报告失真
           showToast(t.draftSynced);
         }
       }
       const histChange = changes[HISTORY_KEY];
+      // 同上:undefined = 另一窗口 wipeAll 删除了 key,按空历史采纳。
+      if (histChange && histChange.newValue === undefined && historyRef.current.length > 0) {
+        historyRef.current = [];
+        setHistory([]);
+      }
       if (histChange && Array.isArray(histChange.newValue)) {
         const incoming = validateHistory(histChange.newValue);
         const cur = historyRef.current;
@@ -371,7 +410,7 @@ export function WorkspaceProvider({
   // 手动保存 = 强制 flush 并如实汇报:此前无条件 toast「已保存」,写失败也谎报成功(P0-1)。
   const save = useCallback(() => {
     pendingDraft.current = mdRef.current; // 即便无变更也强制写一次,让「保存」语义真实
-    void flushDraft().then((ok) => showToast(ok ? t.savedToast : t.errStorageWrite));
+    void flushDraft().then((ok) => showToast(ok ? t.savedToast : t.errStorageWrite, ok ? undefined : 'error'));
   }, [flushDraft, showToast, t.savedToast, t.errStorageWrite]);
 
   // 常驻错误条上的自救出口:把当前草稿(读 ref,含未落盘的 pending 值)下载成 .md 文件。
@@ -382,7 +421,7 @@ export function WorkspaceProvider({
       showToast(t.draftExported);
     } catch (err) {
       console.error('[MarkFlow] draft export failed:', err);
-      showToast(t.errExportFail);
+      showToast(t.errExportFail, 'error');
     }
   }, [showToast, t.draftExported, t.errExportFail]);
 
@@ -477,7 +516,8 @@ export function WorkspaceProvider({
   ) => {
     // parseOpts 透传:面板计数须与本次实际写入用的同一套解析开关一致(否则关掉
     // obsidianImg/wikilink/taskList 后报告仍按默认开的口径统计,又是一次 UI 撒谎)。
-    const cap = capability(md, en, { obsidianImg: opts.obsidianImg, wikilink: opts.wikilink, taskList: opts.taskList });
+    const parseOptsSnapshot = { obsidianImg: opts.obsidianImg, wikilink: opts.wikilink, taskList: opts.taskList };
+    const cap = capability(md, en, parseOptsSnapshot);
     const ok = Math.max(0, blockCount - imageFail);
     const deg = cap.filter((c) => c.badge === 'warn').reduce((a, c) => a + c.count, 0);
     const now = new Date();
@@ -493,12 +533,17 @@ export function WorkspaceProvider({
       md,
       // 失败明细(序号/来源/阶段/原因)随记录持久化,供报告卡展示与事后排查。
       imageFailures,
+      // 解析开关快照(B4-6):随记录持久化,供历史回看按「当时口径」重算能力明细。
+      parseOpts: parseOptsSnapshot,
     };
 
     setImporting(false);
     // autoReport 三档如实生效(P1-10):此前只区分 never/非 never,「仅异常时」(默认值)形同 always。
     const hasAnomaly = deg > 0 || imageFail > 0;
     setReportVisible(opts.autoReport === 'always' || (opts.autoReport === 'anomaly' && hasAnomaly));
+    // B4-6(P2-25):报告卡的数据源在此钉死——与 reportVisible 同一刻写入,后续 md 编辑/opts
+    // 切换/history 删改都不会再影响报告卡已展示的内容(ReportCard 只读这份快照)。
+    setLastRunSnapshot({ md, parseOpts: parseOptsSnapshot, ok, deg, fail: imageFail, imageFailures });
 
     const limit = opts.histLimit === 'inf' ? Infinity : Number(opts.histLimit);
     // 读 historyRef.current(最新值)而非闭包 history:标题 ask 弹窗挂起期间用户可能已在记录页
@@ -604,7 +649,7 @@ export function WorkspaceProvider({
         // → 按 disconnected 提前返回,importing 由 finally 复位。
         const pinnedTabId = pinnedTarget?.tabId ?? (await resolveTargetXTab());
         if (pinnedTabId === null) {
-          showToast(importErrorText('disconnected', t));
+          showToast(importErrorText('disconnected', t), 'error');
           return;
         }
         const expectedArticleId = pinnedTarget?.articleId ?? null;
@@ -665,12 +710,12 @@ export function WorkspaceProvider({
           // 并重探一次让状态条反映编辑器真实内容。
           const maybeCommitted = res.committed === true || res.error === 'timeout';
           if (maybeCommitted) {
-            showToast(t.errFailedButCommitted);
+            showToast(t.errFailedButCommitted, 'error');
             void refreshProbe();
           } else if (res.error === 'article-switched') {
-            showToast(t.errArticleSwitched);
+            showToast(t.errArticleSwitched, 'error');
           } else {
-            showToast(importErrorText(res.error, t));
+            showToast(importErrorText(res.error, t), 'error');
           }
           // B5 的失败路径同步(review 修复):content 对「涉本地图的导入」**无论成败**都会清
           // vault handle,此前只有成功分支校准文件夹 UI——失败后素材板仍显示「已连接」,
@@ -679,7 +724,7 @@ export function WorkspaceProvider({
         }
       } catch (err) {
         // 解析异常(如超深嵌套导致栈溢出)等意外:兜底提示,不留残局。
-        showToast(`${t.errWriteFail}: ${String(err)}`);
+        showToast(`${t.errWriteFail}: ${String(err)}`, 'error');
       } finally {
         // 无论成功/失败/抛错,importing 一定复位——否则写入按钮会被永久禁用。
         // finishImport 已在成功路径把 importing 置 false,此处再置一次是幂等的。
@@ -709,7 +754,7 @@ export function WorkspaceProvider({
       void refreshProbe(); // 同步刷新共享状态条,与写入决策使用同一真相
       if (!fresh.connected || fresh.tabId === null) {
         // 新鲜探测发现已断开 → 中止,并明确告知(P2-20:此前静默 return,按钮「点了没反应」)。
-        showToast(importErrorText('disconnected', t));
+        showToast(importErrorText('disconnected', t), 'error');
         return;
       }
       const pinned = { tabId: fresh.tabId, articleId: fresh.articleId };
@@ -729,7 +774,7 @@ export function WorkspaceProvider({
     const mode: ImportMode = opts.onExisting === 'append' ? 'append' : 'replace';
     const freshDirect = await probeXTabContent();
     if (!freshDirect.connected || freshDirect.tabId === null) {
-      showToast(importErrorText('disconnected', t));
+      showToast(importErrorText('disconnected', t), 'error');
       return;
     }
     void startImport(mode, { tabId: freshDirect.tabId, articleId: freshDirect.articleId });
@@ -802,10 +847,37 @@ export function WorkspaceProvider({
     setHistClearArm(false);
     commitHistory([]);
   }, [histClearArm, commitHistory]);
-  const wipeAll = useCallback(() => {
-    commitHistory([]);
-    setMd('');
-  }, [commitHistory, setMd]);
+  // B4-4(P2-19):此前只清 history+draft 的内存态(commitHistory([])+setMd('')),设置与主题
+  // 仍留在 storage 里——与「删除全部草稿、记录与设置」的文案(见 settings/config.ts wipe 行)
+  // 不符。改为顺序 await 四个 store 的 remove*,全部落盘后再 reload——reload 是让 UI 与
+  // storage 重新对齐的唯一自然路径,不必再手动 commitHistory/setMd 更新内存态。
+  // 顺序而非并发:与 importBackup 的顺序执行同一考量,避免中途失败时不清楚删到哪一步。
+  const wipeAll = useCallback(async () => {
+    // 先掐死草稿持久化管线(review 修复):清防抖定时器与 pending,否则 reload 触发的
+    // pagehide flush 会把刚删掉的草稿原样写回 storage——「清除所有数据」变成静默无效。
+    // 内存态同步清空,双窗口经 onChanged 的 key 删除分支跟随。
+    if (persistTimer.current) {
+      clearTimeout(persistTimer.current);
+      persistTimer.current = undefined;
+    }
+    pendingDraft.current = null;
+    mdRef.current = '';
+    setMdState('');
+    historyRef.current = [];
+    setHistory([]);
+    try {
+      await removeDraft();
+      await removeHistory();
+      await removeOptions();
+      await removePrefs();
+      location.reload();
+    } catch (err) {
+      // 任一删除失败:不 reload(用户能看到提示),如实报错——此前静默吞掉,用户点了
+      // 「确认清除」却毫无反馈、数据可能只删了一半(review 修复)。
+      console.error('[MarkFlow] wipeAll failed:', err);
+      showToast(t.errWipeFail, 'error');
+    }
+  }, [showToast, t.errWipeFail]);
 
   const value = useMemo<WorkspaceValue>(
     () => ({
@@ -851,6 +923,7 @@ export function WorkspaceProvider({
       editorHasContent,
       reportVisible,
       closeReport: () => setReportVisible(false),
+      lastRunSnapshot,
       celebrating,
       history,
       histQ,
@@ -868,7 +941,7 @@ export function WorkspaceProvider({
       capOpen, checkVisible, checkStep, runCheck, closeCheck, importing, stageIdx, stagePct, stageLabel,
       writeX, askOverwrite, overwriteAppend, overwriteConfirm, overwriteCancel,
       askTitleOverwrite, pendingTitle, titleOverwriteConfirm, titleOverwriteKeep,
-      editorHasContent, reportVisible, celebrating, history, histQ, loadHistoryItem, copyHistoryItem,
+      editorHasContent, reportVisible, lastRunSnapshot, celebrating, history, histQ, loadHistoryItem, copyHistoryItem,
       deleteHistoryItem, clearHistory, histClearArm, wipeAll,
     ],
   );

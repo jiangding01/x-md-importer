@@ -72,7 +72,7 @@ function LocalFolderRow() {
       showToast(`${t.folderConnectedToast}${res.folderName ?? ''}`);
       return;
     }
-    if (!res.ok && res.error !== 'cancelled') showToast(folderErrText(t, res.error));
+    if (!res.ok && res.error !== 'cancelled') showToast(folderErrText(t, res.error), 'error');
   };
 
   const doClear = async () => {
@@ -82,7 +82,7 @@ function LocalFolderRow() {
       setOpt('activeFolderName', null);
       showToast(t.folderClearedToast);
     } else {
-      showToast(folderErrText(t, res.error));
+      showToast(folderErrText(t, res.error), 'error');
     }
   };
 

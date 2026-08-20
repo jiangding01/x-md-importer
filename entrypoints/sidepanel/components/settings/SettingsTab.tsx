@@ -9,7 +9,7 @@ import { skinSwatch, SKINS, type Skin, type ThemeMode } from '@/lib/theme/themes
 import type { LangPref } from '@/lib/i18n/dict';
 import type { Options } from '@/lib/settings/options';
 import { clearFolder, connectFolder, getFolderStatus } from '@/lib/bridge/importArticle';
-import { exportBackup, importBackup } from '@/lib/storage/backup';
+import { BackupImportError, exportBackup, importBackup } from '@/lib/storage/backup';
 import { downloadText } from '@/lib/ui/download';
 
 /**
@@ -72,7 +72,11 @@ export function SettingsTab() {
 
   const [openSec, setOpenSec] = useState<Record<string, boolean>>(defaultOpen);
   const [wipeArm, setWipeArm] = useState(false);
-  // 备份「恢复」用的隐藏文件选择器(点「恢复」按钮触发)。
+  // 恢复备份的二次确认(B4-2/P2-16):比「载入历史」破坏力更大的入口(整体覆盖草稿+历史+
+  // 设置),对齐 wipeArm 同款 arm 模式——点一次进入「确认」态、2.6s 内再点一次才真正触发。
+  const [restoreArm, setRestoreArm] = useState(false);
+  const restoreArmTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // 备份「恢复」用的隐藏文件选择器(点「恢复」按钮二次确认后触发)。
   const restoreInputRef = useRef<HTMLInputElement>(null);
 
   const en = lang === 'en';
@@ -117,7 +121,7 @@ export function SettingsTab() {
         setOpt('folderName', null);
         showToast(t.folderClearedToast);
       } else {
-        showToast(folderErrText(res.error));
+        showToast(folderErrText(res.error), 'error');
       }
       return;
     }
@@ -130,7 +134,7 @@ export function SettingsTab() {
       showToast(`${t.folderConnectedToast}${res.folderName ?? ''}`);
       return;
     }
-    if (!res.ok && res.error !== 'cancelled') showToast(folderErrText(res.error));
+    if (!res.ok && res.error !== 'cancelled') showToast(folderErrText(res.error), 'error');
   };
 
   /** 快捷键:打开 Chrome 的扩展快捷键设置页(纯 UI 预览无 chrome.tabs 时提示地址)。 */
@@ -160,31 +164,89 @@ export function SettingsTab() {
       showToast(t.diagExported);
     } catch (err) {
       console.error('[MarkFlow] diagnostics export failed:', err);
-      showToast(t.errExportFail);
+      showToast(t.errExportFail, 'error');
     }
+  };
+
+  /**
+   * 备份导出的抛错版本(B4-2/P2-16 依赖它做「恢复前自动导出」):不吞异常、不弹 toast,
+   * 单纯的「导出成功即 resolve、失败即 reject」,供按钮点击(doExportBackup)与恢复前
+   * 自动导出(doRestoreBackup)两处复用同一通道,避免重复实现两次下载逻辑。
+   */
+  const doExportBackupRaw = async (): Promise<void> => {
+    downloadJson(`markflow-backup-${Date.now()}.json`, await exportBackup());
   };
 
   /** 备份:导出全部本地数据(偏好/设置/记录/草稿)为 JSON。 */
   const doExportBackup = async () => {
     try {
-      downloadJson(`markflow-backup-${Date.now()}.json`, await exportBackup());
+      await doExportBackupRaw();
       showToast(t.backupExported);
     } catch {
-      showToast(t.backupExportFail);
+      showToast(t.backupExportFail, 'error');
     }
   };
 
-  /** 恢复:读用户选的备份 JSON → 写回 storage → 刷新面板重读生效。 */
+  /** 恢复按钮:arm 式二次确认(B4-2/P2-16),对齐 wipeArm 的模式——第一次点仅进入确认态,
+   * 2.6s 内再点一次才真正打开文件选择器。 */
+  const handleRestoreClick = () => {
+    if (!restoreArm) {
+      setRestoreArm(true);
+      if (restoreArmTimer.current) clearTimeout(restoreArmTimer.current);
+      restoreArmTimer.current = setTimeout(() => setRestoreArm(false), 2600);
+      return;
+    }
+    setRestoreArm(false);
+    restoreInputRef.current?.click();
+  };
+
+  /**
+   * 恢复:读用户选的备份 JSON → 写回 storage → 刷新面板重读生效。
+   *
+   * 恢复前先自动导出当前数据(B4-2/P2-16):复用 doExportBackupRaw 同一通道——恢复是比
+   * 「载入历史」破坏力更大的入口(整体覆盖草稿+历史+设置),没有后悔药;导出失败则**中止
+   * 恢复**并明确提示,不能让用户在「以为已经有备份保底」的错觉下继续覆盖当前数据。
+   */
   const doRestoreBackup = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = ''; // 允许再次选同一文件
     if (!file) return;
+
     try {
-      await importBackup(JSON.parse(await file.text()));
+      await doExportBackupRaw();
+    } catch (err) {
+      console.error('[MarkFlow] pre-restore auto-export failed, restore aborted:', err);
+      showToast(t.backupRestoreAbortedNoSnapshot, 'error');
+      return;
+    }
+
+    try {
+      const report = await importBackup(JSON.parse(await file.text()));
+      if (report.failedAt) {
+        // 部分恢复(B4-2):顺序写回中途失败,前面的切片已经落盘——不能笼统说「恢复失败」
+        // (用户会以为完全没动,实际上部分数据已经变了)。详细的 restored/failedAt 落 console
+        // 供排障,toast 保持简短可读;**延迟 reload**(review 修复):已恢复的切片只在 storage
+        // 里、内存态还是旧值,不 reload 的话用户下一次改设置/主题就会用陈旧对象整体覆写、
+        // 把刚恢复的数据又冲掉——先让用户看到提示,再刷新对齐内存与 storage。
+        console.error('[MarkFlow] backup restore partial failure:', report);
+        showToast(t.backupRestorePartial, 'error');
+        setTimeout(() => window.location.reload(), 2600);
+        return;
+      }
       showToast(t.backupRestored);
       setTimeout(() => window.location.reload(), 700); // reload 后 main.tsx 重新从 storage 读取
-    } catch {
-      showToast(t.backupRestoreFail);
+    } catch (err) {
+      if (err instanceof BackupImportError) {
+        if (err.reason === 'wrong-kind') {
+          showToast(t.backupRestoreWrongKind, 'error');
+          return;
+        }
+        if (err.reason === 'bad-version') {
+          showToast(t.backupRestoreBadVersion, 'error');
+          return;
+        }
+      }
+      showToast(t.backupRestoreFail, 'error');
     }
   };
 
@@ -263,8 +325,17 @@ export function SettingsTab() {
           <button className="mf-btn mf-hover-soft" onClick={() => void doExportBackup()} style={actBtn}>
             {t.backupExport}
           </button>
-          <button className="mf-btn mf-hover-soft" onClick={() => restoreInputRef.current?.click()} style={actBtn}>
-            {t.backupRestore}
+          {/* 恢复走 arm 二次确认(B4-2):第一次点击只是「武装」,按钮态与色都变化,
+              提示用户再点一次才真正打开文件选择器——对齐下方 wipe 行的既有模式。 */}
+          <button
+            className="mf-btn mf-hover-soft"
+            onClick={handleRestoreClick}
+            style={{
+              ...actBtn,
+              ...(restoreArm ? { borderColor: 'var(--dgr)', color: 'var(--dgr)' } : null),
+            }}
+          >
+            {restoreArm ? t.backupRestoreArm : t.backupRestore}
           </button>
           <input
             ref={restoreInputRef}
@@ -288,8 +359,9 @@ export function SettingsTab() {
           return;
         }
         setWipeArm(false);
-        wipeAll();
-        showToast(en ? 'All data erased' : '所有数据已清除');
+        // B4-4(P2-19):wipeAll 内部顺序删完四个 store 后自行 location.reload(),reload 会
+        // 立刻吃掉任何 toast——此前那句硬编码 'All data erased' 从未被用户真正看到过,删掉。
+        void wipeAll();
         return;
       }
       if (row.k === 'shortcuts') return openShortcuts();
