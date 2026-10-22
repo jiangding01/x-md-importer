@@ -205,22 +205,21 @@ export default defineBackground(() => {
     (message: unknown, sender: MessageSender): Promise<FetchImageResponse> | undefined => {
       // 纵深校验:只处理本扩展自身发来的消息(拒绝其他扩展 / 外部页面伪造)。
       if (sender.id !== browser.runtime.id) return undefined;
-      // 若能拿到发起方标签页 URL,进一步限制其 origin 属 x.com / twitter.com;
-      // 拿不到(如来自扩展页面)则跳过该项、由上面的 id 校验兜底。
-      const tabUrl = sender.tab?.url;
-      if (tabUrl) {
-        let origin: string;
+      // 来自标签页(content script)的消息:进一步限制发起帧属 x.com / twitter.com。
+      // 用 sender.origin / sender.url(content script 发来的消息总带,不依赖 tabs 权限),
+      // 不再读 sender.tab.url(B4 去掉 tabs 后不保证可读)。范围与 content_scripts 一致,不含子域。
+      // 非标签页来源(扩展自身页面)跳过该项、由上面的 id 校验兜底。
+      if (sender.tab) {
+        // origin 为 Chrome 80+ 字段,webextension-polyfill 的类型未收录,故窄化断言。
+        const from = (sender as MessageSender & { origin?: string }).origin ?? sender.url;
+        if (!from) return undefined; // 标签页来源却无 origin/url:保守拒绝
+        let host: string;
         try {
-          origin = new URL(tabUrl).hostname.toLowerCase();
+          host = new URL(from).hostname.toLowerCase();
         } catch {
           return undefined; // URL 解析失败:保守拒绝
         }
-        const allowed =
-          origin === 'x.com' ||
-          origin.endsWith('.x.com') ||
-          origin === 'twitter.com' ||
-          origin.endsWith('.twitter.com');
-        if (!allowed) return undefined;
+        if (host !== 'x.com' && host !== 'twitter.com') return undefined;
       }
       if (isFetchImageRequest(message)) return fetchImage(message.url);
       return undefined; // 非本扩展关心的消息:交给其他监听器

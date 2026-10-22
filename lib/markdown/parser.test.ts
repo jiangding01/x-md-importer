@@ -889,6 +889,62 @@ describe('图片 destination 的可选 title 剥离', () => {
   });
 });
 
+// A1:带链接图片行改为括号配对扫描(matchLinkedImageLine),杜绝旧正则两段贪婪 `.+` 把
+// 一行多图 / 尾随内容吞进 source。错误形态须整行回落段落(文本一字不丢),合法单张仍识别。
+describe('带链接图片行:一行多张 / 尾随内容不认作独占行图片', () => {
+  it('推文转 md 的两张链接图并排 → 不是 image 块,文本完整保留', () => {
+    const md =
+      '[![a](https://pbs.twimg.com/1.jpg)](https://x.com/u/status/1/photo/1) [![b](https://pbs.twimg.com/2.jpg)](https://x.com/u/status/1/photo/2)';
+    const blocks = parseMarkdown(md);
+    expect(blocks.some((b) => b.kind === 'image')).toBe(false);
+    const b = asText(blocks[0]);
+    expect(b.text).toContain('https://pbs.twimg.com/1.jpg');
+    expect(b.text).toContain('https://pbs.twimg.com/2.jpg');
+    expect(isImageLine(md)).toBe(false);
+  });
+
+  it('链接图后跟裸图 `[![a](i.png)](http://l) ![b](y.png)` → 不是 image 块,b 不丢', () => {
+    const md = '[![a](i.png)](http://l) ![b](y.png)';
+    const blocks = parseMarkdown(md);
+    expect(blocks.some((b) => b.kind === 'image')).toBe(false);
+    const b = asText(blocks[0]);
+    expect(b.text).toContain('i.png');
+    expect(b.text).toContain('![b](y.png)');
+    expect(isImageLine(md)).toBe(false);
+  });
+
+  it('链接图后跟括号注释 `[![a](i.png)](http://l)(注:见原文)` → 不是 image 块,注释不丢', () => {
+    const md = '[![a](i.png)](http://l)(注:见原文)';
+    const blocks = parseMarkdown(md);
+    expect(blocks.some((b) => b.kind === 'image')).toBe(false);
+    const b = asText(blocks[0]);
+    expect(b.text).toContain('(注:见原文)');
+    expect(isImageLine(md)).toBe(false);
+  });
+
+  it('单张带 title 带链接 `[![alt](src "title")](https://link)` 仍识别为 image', () => {
+    const blocks = parseMarkdown('[![alt](https://i/a.png "title")](https://link)');
+    expect(blocks).toHaveLength(1);
+    const b = asImage(blocks[0]);
+    expect(b.source).toBe('https://i/a.png');
+    expect(b.alt).toBe('alt');
+  });
+
+  it('外层链接 URL 含括号 `[![a](i.png)](http://l/f(1))` 识别正确', () => {
+    const blocks = parseMarkdown('[![a](i.png)](http://l/f(1))');
+    expect(blocks).toHaveLength(1);
+    const b = asImage(blocks[0]);
+    expect(b.source).toBe('i.png');
+    expect(b.alt).toBe('a');
+    expect(isImageLine('[![a](i.png)](http://l/f(1))')).toBe(true);
+  });
+
+  it('内层图片 URL 含括号 `[![a](http://h/f(1).png)](http://l)` 识别正确', () => {
+    const b = asImage(parseMarkdown('[![a](http://h/f(1).png)](http://l)')[0]);
+    expect(b.source).toBe('http://h/f(1).png');
+  });
+});
+
 describe('isImageLine', () => {
   it('裸/带链接/Obsidian 图片行均返回 true', () => {
     expect(isImageLine('![](x.png)')).toBe(true);

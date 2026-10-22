@@ -144,10 +144,12 @@ async function compressAndLog(file: File, compress: CompressOpts, label: string)
   const before = file.size;
   const out = await compressImage(file, compress.maxEdge, compress.quality);
   const kb = (n: number) => Math.round(n / 1024);
-  console.info(
-    `[MarkFlow] 图片压缩 ${label}(${file.name}): ${kb(before)}KB → ${kb(out.size)}KB` +
-      (out === file ? ' · 未压缩(非 JPEG 照片 / 体积过小 / 无收益)' : ''),
-  );
+  if (import.meta.env.DEV) {
+    console.info(
+      `[MarkFlow] 图片压缩 ${label}(${file.name}): ${kb(before)}KB → ${kb(out.size)}KB` +
+        (out === file ? ' · 未压缩(非 JPEG 照片 / 体积过小 / 无收益)' : ''),
+    );
+  }
   return out;
 }
 
@@ -196,8 +198,8 @@ export default defineContentScript({
   matches: ['*://x.com/*', '*://twitter.com/*'],
   runAt: 'document_idle',
   async main(ctx) {
-    // 启动日志:无条件打印,用于确认 content script 是否被注入执行。
-    console.info('[MarkFlow] content-script 已加载 @', location.href);
+    // 启动日志:仅开发构建打印,用于确认 content script 是否被注入执行(生产不在 x.com 每页刷日志)。
+    if (import.meta.env.DEV) console.info('[MarkFlow] content-script 已加载 @', location.href);
 
     const nonce = createNonce();
     let handshaked = false;
@@ -291,7 +293,7 @@ export default defineContentScript({
       } else if (msg.kind === 'hello-ack' && msg.nonce === nonce && !handshaked) {
         handshaked = true;
         stopRetry();
-        console.info('[MarkFlow] content↔injector 握手成功', { nonce });
+        if (import.meta.env.DEV) console.info('[MarkFlow] content↔injector 握手成功', { nonce });
       } else if (msg.kind === 'probe-result' && msg.nonce === nonce) {
         // 用 id + kind 精确匹配并发请求;nonce 校验拦截历史残留 / 其他会话的串扰
         bridge.resolve(msg.id, msg.kind, msg.result);
@@ -354,8 +356,9 @@ export default defineContentScript({
       if (cover) cover = await compressAndLog(cover, compress, '封面');
       // 通道超时必须显著大于「图片数 × injector 单图 30s 预算」,否则慢图/多图会先在通道超时,
       // 报失败并丢弃 injector 事后回来的成功结果(而 injector 仍在后台改写编辑器)。基础 45s +
-      // 每图 40s(单图 30s 预算 + 归位/清理冗余)+ 封面 20s。
-      const timeoutMs = 45_000 + images.length * 40_000 + (cover ? 20_000 : 0);
+      // 每图 45s(单图 30s 预算 + 归位/清理冗余 + settle 等待余量——settle 最坏每图 +3s,
+      // 此前 40s 的冗余被吃紧)+ 封面 20s。
+      const timeoutMs = 45_000 + images.length * 45_000 + (cover ? 20_000 : 0);
       let response = await bridge.request<ImportResult, ImportResponse>(
         'import-result',
         (id) => post({ source: ISO_SOURCE, kind: 'import', nonce, id, blocks, mode, images, cover, expectedArticleId }),
@@ -592,7 +595,7 @@ export default defineContentScript({
     // x.com CSP 可能拦截 chrome-extension 脚本加载,故 try/catch 明确报错以便诊断。
     try {
       await injectScript('/injector.js', { keepInDom: true });
-      console.info('[MarkFlow] injectScript 已调用,等待 injector 握手…');
+      if (import.meta.env.DEV) console.info('[MarkFlow] injectScript 已调用,等待 injector 握手…');
     } catch (err) {
       console.error('[MarkFlow] 注入 injector.js 失败(可能被页面 CSP 拦截):', err);
     }

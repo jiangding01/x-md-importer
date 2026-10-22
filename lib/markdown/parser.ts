@@ -54,11 +54,12 @@ const RE_TWEET = /^https?:\/\/(?:www\.|mobile\.)?(?:x|twitter)\.com\/[^/]+\/stat
 /** 独占一行单张裸图片的**前缀** `![alt](`(alt 不含 `]`);其后 src 由 matchImageLine 括号配对扫描。 */
 const RE_IMAGE_LINE_HEAD = /^!\[([^\]]*)\]\(/;
 /**
- * 独占一行的「带链接图片」`[![alt](imgUrl)](linkUrl)`(推文转 md 常见:图片外套一层
- * 指向媒体页的链接)。取内层图片 URL 上传,外层链接丢弃(X 图片不能再套超链)。
- * 组1=alt、组2=图片URL、组3=链接URL(仅用于剥离)。
+ * 独占一行「带链接图片」`[![alt](imgUrl)](linkUrl)` 的**前缀** `[![alt](`(推文转 md 常见:
+ * 图片外套一层指向媒体页的链接)。其后内层图片 URL、`](`、外层链接 URL 由 matchLinkedImageLine
+ * 括号配对扫描——旧版整行正则 `(.+)\)\]\((.+)\)$` 两段贪婪,会把一行两张链接图 / 链接图后跟
+ * 裸图或尾随文本整行吞成一张 source 畸形的图(A1)。
  */
-const RE_LINKED_IMAGE_LINE = /^\[!\[([^\]]*)\]\((.+)\)\]\((.+)\)$/;
+const RE_LINKED_IMAGE_LINE_HEAD = /^\[!\[([^\]]*)\]\(/;
 /**
  * 独占一行的 Obsidian 内嵌图片 `![[path]]` 或 `![[path|alt]]`(wiki 风格)。
  * path 是相对文件夹的本地路径,由 content 侧 File System Access 读取(见 lib/bridge/localVault)。
@@ -142,7 +143,7 @@ function matchMathOpen(line: string): 'single' | 'multi' | null {
 /** 是否为独占一行的图片(裸 `![](x)` / 带链接 `[![](x)](y)` / Obsidian `![[x]]`)。 */
 export function isImageLine(line: string): boolean {
   const t = line.trim();
-  return matchImageLine(t) !== null || RE_LINKED_IMAGE_LINE.test(t) || RE_OBSIDIAN_IMAGE_LINE.test(t);
+  return matchImageLine(t) !== null || matchLinkedImageLine(t) !== null || RE_OBSIDIAN_IMAGE_LINE.test(t);
 }
 
 /**
@@ -394,11 +395,10 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
     //    行内图片(段落中的 `![]()`)不在此列,仍按普通文本保留(M1 边界)。
     //    先匹配「带链接图片」`[![](img)](link)`(以 `[!` 开头),再匹配裸 `![](img)`(以 `![` 开头)。
     const trimmed = line.trim();
-    const linkedImage = trimmed.match(RE_LINKED_IMAGE_LINE);
+    const linkedImage = matchLinkedImageLine(trimmed);
     if (linkedImage) {
-      const alt = linkedImage[1] ?? '';
-      const src = normalizeImageSrc(linkedImage[2] ?? ''); // 内层图片 URL(剥 `<>`);外层链接(组3)丢弃
-      blocks.push({ kind: 'image', source: src, alt, fallbackText: trimmed });
+      // 内层图片 URL(已剥 `<>` / title)上传;外层链接不返回、直接丢弃——X 图片不能再套超链
+      blocks.push({ kind: 'image', source: linkedImage.src, alt: linkedImage.alt, fallbackText: trimmed });
       i += 1;
       continue;
     }
@@ -672,7 +672,7 @@ function isBlockBoundary(line: string, interrupting = false): boolean {
   if (matchMathOpen(line) !== null) return true;
   if (RE_TWEET.test(line.trim())) return true; // trim 与主循环的推文分支同源(B3-2)
   if (matchImageLine(line.trim()) !== null) return true;
-  if (RE_LINKED_IMAGE_LINE.test(line.trim())) return true;
+  if (matchLinkedImageLine(line.trim()) !== null) return true;
   if (optObsidianImg && RE_OBSIDIAN_IMAGE_LINE.test(line.trim())) return true;
   if (RE_HEADING.test(line)) return true;
   if (RE_BLOCKQUOTE.test(line)) return true;
@@ -712,16 +712,56 @@ function matchImageLine(line: string): { alt: string; src: string } | null {
   if (!head) return null;
   const alt = head[1] ?? '';
   const urlStart = head[0].length; // src 起点:紧跟开括号 `(` 之后
+  const urlEnd = scanParenClose(line, urlStart);
+  if (urlEnd === null) return null; // 括号未闭合
+  if (urlEnd !== line.length - 1) return null; // 闭合 `)` 之后仍有字符 → 一行多图 / 尾随文本,不认作图片行
+  const src = normalizeImageSrc(line.slice(urlStart, urlEnd));
+  if (src === '') return null; // 空 src 不产出 ImageBlock
+  return { alt, src };
+}
+
+/**
+ * 解析「独占一行的带链接图片」`[![alt](src)](link)`(推文转 md 常见)。与 matchImageLine 同一套
+ * 括号配对扫描:内层图片 URL 闭合后必须**紧跟** `](`,外层链接 URL 再做一次配对,且其闭合 `)`
+ * 必须是行尾最后一个字符。因此以下形态均返回 null,整行交由段落分支按普通文本保留(A1):
+ *  - 一行两张链接图 `[![a](1.jpg)](p1) [![b](2.jpg)](p2)`(旧正则把中间整段吞进 source);
+ *  - 链接图后跟裸图 `[![a](i.png)](l) ![b](y.png)`(b 静默丢失);
+ *  - 链接图后跟尾随文本 `[![a](i.png)](l)(注:见原文)`(注释丢失)。
+ * 内层 src 经 normalizeImageSrc(剥 `<>` / title);外层 link 只做结构校验、不返回(X 图片不能套超链)。
+ * 入参需为**已 trim** 的行。
+ */
+function matchLinkedImageLine(line: string): { alt: string; src: string } | null {
+  const head = RE_LINKED_IMAGE_LINE_HEAD.exec(line);
+  if (!head) return null;
+  const alt = head[1] ?? '';
+  const srcStart = head[0].length;
+  const srcEnd = scanParenClose(line, srcStart);
+  if (srcEnd === null) return null; // 内层括号未闭合
+  if (line.slice(srcEnd + 1, srcEnd + 3) !== '](') return null; // 内层图片闭合后须紧跟 `](`
+  const linkStart = srcEnd + 3;
+  const linkEnd = scanParenClose(line, linkStart);
+  if (linkEnd === null) return null; // 外层括号未闭合
+  if (linkEnd !== line.length - 1) return null; // 外层闭合 `)` 之后仍有字符 → 多图 / 尾随文本
+  const src = normalizeImageSrc(line.slice(srcStart, srcEnd));
+  if (src === '') return null;
+  return { alt, src };
+}
+
+/**
+ * 括号配对扫描:`start` 为某个已消费的开括号 `(` 之后的位置,返回与之配对的闭括号 `)` 下标;
+ * 未闭合返回 null。容忍 URL 内嵌套括号(`http://h/f(1).png`),`\` 转义连同下一字符跳过,
+ * `<...>` 包裹段整体跳过(CommonMark:尖括号内可含空格 / `)`,不参与计数)。
+ * matchImageLine 与 matchLinkedImageLine 共用,避免两套扫描漂移。
+ */
+function scanParenClose(line: string, start: number): number | null {
   let depth = 1;
-  let i = urlStart;
+  let i = start;
   while (i < line.length) {
     const ch = line[i];
     if (ch === '\\') {
       i += 2; // 转义:连同下一字符跳过,不参与括号计数
       continue;
     }
-    // CommonMark:destination 用 `<...>` 包裹时,尖括号内整体是 URL(可含空格 / `)`),内部字符
-    // 不参与括号配对——直接跳到匹配的 `>`,避免路径里的 `)` 被误判为 destination 闭合。
     if (ch === '<') {
       const gt = line.indexOf('>', i);
       if (gt >= 0) {
@@ -733,15 +773,11 @@ function matchImageLine(line: string): { alt: string; src: string } | null {
       depth += 1;
     } else if (ch === ')') {
       depth -= 1;
-      if (depth === 0) break; // 找到与开括号配对的闭括号
+      if (depth === 0) return i; // 找到与开括号配对的闭括号
     }
     i += 1;
   }
-  if (depth !== 0) return null; // 括号未闭合
-  if (i !== line.length - 1) return null; // 闭合 `)` 之后仍有字符 → 一行多图 / 尾随文本,不认作图片行
-  const src = normalizeImageSrc(line.slice(urlStart, i));
-  if (src === '') return null; // 空 src 不产出 ImageBlock
-  return { alt, src };
+  return null;
 }
 
 /**

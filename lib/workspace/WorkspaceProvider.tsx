@@ -13,9 +13,16 @@ import { useSettings } from '@/lib/settings/SettingsProvider';
 import { useConnection } from '@/lib/bridge/useConnection';
 import { useProbe } from '@/lib/bridge/useProbe';
 import { getFolderStatus, importToXTab, probeXTabContent, setTitleOnXTab } from '@/lib/bridge/importArticle';
-import { resolveTargetXTab } from '@/lib/bridge/locateXTab';
 import { requestRemoteImagePermissions } from '@/lib/bridge/imagePermissions';
-import { classifyImageSource, type ImageBlock, type ImageFailure, type ImportMode, type SetTitleResponse } from '@/lib/bridge/protocol';
+import {
+  ARTICLE_SWITCHED_ERROR,
+  classifyImageSource,
+  NOT_ARTICLE_EDITOR_ERROR,
+  type ImageBlock,
+  type ImageFailure,
+  type ImportMode,
+  type SetTitleResponse,
+} from '@/lib/bridge/protocol';
 import { capability, firstTitle } from '@/lib/markdown/capability';
 import { extractCover, extractTitle, stripFirstH1 } from '@/lib/markdown/frontmatter';
 import { parseMarkdown } from '@/lib/markdown/parser';
@@ -129,6 +136,7 @@ function importErrorText(error: string, t: Dict): string {
   if (error === 'disconnected') return t.errDisconnected;
   if (error === 'no-injector') return t.errNoInjector;
   if (error === 'timeout') return t.errTimeout;
+  if (error === NOT_ARTICLE_EDITOR_ERROR) return t.errNotArticleEditor; // B3:injector 拒写非文章编辑页
   // 其他 injector 层错误:统一「写入失败」并附上原始短语,便于诊断。
   return `${t.errWriteFail}: ${error}`;
 }
@@ -142,6 +150,7 @@ function titleResultText(res: SetTitleResponse, t: Dict): string {
   if (res.error === 'disconnected') return `${t.titleFail}: ${t.errDisconnected}`;
   if (res.error === 'no-injector') return `${t.titleFail}: ${t.errNoInjector}`;
   if (res.error === 'timeout') return `${t.titleFail}: ${t.errTimeout}`;
+  if (res.error === NOT_ARTICLE_EDITOR_ERROR) return `${t.titleFail}: ${t.errNotArticleEditor}`;
   return `${t.titleFail}: ${res.error}`;
 }
 
@@ -590,7 +599,13 @@ export function WorkspaceProvider({
   }, []);
 
   const startImport = useCallback(
-    async (mode: ImportMode, pinnedTarget?: { tabId: number; articleId: string | null }) => {
+    async (
+      mode: ImportMode,
+      pinnedTarget?: { tabId: number; articleId: string | null },
+      // onExisting=ask 的首次点击:权限申请(手势链首个 await)+ 即时探针之后,编辑器有内容
+      // 则钉住目标、弹 OverwriteDialog 并提前返回;为空则按传入 mode(replace)继续写入。
+      askIfContent = false,
+    ) => {
       // 同步闸门优先于一切:极快双击时第二次调用在这里直接短路,
       // 不会重复触发下载阶段(在任何 await 之前完成拦截)。
       if (importingRef.current) return;
@@ -645,19 +660,43 @@ export function WorkspaceProvider({
         // 不再走全文正则(`<>` 包裹的远程图曾被判 local → 该 origin 不申请 → 下载必被拒)。
         await requestRemoteImagePermissions(blocks, coverSource ? [coverSource] : []);
 
-        // review B1 + B2-1:正文写入前解析目标 X 标签**一次**并全程钉死。ask 流程传入
+        // review B1 + B2-1:正文写入前把目标 X 标签**一次**钉死并全程复用。ask 流程传入
         // pinnedTarget(writeX 探测时已钉的 tabId+articleId 双钥)则直接用——目标在弹窗
         // 弹出**之前**就定死,挂起期间切 tab/切文章都写不到别处(articleId 由 injector
-        // 在 commit 前终验)。未传时(非 ask 路径)维持原逻辑:放在权限申请(首个 await)
-        // 之后解析——权限申请必须是手势链首个 await(见 imagePermissions 注释),此处再解析
-        // 不消耗手势;且权限弹窗结束时焦点仍在当前 X 草稿,此刻定位即准。拿不到(切走了/非 X)
-        // → 按 disconnected 提前返回,importing 由 finally 复位。
-        const pinnedTabId = pinnedTarget?.tabId ?? (await resolveTargetXTab());
-        if (pinnedTabId === null) {
-          showToast(importErrorText('disconnected', t), 'error');
-          return;
+        // 在 commit 前终验)。未传时(直写路径与 ask 首次点击)在**权限申请之后**才即时探针钉
+        // 双钥:权限申请必须是手势链首个 await(HANDOFF §8 / imagePermissions 注释),探针放在
+        // 其后,不让任何 tab-API await 排在权限申请之前(它们是否消耗/拖过瞬时激活未经证实,
+        // 一律不赌);且权限弹窗结束时焦点仍在当前 X 草稿,此刻探测即准。
+        // 探不到(切走了/非 X/非文章编辑页)→ 按 disconnected 提前返回,importing 由 finally 复位。
+        let pinnedTabId: number;
+        let expectedArticleId: string | null;
+        if (pinnedTarget) {
+          pinnedTabId = pinnedTarget.tabId;
+          expectedArticleId = pinnedTarget.articleId;
+        } else {
+          const fresh = await probeXTabContent();
+          if (!fresh.connected || fresh.tabId === null) {
+            showToast(importErrorText('disconnected', t), 'error');
+            void refreshProbe(); // 同步状态条,避免「已连接」假象下反复点击
+            return;
+          }
+          pinnedTabId = fresh.tabId;
+          expectedArticleId = fresh.articleId;
+          if (askIfContent) {
+            // review #5:用这次新鲜探针的 hasContent 决定 ask/replace,而非 useConnection 的陈旧
+            // 快照;同步刷新共享状态条,与写入决策使用同一真相。
+            void refreshProbe();
+            if (fresh.hasContent) {
+              // B2-1:弹窗**之前**就钉死 {tabId, articleId},确认后透传给 startImport(取消时清掉),
+              // 挂起期间切到另一篇草稿也写不到别处。importing 由 finally 复位,弹窗确认时是一次
+              // 新手势,startImport 会再走一遍「权限申请为首个 await」(已授权则立即返回)。
+              pendingAskTarget.current = { tabId: pinnedTabId, articleId: expectedArticleId };
+              setAskOverwrite(true);
+              return;
+            }
+            // 编辑器确为空 → 直接按传入 mode(replace)整体写入,沿用刚探测的目标。
+          }
         }
-        const expectedArticleId = pinnedTarget?.articleId ?? null;
 
         // 写入中(等待 content → injector 直写)
         setStageLabel(t.stBody);
@@ -717,7 +756,7 @@ export function WorkspaceProvider({
           if (maybeCommitted) {
             showToast(t.errFailedButCommitted, 'error');
             void refreshProbe();
-          } else if (res.error === 'article-switched') {
+          } else if (res.error === ARTICLE_SWITCHED_ERROR) {
             showToast(t.errArticleSwitched, 'error');
           } else {
             showToast(importErrorText(res.error, t), 'error');
@@ -748,42 +787,19 @@ export function WorkspaceProvider({
   const writeX = useCallback(async () => {
     if (!md.trim() || importing || !connected) return;
     if (opts.onExisting === 'ask') {
-      // review #5:陈旧探针快照可能把用户刚在 X 手打的内容误判为空 → 决定 ask/replace 前
-      // 即时探一次拿新鲜 hasContent,而非依赖 useConnection 的 editorHasContent 快照。
-      // 这几个 tab-API await 不消耗手势(仅 permissions.request 消耗),后续 startImport 里
-      // 权限申请仍在手势窗口内(见其内注释)。
-      // B2-1:探测的同时拿到 {tabId, articleId} 双钥并钉死——此前 pinnedTabId 在用户点
-      // 「覆盖」**之后**才解析,确认弹窗挂起期间切到另一篇草稿 B,hasContent 检查的是 A、
-      // blockMap.clear() 砸的却是 B(B1 修过标题通道的同款竞态,正文通道当时没堵)。
-      const fresh = await probeXTabContent();
-      void refreshProbe(); // 同步刷新共享状态条,与写入决策使用同一真相
-      if (!fresh.connected || fresh.tabId === null) {
-        // 新鲜探测发现已断开 → 中止,并明确告知(P2-20:此前静默 return,按钮「点了没反应」)。
-        showToast(importErrorText('disconnected', t), 'error');
-        return;
-      }
-      const pinned = { tabId: fresh.tabId, articleId: fresh.articleId };
-      if (fresh.hasContent) {
-        pendingAskTarget.current = pinned; // 弹窗确认后透传给 startImport,取消时清掉
-        setAskOverwrite(true);
-        return;
-      }
-      // 编辑器确为空 → 直接整体写入(与原空态行为一致:replace),沿用刚探测的目标。
-      void startImport('replace', pinned);
+      // ask 与直写路径同构:**不在此处先探针**——startImport 内的 host 权限申请必须是写入
+      // 手势链上第一个 await(HANDOFF §8)。新鲜 hasContent 探测、双钥钉死(B2-1)与是否弹
+      // OverwriteDialog 的判定,统一由 startImport 在权限申请**之后**完成(askIfContent)。
+      void startImport('replace', undefined, true);
       return;
     }
-    // 非询问模式:按设置直接决定模式(总是追加 / 总是覆盖)。同样先探测钉死双钥
-    // (review 修复):此路径虽无确认弹窗,但 startImport 里的 host 权限申请是**无限期**
-    // 等用户决定的挂起窗口,期间切文章同样会「探 A 写 B」。probe 的 tab-API await 不消耗
-    // 手势,权限申请仍是 startImport 内手势链首个 await,约束不破坏。
+    // 非询问模式:按设置直接决定模式(总是追加 / 总是覆盖)。同样**不在此处先探针**(疑点 1
+    // 修复):多出的 `await probeXTabContent()` 会让权限申请不再是手势链首个 await,远程图权限
+    // 弹窗可能越过 Chrome 的瞬时激活窗口被直接拒绝。双钥由 startImport 在权限申请**之后**
+    // 即时探针钉死(仍在 importToXTab 之前,「探 A 写 B」防线不变)。
     const mode: ImportMode = opts.onExisting === 'append' ? 'append' : 'replace';
-    const freshDirect = await probeXTabContent();
-    if (!freshDirect.connected || freshDirect.tabId === null) {
-      showToast(importErrorText('disconnected', t), 'error');
-      return;
-    }
-    void startImport(mode, { tabId: freshDirect.tabId, articleId: freshDirect.articleId });
-  }, [md, importing, connected, opts.onExisting, startImport, refreshProbe, showToast, t]);
+    void startImport(mode);
+  }, [md, importing, connected, opts.onExisting, startImport]);
 
   const overwriteAppend = useCallback(() => {
     setAskOverwrite(false);

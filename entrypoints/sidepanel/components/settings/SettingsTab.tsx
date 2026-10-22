@@ -471,7 +471,11 @@ export function SettingsTab() {
       })}
 
       <div style={{ padding: '24px 0 0', textAlign: 'center', font: '400 8.5px var(--fMono)', color: 'var(--ink3)', letterSpacing: '1.2px' }}>
-        MARKFLOW v3.0 · MD → X · LOCAL ONLY, NO TELEMETRY
+        MARKFLOW v
+        {typeof chrome !== 'undefined' && chrome.runtime?.getManifest
+          ? chrome.runtime.getManifest().version
+          : 'dev'}{' '}
+        · MD → X · LOCAL ONLY, NO TELEMETRY
       </div>
     </div>
   );
