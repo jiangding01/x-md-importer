@@ -7,74 +7,111 @@
 
 ## [Unreleased]
 
-### 批次五 · 体验打磨(对应审查报告 P2-22~P2-24、P2-26、P2-29~P2-31 + 相关 P3;限定清单 10 项)
+## [0.5.0] - 2026-10-22
 
-- **AudioContext 用后释放(P2-22)**:`playSound` 音效播放结束后 `osc.onended` 里 `ctx.close()`——Chrome 对并存 AudioContext 数量有硬上限,此前多次导入后新建静默失败,音效开关看似开着却哑掉。
-- **预览模式禁用工具栏(P2-23)**:`EditorCard` 预览态下 textarea 已卸载,点工具栏此前会走 `insert()` 兜底分支把 `**`/表格模板等静默拼到正文末尾、预览里看不出来。改为预览态整体 `disabled` + 置灰。
-- **拖拽态修复(P2-24)**:`onDrop` 无条件先 `setDragging(false)`(此前只在 `readFile` 的 `onload` 里清,拖入非文件/读取失败会让遮罩永久卡住);`readFile` 补 `reader.onerror`(清 dragging + `errWriteFail` 错误 toast);`onDragLeave` 判 `relatedTarget` 是否仍在容器内,滑过工具栏/文本框等子元素不再闪烁。
-- **历史单条删除二次确认(P2-26)**:`HistoryTab` 单删改 arm 式(按 `id` 记录武装态,不是一个全局布尔——点开一条不会把整份列表变红),2.6s 超时自动回落,对齐「清空全部」既有模式;「×」按钮补 `histDelete` 词条(zh「删除」/en "Delete")做 title/aria-label。
-- **`--ink3` 四主题对比度提到 ≥3:1(P2-29)**:极简浅色 `#A6ABB2→#7D8086`(2.16:1→3.80:1)、极简暗色 `#5F666E→#686F77`(3.06:1→3.49:1,原值压线故一并留余量)、控制台 `#4E5A64→#65717B`(2.57:1→3.64:1)、纸感浅色 `#A08D74→#93816A`(2.97:1→3.49:1)、玻璃浅色 alpha `.42→.55`(合成后约 2.5:1→3.6:1)、玻璃暗色 alpha `.4→.48`(约 2.6:1→4.3:1,原实现四套里最低)。均维持低于 `--ink2` 的对比度,信息层级不变,只调色值。
-- **玻璃主题不透明面板 `--pSolid`(P2-30)**:非玻璃主题与 `--p` 同值,玻璃主题给出不透明版本(浅色 `#FFFFFF`、暗色 `#161C2A`);`OverwriteDialog`/`TitleConflictDialog`/`LoadConfirmDialog` 三个弹窗背景、`Toast`/`Header` logo 的前景文字色改用它——弹窗无 backdrop-filter 时半透明 `--p` 会把身后内容透上来糊字,玻璃皮下 60% 透明前景文字对比度不足,均已修复。
-- **表格模板 + `toggle theme` aria-label 进 dict(P2-31)**:`EditorCard` 硬编码中文表格模板(`| 列 A | 列 B |`)改从 `t.tableTemplate` 取(zh/en 各自模板,英文界面不再插入中文列名);`Header.tsx` 的 `aria-label="toggle theme"` 改 `t.ariaToggleTheme`。
-- **死代码清理(P3)**:`checkStep`/`stageIdx` 及 `runCheck` 里 `260ms × 5` 的逐步动画定时器链——grep 确认全仓零消费(`PreflightCard` 只读 `checkVisible`)后连同 `Timers.check` 一并删除,`runCheck`/`closeCheck` 本身保留(预检卡开合仍用);dict 死词条 `deskHint`/`pbPage` 同样 grep 确认零消费后删除。
-- **clipboard 复制真实结果(P3)**:`copyHistoryItem` 的 `navigator.clipboard.writeText` 改 promise 链,成功才 toast `copiedToast`,失败 toast(`errWriteFail`,error 型)——此前无条件 toast 成功,reject 也照样谎报。
-- **compress 联动置灰(P3)**:`SettingsTab` 里 `compress` 关闭时 `maxEdge`/`quality` 两行控件 `disabled` + 置灰,但不强制展示成第一档(与静态「未接实现」装饰项的 `disabled` 语义区分——重新打开 compress 后仍显示用户之前选的档位)。
-- **code review 追加修复 6 项**:AudioContext suspended 态守卫 + 1s 兜底关闭(自动播放策略下 onended 不触发,泄漏原样发生);单删武装态改专属文案 `histDeleteConfirm`「确认删除?」(误用「确认清空?」会被当成清空全部)且 aria-label 同步切换(读屏可感知两步确认);文件读取失败/复制失败改专属词条(不再误报「写入失败」);clipboard 不存在时(非安全上下文)先判存在再调用,不抛同步 TypeError;`insert()` 的无编辑器兜底从「拼到全文末尾」改 no-op(危险行为不留作 fallback)。arm 模式已存在五处手写副本,抽共享 hook 列入 backlog。
-- 单测 488 保持全绿(本批未新增/修改测试用例——UI 组件此前即无 RTL 测试覆盖,逻辑改动均在既有测试路径内)。
+> 上线前两轮审查的修复合集:2026-08 全面审查(2 P0 / 12 P1 / 31 P2,见 `docs/review/上线前全面审查-2026-08-18.md`)的五批修复,加 2026-10 发版前复审(见 `docs/review/发版前审查-2026-10-22.md`)的阶段 0～3 修复;另含 v0.4.0 tag 之后才合入 main 的 PR #31(存储加载路径校验)。主线是**写入安全**(钉死目标文章、等 React 提交、超时晚到图片追回)、**解析正确性**(CommonMark 边角三十余项)、**数据不丢**(写失败可见、多窗口同步、恢复安全化)与**上架合规**(权限最小化、manifest 国际化、隐私政策)。单测 307(v0.4.0 tag)→ **646**。
+>
+> 编号约定:`P0-x`/`P1-x`/`P2-x` 对应 2026-08 审查报告;`A`(解析)/`B`(注入)/`C`(工作区与 UI)/`D`(发版合规)编号对应 2026-10 发版前审查。同一问题 8 月修了一半、10 月补完的,下面合并为一条。
 
-### 批次四 · 信任一致性(对应审查报告 P2-15~P2-19、P2-25、P2-27)
+### 升级须知(用户可感知的变更)
 
-- **备份导入校验(P2-15)**:`importBackup` 断言 `kind==='backup'`(诊断快照不再被当备份「恢复成功」);version 分支 2 原生 / 1 兼容 / 其他明确拒收;四类错误码各有专属文案。
-- **恢复安全化(P2-16)**:恢复前 arm 二次确认 + 自动先导出当前数据(导出失败即中止);写回改顺序执行、失败即停,如实报告已恢复/失败切片;部分恢复延迟刷新对齐内存与 storage(防陈旧对象覆写刚恢复的数据)。
-- **导出真实结果(P2-17 收尾)**:备份/诊断导出失败均有明确错误提示(下载通道批次一已统一)。
-- **wipe 对齐文案(P2-19)**:「清除所有数据」真清 4 个 storage key(各 store 新增 remove\*)+ 成功后 reload;失败如实报错不再静默;清除前掐死草稿防抖管线(防 pagehide flush 把刚删的草稿写回);另一窗口经 onChanged 的 key 删除分支同步清空。
-- **Toast 分型(P2-27)**:success/error 两型(✕ 图标 + 危险色);时长按文案长度浮动(2.2s~6s);容器加 `role="status" aria-live="polite"`;全部错误调用点逐一标注。
-- **报告数据源钉死(P2-25)**:导入成功时冻结 `lastRunSnapshot`(md + parseOpts + 真实写入结果),报告卡明细与汇总统一读它——导入期间改稿、切设置开关、删历史记录都不再让报告漂移;HistoryItem 存 `parseOpts` 快照供日后历史回看(schema 就地校验)。
-- **idbRun 加固(P2-18)**:事务创建/objectStore 同步抛转 reject(坏库状态不再悬挂「连接文件夹」按钮);补 onabort/onerror 且所有路径关库;**写事务以 `tx.oncomplete` 为可信成功时机**(request onsuccess ≠ 已落盘,防 Quota abort 被吞成「已连接」);`sendFolderRequest` 超时按类型分型(状态/清除 10s,连接不设——用户选文件夹耗时不可控,content 侧本有 180s 兜底)。
-- **修复一处批次二引入的回归**(本批 code review 抓回):`importToXTab`/`setTitleOnXTab` 的 `pinnedTabId ?? ` 钉死逻辑曾被批量文本替换误还原为无条件重解析——B1 防线只剩注释。已恢复并加警示注释。
-- 单测 463 → **488**(+25),新增 importBackup/importArticle(withTimeout)测试文件与 idbRun 假库错误路径用例。
+- **权限集变化**:移除 `tabs`(此前会触发「读取您的浏览记录」安装警告);新增 `host_permissions: *://x.com/*、*://twitter.com/*`(与 content script 注入范围同域,不新增安装警告;用于注入编辑器桥接、读取当前标签页 URL 判断是否在 X);新增 `unlimitedStorage`(历史全文累积不再受 10MB 配额压顶,不弹额外提示)。远程图片域名仍是写入时按来源**逐个运行时申请**(`optional_host_permissions`)。
+- **最低 Chrome 116**(`minimum_chrome_version`,`sidePanel.setPanelBehavior` 所需)。
+- **商店名称 / 描述国际化**:manifest 改走 `__MSG_*__` + `default_locale: en`(新增 `public/_locales/{en,zh_CN}`)——英文 Chrome 显示「MarkFlow — Markdown to X Articles」,中文 Chrome 显示「MarkFlow — X 文章 Markdown 导入器」;描述统一为「本地优先,无遥测,不向开发者服务器发送任何数据」。
+- **更新后需刷新已打开的 X 页面**:本版注入协议有变化(探针新增 `isArticleEditor` 等),旧页面里残留的旧脚本会被识别为「请刷新此 X 页面以启用插件」,刷新即恢复。
+- **只在文章编辑页可写**:推文 compose 弹窗、私信等其他 Draft 输入框不再被误判为「已连接」。
+- **备份格式 version 2**:历史记录 id 改 UUID,备份 `version` 随之升到 2;旧版(version 1)备份仍可恢复。
+- **包体积 1.11MB → 约 640KB**:字体只打包 latin woff2 子集(字体文件 51 → 7)。
+- 设置页底部版本号改读 manifest(此前硬编码 `v3.0`)。
+- 单测 307(v0.4.0 tag)/ 370(main,PR #31 后)→ **646**。
 
-### 批次三 · 解析正确性(对应审查报告 P1-4~P1-7、P2-7~P2-14;12 项全修)
+### 新增
 
-- **图片 title 剥离(P1-4)**:`![](url "标题")`(Typora/Pandoc 默认输出)不再把 title 吞进 src 导致上传必败;只剥 `"…"`/`'…'`,统一落在 `normalizeImageSrc`(裸图行与带链接图共用)。
-- **推文正则(P1-5)**:X 官方「复制链接」的 `?s=20` 带参形态、`mobile.` 子域、行尾空格均正确识别为 TWEET 嵌入;尾缀只认可打印 ASCII——「URL 直接接中文正文」整行回落文本,正文不丢。
-- **标题抽取跳过 frontmatter(P1-6)**:YAML `# 注释` 不再被抽成文章标题/被 `h1Handle=remove` 误删;`forEachContentLine` 加显式 `skipFrontmatter` 参数(不隐式改语义)。
-- **权限申请改块级源(P1-7)**:`requestRemoteImagePermissions(blocks, …)` 与实际上传同源;`<>` 包裹远程图不再漏申请 host 权限;`capability.images()` 全文正则连同测试删除。
-- **hr 变体(P2-7)**:`- - -`/`* * *`/`___`(含 Tab 分隔/尾随)识别为分割线,不再产出垃圾列表项;divider 保持顶格(列表下缩进 `---` 语义不变),段落+`---`=setext 四象限回归钉死。
-- **0-3 空格缩进块(P2-8)**:标题/引用/围栏按 CommonMark 接受 0-3 空格缩进;围栏三处判定同源化(`RE_FENCE_LINE` 单一来源);段落前导空白逐行剥(≤3 列,≥4 空格原样保留);闭栏行尾随全角空格 U+3000 仍闭合。
-- **Preview frontmatter 复用 parser 判定(P2-9)**:CRLF 文档预览不再把 frontmatter 当正文;`frontmatter.ts` 的判定同样委托 `frontmatterBodyStart`——三套平行实现收敛为一。
-- **预览语义标注(P2-10 低成本)**:预览顶部注明「以能力面板为准」;完整对齐列 backlog。
-- **frontmatter 值健壮性(P2-11)**:`title: >`/`|` block scalar 回落 H1;行内 ` # 注释` 按 YAML 规则剥离(仅 title 分支、引号值不剥、`\"`/`''` 转义引号正确处理不截断)。
-- **cover wiki 别名(P2-12)**:`cover: "![[x.png|封面]]"` 剥 `|alt`,与 parser 口径一致。
-- **有序列表打断段落收紧(P2-13)**:软折行段落中 `2024. ` 不再被硬切成列表(仅 `1.` 可打断);块首起列表仍任意数字。
-- **历史标题口径统一(P2-14)**:`firstTitle` 复用 `extractTitle`——frontmatter-only/setext 标题的历史条目不再显示「未命名草稿」。
-- 单测 377 → **463**(+86,全部红→绿驱动),新增 imagePermissions/preview 两个测试文件。
+- **多窗口同步(P0-2 + C2)**:订阅 `chrome.storage.onChanged`(仅 local 区)。草稿/历史的外部变更采纳回灌,echo 以 mdRef / id 序列判定,本地有未落盘编辑或导入进行中不采纳(pending 闸门保数据),采纳时 toast 告知;设置与主题(Prefs/SettingsProvider)同样订阅,回声按「键排序后的 JSON」判定,`save` 移出 setState 更新函数。各 storage key 由所属 store 导出常量,监听方直接引用防漂移。
+- **存储写失败可见化(P0-1)**:`setItem` 不再吞错;草稿/历史写失败按来源记账并在草稿页亮**常驻错误条**(附「导出当前草稿」自救按钮);手动「保存」await 成功才提示、失败如实报错;设置/偏好写失败落 console。
+- **崩溃恢复屏自救出口(P1-9)**:新增「导出数据备份」(导出为可被「设置 → 恢复」直接吃下的 BackupData 形状 + 全量 raw dump);「重置」改为先自动导出、等下载发起再清,导出失败有内联反馈且需二次点击才强制重置。
+- **「查看报告」入口(C4)**:Footer 常驻入口,`autoReport=never` 时也能打开上次导入的失败明细;「是否异常」判定纳入全部失败明细(此前只看计数)。
+- **超时晚到图片追回(B2)**:某图上传超时后 X 晚到的 MEDIA 此前会被算到下一张、后续逐张错位。现在循环中只按 `pendingKey` 精确追回;末轮再按 FIFO 分配给最早超时的图并做孤儿审计——仍无法归属的多余图片以原因码 `orphan-media` 进失败明细(「存在无法归位的图片,请在编辑器中手动删除」),诊断字段 `imageLateRecovered`/`orphanMedia`。
+- **本地图按文件名索引查找(C9)**:直读(解码 / 原串两遍,剥 `?query#hash`)失败后,按文件名 BFS 建一次索引(深度 ≤6、条目 ≤5000,跳隐藏目录与 `node_modules`,同名取最短路径,按 scope 缓存、每次导入重建);先全根直读再全根索引。Obsidian 短链接 `![[x.png]]`、md 在子目录时的 `./img/a.png` 不再全报 not-found。
+- **失败原因码细分**:`article-switched`(导入中切了文章)、`not-article-editor`(非文章编辑页)、`remote-permission-denied`(图片域名授权被拒)、本地图 `no-folder` / `permission-lapsed` / `not-found` 三分(C30)、`orphan-media`、`bad-result`(injector 回传形状不合规),各有专属文案。
+- **报告数据源钉死(P2-25)**:导入成功时冻结 `lastRunSnapshot`(md + parseOpts + 真实写入结果),报告卡明细与汇总统一读它——导入期间改稿、切设置、删历史都不再让报告漂移;HistoryItem 存 `parseOpts` 快照供日后历史回看。
+- **文档**:隐私政策 `docs/privacy-policy.md`(中英双语)、第三方署名 `NOTICE.md`、审查与修复方案 `docs/review/*-2026-10-22.md`、发版后待办 `docs/review/backlog-2026-10-22.md`;真机回归用例 `docs/qa/真机回归测试-审查修复五批.md`(15 组 + 2026-10 新增 T16～T21)。
 
-### 批次二 · 写入安全(对应审查报告 P1-1/P1-2/P1-3/P2-2/P2-5 + P3 dataURI)
+### 修复 · 写入链路(注入)
 
-- **目标钉死双钥 tabId + articleId(P1-1)**:`writeX` 两条路径(ask 与直写)都在进入任何挂起窗口(确认弹窗 / host 权限申请)**之前**探测并钉死目标;`import` 消息带 `expectedArticleId`,injector 在入口、主提交前、每张图前、清扫前、封面前**持续复查**当前文章 id,SPA 同 tab 切文章立即停手(新错误码 `article-switched`,专属文案提示)。堵住「探 A 写 B」竞态在正文通道的复发(B1 修过标题通道)。
-- **提交后失败可区分(P1-3)**:`ImportResult`/`ImportResponse` 失败分支新增 `committed`;verify 不达标/图片阶段异常时正文已落地,UI 改用「正文可能已写入,请先检查再重试」文案族(通道 timeout 同样归入——injector 可能仍在后台完成提交),阻止「按失败直觉重试」造成整篇重复。
-- **marker 清扫保文本(P2-2)**:清扫只认**完整 marker 形状**并单事务**剥离**而非整块删除——用户在占位行内打过的字保留、正文恰含 `__MARKFLOW_IMG_` 字面量的内容不再被误删;残留审计改为始终执行并新增「残片」检测(console 告警)。
-- **injector 单例守卫(P2-5)**:`Symbol.for` 标记防双注入并发直写同一 blockMap。
-- **编辑器定位分级(P1-2 降级)**:逗号并集(实为 DOM 顺序)改**有序层级**逐级尝试(`data-testid="composer"` → `.public-DraftEditor-content` → `role=textbox` → 裸 contenteditable,删除永不命中的原第一级),级内取面积最大者。
-- **dataURI 16MB 上限(P3)**:对齐远程/本地;超限报「超出大小上限」而非「无效」,percent-encoding 按解码后字节数量(不误拒)。
-- **失败路径文件夹校准**:涉本地图的导入失败后同样就地校准素材板/设置的文件夹状态(content 无论成败都清 vault handle,此前失败分支 UI 撒谎)。
+- **钉死写入目标:tabId + articleId 双钥 + 文章页闸门(P1-1、B3)**:`writeX` 两条路径(ask 与直写)都在进入任何挂起窗口(确认弹窗 / host 权限申请)之前探测并钉死目标;`import` 消息带 `expectedArticleId`,injector 在入口、主提交前、每张图前、清扫前、封面前**持续复查**,SPA 同 tab 切文章立即停手(`article-switched`)。另以 `location.pathname` 以 `/compose/articles` 开头作写入闸门(新建文章页 articleId 为 null 也能写,但推文/私信框会被拒为 `not-article-editor`),探针回传 `isArticleEditor`、`connected` 要求其为真,`articleSwitched` 同时纳入路由判断。批次四 code review 还抓回了一处批次二批量替换误还原的 `pinnedTabId` 钉死逻辑(`importToXTab`/`setTitleOnXTab`)。
+- **图片阶段等待 React 提交(B1,P0)**:新增 `settle(stage, node, expect)` 谓词等待——`replaceMarkerWithText`/`relocateMediaToMarker`/`placeSelectionAtMarker`/首次 commit/`sweepMarkers` 每轮之后都等 X 真正提交再继续。此前连续「读-改-写」用的是陈旧 editorState:≥2 图且非末张失败时,失败图写回的原文会被下一轮回滚、marker 重现后被清扫整块删掉(内容丢失);append 首次 commit 只 `delay(150)` 无复核。超时只记账(`ImportResult.settleTimeouts`)不中断;content 每图通道预算 40s → 45s 为其留余量。
+- **提交后失败可区分(P1-3)**:`ImportResult` 失败分支新增 `committed`;verify 不达标 / 图片阶段异常 / 通道 timeout 时正文可能已落地,UI 改用「正文可能已写入,请先检查再重试」文案族,阻止「按失败直觉重试」造成整篇重复。
+- **marker 清扫保文本(P2-2)**:清扫只认完整 marker 形状并单事务**剥离**而非整块删除——用户在占位行内打的字、正文恰含 `__MARKFLOW_IMG_` 字面量的内容都不再被误删;残留审计始终执行,新增「残片」检测。
+- **权限申请是手势链第一个 await**:直写与 ask 两条路径统一为先同步解析 blocks 并 `permissions.request`,再探针取 articleId(8 月批次二在直写路径的申请前加了探针 await,会吃掉 Chrome 的瞬时用户激活,新 profile 下权限弹窗可能弹不出来);探测失败同步刷新状态条。权限申请改按**块级**同源计算(P1-7,`<>` 包裹的远程图不再漏申请),被拒时 toast「未授权图片域名,N 张远程图将降级为原文」并标 `remote-permission-denied`(C25)。
+- **探针与消息健壮性(B5)**:`runProbe` / 监听器三分支 / `setTitle` 加 try/catch,异常回明确结果而非静默 timeout;injector 单例守卫(`Symbol.for` 标记,P2-5)防双注入并发直写同一 blockMap。
+- **编辑器定位分级(P1-2)**:逗号并集选择器(实为 DOM 顺序)改有序层级逐级尝试(`data-testid="composer"` → `.public-DraftEditor-content` → `role=textbox` → 裸 contenteditable),级内取面积最大者。
+- **标题**:`ask` 模式下编辑器已是同一标题时直接视为已设置,不再弹冲突窗(C33)。
+- **封面失败计入失败数(C26)**(marker 残留除外)。
+- **失败路径文件夹校准**:涉本地图的导入失败后同样就地校准素材板/设置的文件夹状态(此前只在成功分支校准,失败后 UI 仍显示「已连接」)。
+- **dataURI 16MB 上限**:对齐远程/本地;超限报「超出大小上限」而非「无效」,percent-encoding 按解码后字节计(不误拒)。
 
-### 批次一 · 上线阻断修复(对应 docs/review/上线前全面审查-2026-08-18.md)
+### 修复 · 解析正确性
 
-- **存储写失败可见化(P0-1)**:`setItem` 不再吞错;草稿/历史写失败按来源记账并在草稿页亮**常驻错误条**(附「导出当前草稿」自救按钮);手动「保存」await 成功才提示、失败如实报错;设置/偏好写失败落 console。新增 store.ts 错误传播单测(`vi.resetModules` + chrome stub 动态导入,钉住 chrome 路径)。
-- **草稿写入防抖(P2-21)**:每键整串写 storage 改为 250ms trailing + **2s max-wait**(连续输入不再无限顺延,崩溃最坏丢 ≤2s);blur / visibilitychange(hidden) / pagehide / 手动保存均强制 flush。
-- **双窗口同步(P0-2)**:订阅 `chrome.storage.onChanged`(仅 local 区),草稿/历史外部变更采纳回灌;echo 以 mdRef / id 序列判定;本地有未落盘编辑或导入进行中不采纳(pending 闸门保数据);采纳时 toast 告知。draftStore/historyStore 导出 `DRAFT_KEY`/`HISTORY_KEY` 供监听引用(防 key 漂移)。
-- **历史 id 改 UUID**:双窗口同毫秒导入不再撞 number id;`HistoryItem.id: string | number`,校验器双形状兼容(旧时间戳照收);备份 `version` 随之 bump 到 **2**。
-- **`unlimitedStorage`(P1-8)**:历史全文累积不再受 10MB 配额压顶(storage 权限本就有,零额外弹窗)。
-- **崩溃恢复屏自救出口(P1-9)**:新增「导出数据备份」(自包含实现,导出为**可被「设置 → 恢复」直接吃下的 BackupData 形状** + 附全量 raw dump);「重置」改为先自动导出、等下载发起再清;导出失败有内联反馈,且需二次点击才强制重置。
-- **`autoReport=anomaly` 生效(P1-10)**:「仅异常时」如实只在有降级/失败时自动展开报告(此前与 always 等价)。
-- **删除「演示环境」占位(P1-11)**:素材卡封面「更换」死按钮移除;SettingsTab 不可达兜底改 console.warn;`demoToast` 词条删除。
+- **同行多张带链接图片(A1,P0)**:贪婪正则 `RE_LINKED_IMAGE_LINE` 改为与 `matchImageLine` 共用 `scanParenClose` 的括号配对扫描器——`[![a](1.jpg)](l1) [![b](2.jpg)](l2)` 不再被吞成一张(source 错乱),`[![a](i)](l) ![b](y)` 第二张不再静默丢失;多图同行 / 尾随文字交段落处理。
+- **图片 title 剥离(P1-4 + A6)**:`![](url "标题")`(Typora/Pandoc 默认输出)不再把 title 吞进 src 导致上传必败;只剥 `"…"`/`'…'`,统一在 `normalizeImageSrc`,frontmatter `cover:` 也复用它。
+- **推文链接(P1-5)**:X「复制链接」的 `?s=20` 带参形态、`mobile.` 子域、行尾空格均识别为推文嵌入;尾缀只认可打印 ASCII,URL 直接接中文正文时整行回落文本、正文不丢。
+- **标题抽取(P1-6 + P2-14 + A7)**:跳过 frontmatter(YAML `# 注释` 不再被当标题或被 `h1Handle=remove` 误删);`firstTitle`(历史标题)复用 `extractTitle`;新增导出 `inlinePlainText`/`stripAtxClosing`,`# **粗** 标题` 抽出「粗 标题」、`# 标题 ##` 抽出「标题」。
+- **强调符 flanking(A2)**:`canOpen`/`canClose` 看整段同字符连续串两侧——`2 * 3 * 4`、`a _ b _ c`、`x ~~ y ~~ z` 不再被吞成斜体/删除线;`***` 无闭合时按 CommonMark 拆 `*`+`**`;`findClosing` 跳过 `\`+ASCII 标点转义(A12,`*a\*b*` 不再错切);`_` 词内规避改 `\p{L}\p{N}`(A13,`报告_终版_修订` 中的下划线不再被吞)。`findClosing` 加 `noCloseFrom` 缓存,病态输入 3.4s → 3.6ms,20 万条随机输入与旧实现差分零差异。
+- **列表(A3、A4、P2-13)**:lazy / 缩进续行并入当前列表项(此前成为独立段落);列表语境内允许「内容列 + 3」缩进的开/闭栏,围栏内容按开栏缩进剥离;软折行段落中的 `2024. ` 不再被硬切成列表(仅 `1.` 可打断段落)。
+- **CommonMark 缩进块(P2-8)**:标题/引用/围栏接受 0-3 空格缩进;段落前导空白逐行剥(≤3 列);闭栏行尾随全角空格 U+3000 仍闭合。围栏判定收敛为单一来源——主循环抽成 `parseLines(onFence)`,`forEachContentLine` 直接复用其围栏区间,预览与 `frontmatter.ts` 的 frontmatter 判定也委托 parser(P2-9),三套平行实现收敛为一。
+- **分割线变体(P2-7)**:`- - -`/`* * *`/`___`(含 Tab 分隔、尾随空白)识别为分割线,不再产出垃圾列表项;段落 + `---` = setext 的规则不变。
+- **数学块(A14)**:单行 `$$…$$` 要求中间不含 `$$`,同行两段公式回落为段落。
+- **能力面板(A15、P2-10)**:parser 记录 H4+ 降级块(`isDemotedHeading`,不进协议),整段加粗不再被误报为「降级标题」并计入历史降级数;预览顶部注明「以能力面板为准」。
+- **frontmatter 值(P2-11、P2-12)**:`title: >`/`|` block scalar 回落 H1;行内 ` # 注释` 按 YAML 规则剥离(引号值不剥,转义引号不截断);`cover: "![[x.png|封面]]"` 剥 `|alt`。
+
+### 修复 · 存储与数据
+
+- **加载路径逐字段校验(PR #31,v0.4.0 tag 之后合入 main)**:四个 loader 此前 `{...默认, ...存储}` 裸信任,一个坏 `skin` 字段就会抛错、把用户推到「清空全部本地数据」的恢复卡片。校验器下沉到 `lib/storage/schema.ts` 并接入全部 loader:坏字段静默回落默认、坏历史项只丢该项,草稿与历史保全。+63 用例(307 → 370)。
+- **草稿写入防抖(P2-21)**:每键整串写 storage 改为 250ms trailing + 2s max-wait;blur / visibilitychange(hidden) / pagehide / 手动保存强制 flush。
+- **历史 id 改 UUID**:双窗口同毫秒导入不再撞 id;校验器兼容旧时间戳 id。
+- **备份导入校验与恢复安全化(P2-15、P2-16)**:断言 `kind==='backup'`(诊断快照不再被当备份「恢复成功」),version 2 原生 / 1 兼容 / 其他拒收;恢复前二次确认 + 自动先导出当前数据(导出失败即中止),写回顺序执行、失败即停、如实报告已恢复切片。
+- **「清除所有数据」对齐文案(P2-19)**:真清 4 个 storage key 后 reload;失败如实报错;清除前掐断草稿防抖管线(防 pagehide flush 把刚删的草稿写回);其他窗口同步清空。
+- **导出真实结果(P2-17)**:新增统一下载通道 `lib/ui/download`(失败必抛),备份/诊断导出失败不再谎报成功;历史「复制」按 clipboard 真实结果提示(非安全上下文先判存在)。
+- **IndexedDB 加固(P2-18)**:`idbRun` 事务创建同步抛错转 reject、补 onabort/onerror 且所有路径关库,写事务以 `tx.oncomplete` 为可信成功时机(防 Quota abort 被吞成「已连接」);文件夹请求超时分型(状态/清除 10s,连接不设)。
+- **`autoReport=anomaly` 生效(P1-10)**:「仅异常时」如实只在有降级/失败时展开报告(此前与 always 等价)。
+
+### 修复 · 界面
+
 - **键盘焦点可见(P1-12)**:`:focus-visible` 焦点环替代一刀切 `outline:none`。
-- **ask 断开有反馈(P2-20)**:覆盖询问前的即时探测发现断开时 toast 提示,不再静默无响应。
-- **导出通道统一 + 假成功修复(P2-17 前置)**:新增 `lib/ui/download`(失败必抛);SettingsTab 的 `downloadJson` 迁移其上,备份/诊断导出失败不再谎报成功。
+- **对比度(P2-29)**:`--ink3` 在四套主题提到 ≥3:1(极简浅 2.16→3.80、极简暗 3.06→3.49、控制台 2.57→3.64、纸感 2.97→3.49、玻璃浅约 2.5→3.6、玻璃暗约 2.6→4.3),层级仍低于 `--ink2`。
+- **玻璃主题不透明面板 `--pSolid`(P2-30)**:三个确认弹窗背景、Toast/Header logo 前景改用不透明色,不再透底糊字。
+- **Toast 分型(P2-27)**:success / error 两型(✕ 图标 + 危险色),时长按文案长度 2.2s～6s 浮动,容器 `role="status" aria-live="polite"`。
+- **预览态禁用工具栏(P2-23)**、**拖拽遮罩不再卡住 / 不闪烁(P2-24)**、**历史单条删除二次确认(P2-26,专属文案「确认删除?」与 aria-label 同步)**、**AudioContext 用后释放(P2-22,含 suspended 态守卫,连续导入不哑音)**、**compress 关闭时长边/质量控件联动置灰**。
+- **ask 断开有反馈(P2-20)**:覆盖询问前的即时探测发现断开时 toast 提示。
+- **文案进字典(P2-31)**:表格模板(英文界面不再插入中文列名)、主题切换 aria-label。
+- **设置文案订正(C36)**:去掉不存在的「文件名」标题回退与「一键写入」快捷键描述。
+
+### 变更
+
+- **探针重探不依赖 URL**:去掉 `tabs` 权限后非 X 页面的 `changeInfo.url` 不可见,改为活动标签 `status==='complete'` 即重探(X→非 X 导航也会断开);`isXUrl` 收窄到根域,`help.x.com` 等子域不再误报「需刷新」;旧 injector 不回 `isArticleEditor` 时探针归为「需刷新」。
+- **background 发送方校验**改用 `sender.origin` / `sender.url` 并收紧到根域。
+- **`importArticle` 超时错误**:`class TimeoutError` 改为 `createTimeoutError`/`isTimeoutError` 工厂(项目不用 class)。
+- **字体**:改手写 `@font-face`,只引 latin woff2(Space Grotesk / JetBrains Mono 字形不变,CJK 仍走系统字体栈)。
+- **工具链**:`packageManager` 升到 `pnpm@11.18.0`(11.12.0 被 pnpm 官方标为坏版本,本机 compile/test/build/zip 全部无法运行);lockfile 未变。
+
+### 安全
+
+- **SSRF 黑名单补漏(B10)**:`isBlockedHost` 抽到 `lib/bridge/blockedHost.ts`,补无点主机名、`0.0.0.0/8`、`100.64.0.0/10`、≥224 组播/保留段、`.home.arpa`、`64:ff9b::/96` 与 `::` 开头的 IPv6;29 条拦截 / 9 条放行用例。
+- **injector 回传校验(B9)**:x.com 页面脚本可伪造 `postMessage`,content 对 injector 回传经 `resultGuards` 白名单校验与截断;不合规回 `bad-result`(若形状为 ok:true 则带 `committed:true` 走「先检查再重试」提示)。
+- **权限最小化**:见「升级须知」——去 `tabs`,host 权限仅限 x.com / twitter.com。
+- **生产构建不再输出调试日志**:content / injector 的 `console.info` 仅 DEV 保留。
+
+### 移除
+
+- `tabs` 权限。
+- 「演示环境」占位(P1-11):素材卡封面「更换」死按钮、`demoToast` 词条。
+- 死代码:`checkStep`/`stageIdx` 及预检逐步动画定时器链、`capability.images()` 全文正则(连同测试)、dict 死词条 `deskHint`/`pbPage`。
+- `insert()` 无编辑器时「拼到全文末尾」的危险兜底(改 no-op)。
 
 ## [0.4.0] - 2026-07-25
+
+> **tag 与 main 的差异**:`v0.4.0` tag 指向 `8127563`(PR #29 合并提交);其后 PR #30(多行公式 QA 文档)与 PR #31(存储加载路径逐字段校验,单测 307 → 370)合入了 main,但未单独发版——PR #31 的加载校验已并入 [0.5.0]。下文单测数以 tag 为准,main 上同版本号的代码为 370 例。
 
 ### 新增 · 数学块 `$$…$$` → X 原生 LaTeX 块
 此前 `$$` 公式**无任何解析**,整段当普通段落写入、`$$` 字面量进正文,能力面板标 warn「未接」。经**真机 dump 确认** X 有原生 LATEX atomic 块,现接通:
@@ -84,7 +121,7 @@
 - **injector 直写**(真机 dump 确认的形状差异):LATEX 与 DIVIDER/MARKDOWN/TWEET **相反**——公式本体在块 `text`(前三种恒为单空格)、`data` 为空,且**每个字符都挂同一 LATEX entity key**(与 LINK entity 逐字符挂法同理)。空公式兜底退单空格(parser 已挡、这里双保险防空块崩)。
 - **能力面板诚实化**:「数学公式」从 warn「未接·保留原文」改 **native「原生 LaTeX 块」**,计数从产出的 LATEX atomic 块取;文本里残留的裸 `$$` 起行(未闭合公式开头)另计一条 warn「未闭合公式」。收窄残留正则到裸 `$$` 行(`/^\$\$[ \t]*$/m`),消除旧 `/^\$\$/m` 对 `$$100` 的假阳性。
 - **不做**:行内 `$…$`(X 的 LaTeX 是块级 Insert 项,无行内原生承载,同行内代码/行内图片策略,暂不支持)。
-- 单测 293→307(+14:多行/同行/未闭合回退/空公式/`$$100` 假阳性/围栏内不误判/尾随空格切偏 bug 回归等,全部经「回退代码→测试变红」反证)。tsc/build 全绿。**已真机验证通过**:导入 `$$\nE = mc^2\n$$` 后 X 原生渲染出 LaTeX 公式块(带原生 Edit/Close 控件)。
+- 单测 293→307(tag 时;PR #31 合入 main 后为 370)(+14:多行/同行/未闭合回退/空公式/`$$100` 假阳性/围栏内不误判/尾随空格切偏 bug 回归等,全部经「回退代码→测试变红」反证)。tsc/build 全绿。**已真机验证通过**:导入 `$$\nE = mc^2\n$$` 后 X 原生渲染出 LaTeX 公式块(带原生 Edit/Close 控件)。
 
 ## [0.3.0] - 2026-07-25
 
@@ -304,6 +341,11 @@ v0.2.0 发布前按 `docs/qa/真机回归测试-v0.2.0加固批.md` 做全量真
 - 「写入 X 文章」、预检、连接文件夹等为 **mock 时序演示**（`lib/workspace/importService.ts`、`lib/bridge/useConnection.ts` 等），真实注入引擎待 M1 接入。
 - 设计稿「演示专用」内容（模拟 X 编辑页、setTimeout 时序）未照搬进产品。
 
-[Unreleased]: https://github.com/jiangding01/x-md-importer/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jiangding01/x-md-importer/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/jiangding01/x-md-importer/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/jiangding01/x-md-importer/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/jiangding01/x-md-importer/compare/v0.2.2...v0.3.0
+[0.2.2]: https://github.com/jiangding01/x-md-importer/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/jiangding01/x-md-importer/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/jiangding01/x-md-importer/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jiangding01/x-md-importer/releases/tag/v0.1.0
