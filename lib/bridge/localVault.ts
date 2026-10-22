@@ -418,18 +418,52 @@ export async function resolveAcrossRoots(
 }
 
 /**
+ * 本地图解析结果(C30):命中给 File;未命中按原因区分,供报告卡给出可操作的提示——
+ *  - 'no-folder'          两个作用域都没连接文件夹(用户需先连接);
+ *  - 'permission-lapsed'  有已连接文件夹但读权限回落(prompt/denied,常见于浏览器重启后),
+ *                         且在仍有效的文件夹里没找到(文件很可能就在失效的那个里,需重新授权);
+ *  - 'not-found'          有效文件夹里确实找不到该文件。
+ */
+export type LocalResolveResult =
+  | { file: File }
+  | { reason: 'no-folder' | 'permission-lapsed' | 'not-found' };
+
+/** 单个作用域的连接状况:handle=null 表示未连接;granted=读权限是否仍有效。 */
+export interface ScopeVault {
+  handle: FileSystemDirectoryHandle | null;
+  granted: boolean;
+  cacheKey: string;
+}
+
+/**
+ * resolveLocalImageAcrossScopes 的纯逻辑部分(导出供单测):按优先级排好的作用域列表 → 解析结果。
+ * 只在 granted 的根里查找(未授权的 handle 读会抛 / 需手势),未命中再按连接状况归因。
+ */
+export async function resolveFromScopes(
+  scopes: ReadonlyArray<ScopeVault>,
+  rawPath: string,
+): Promise<LocalResolveResult> {
+  const connected = scopes.filter((s): s is ScopeVault & { handle: FileSystemDirectoryHandle } => s.handle !== null);
+  if (!connected.length) return { reason: 'no-folder' };
+  const roots = connected.filter((s) => s.granted).map((s) => ({ handle: s.handle, cacheKey: s.cacheKey }));
+  const file = roots.length ? await resolveAcrossRoots(roots, rawPath) : null;
+  if (file) return { file };
+  return { reason: roots.length < connected.length ? 'permission-lapsed' : 'not-found' };
+}
+
+/**
  * 按作用域优先级 active(素材板「本篇」)> persistent(设置默认)**逐文件兜底**解析本地图:
  * 依次对每个「已连接且读权限有效」的文件夹尝试 resolveLocalFile,首个命中即返回 File。
  * 与「handle 级优先」的区别:active 里找不到该文件时会继续到 persistent 里找——active 只是
  * 优先来源,不会一旦连上就把 persistent 整体架空(避免「素材卡显示就绪、导入却降级」的落差)。
  * 两层拆开(C9):先在所有作用域直读,全部失败后再在所有作用域查文件名索引(见 resolveAcrossRoots)。
- * 两级都读不到返回 null(调用方降级 fallbackText)。
+ * 读不到时返回原因码(C30,见 LocalResolveResult),调用方据此降级 fallbackText 并记失败原因。
  */
-export async function resolveLocalImageAcrossScopes(rawPath: string): Promise<File | null> {
-  const roots: Array<{ handle: FileSystemDirectoryHandle; cacheKey: string }> = [];
+export async function resolveLocalImageAcrossScopes(rawPath: string): Promise<LocalResolveResult> {
+  const scopes: ScopeVault[] = [];
   for (const scope of ['active', 'persistent'] as const) {
     const h = await getVaultHandle(scope);
-    if (h && (await hasReadPermission(h))) roots.push({ handle: h, cacheKey: scope });
+    scopes.push({ handle: h, granted: h ? await hasReadPermission(h) : false, cacheKey: scope });
   }
-  return resolveAcrossRoots(roots, rawPath);
+  return resolveFromScopes(scopes, rawPath);
 }

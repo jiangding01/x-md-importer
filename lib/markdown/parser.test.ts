@@ -1432,6 +1432,12 @@ describe('批次三 code review 修复回归', () => {
 // ===========================================================================
 
 describe('A2 强调符的最小 flanking 规则', () => {
+  it('性能:大量未闭合 ** 后跟转义标点仍线性(< 100ms)', () => {
+    const t0 = performance.now();
+    parseMarkdown('**a '.repeat(5000) + '\\_');
+    expect(performance.now() - t0).toBeLessThan(100);
+  });
+
   it('两侧带空格的星号是乘号,原样保留且不设样式', () => {
     const b = inlineOf('2 * 3 * 4');
     expect(b.text).toBe('2 * 3 * 4');
@@ -1606,5 +1612,64 @@ describe('A7 inlinePlainText', () => {
     expect(inlinePlainText('[链接](http://a) 标题')).toBe('链接 标题');
     expect(inlinePlainText('标题 ##')).toBe('标题');
     expect(inlinePlainText('C#')).toBe('C#');
+  });
+});
+
+describe('解析层 P2 收尾(A12–A14)', () => {
+  it('A12 闭合扫描跳过转义 \\*:`*a\\*b* c` → 斜体覆盖 a*b', () => {
+    const b = inlineOf('*a\\*b* c');
+    expect(b.text).toBe('a*b c');
+    const it = stylesOf(b, 'ITALIC');
+    expect(it).toHaveLength(1);
+    expect(sliceRange(b.text, it[0])).toBe('a*b');
+  });
+
+  it('A12 转义 \\_ 不当闭合符:`_a\\_b_ c` → 斜体覆盖 a_b', () => {
+    const b = inlineOf('_a\\_b_ c');
+    expect(b.text).toBe('a_b c');
+    expect(sliceRange(b.text, stylesOf(b, 'ITALIC')[0])).toBe('a_b');
+  });
+
+  it('A12 转义 \\** 不当双星闭合:`**a\\**b** c` → 加粗覆盖 a**b', () => {
+    // 转义只吃一个 `*`,剩下的 `*b**` 里 `**` 才是闭合
+    const b = inlineOf('**a\\**b** c');
+    expect(b.text).toBe('a**b c');
+    expect(sliceRange(b.text, stylesOf(b, 'BOLD')[0])).toBe('a**b');
+  });
+
+  it('A12 转义 * 越过后仍找到真正闭符:`*x\\* 之后* z` → 斜体覆盖 x* 之后', () => {
+    const b = inlineOf('*x\\* 之后* z');
+    expect(b.text).toBe('x* 之后 z');
+    expect(stylesOf(b, 'ITALIC').map((r) => sliceRange(b.text, r))).toEqual(['x* 之后']);
+  });
+
+  it('A12 无闭符时转义星号原样输出(不吞反斜杠后的字符)', () => {
+    expect(inlineOf('*a\\*b').text).toBe('*a*b');
+  });
+
+  it('A13 CJK 词内下划线不作斜体:`报告_终版_修订` 原样保留', () => {
+    const b = inlineOf('报告_终版_修订');
+    expect(b.text).toBe('报告_终版_修订');
+    expect(stylesOf(b, 'ITALIC')).toHaveLength(0);
+  });
+
+  it('A13 既有 ASCII 词内规避不回归', () => {
+    expect(inlineOf('snake_case_name').text).toBe('snake_case_name');
+    expect(inlineOf('__init__').text).toBe('__init__');
+    const b = inlineOf('前 _斜体_ 后');
+    expect(sliceRange(b.text, stylesOf(b, 'ITALIC')[0])).toBe('斜体');
+  });
+
+  it('A14 同行两段 `$$..$$` 不判单行公式块,回落普通段落', () => {
+    const blocks = parseMarkdown('$$a^2$$ 与 $$b^2$$');
+    expect(blocks).toHaveLength(1);
+    const b = asText(blocks[0]);
+    expect(b.type).toBe('unstyled');
+    expect(b.text).toBe('$$a^2$$ 与 $$b^2$$');
+  });
+
+  it('A14 正常单行公式不回归', () => {
+    const b = asAtomic(parseMarkdown('$$ E = mc^2 $$')[0]);
+    expect(b.entityType).toBe('LATEX');
   });
 });

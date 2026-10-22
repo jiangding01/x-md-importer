@@ -399,3 +399,22 @@ describe('firstTitle()', () => {
     expect(firstTitle('# **粗** 标题 ##\n\n正文', false)).toBe('粗 标题');
   });
 });
+
+describe('capability · A15 H4+ 降级只认真标题', () => {
+  it('整段加粗段落不误报「四级以下标题 → 粗体段落」', () => {
+    const items = capability('**这一整段都是加粗强调**', false);
+    expect(find(items, '四级以下标题 → 粗体段落')).toBeUndefined();
+    expect(find(items, '粗体 / 斜体 / 删除线')?.count).toBe(1);
+  });
+
+  it('H4/H5/H6 各计一次;围栏内的 #### 不计', () => {
+    const md = '#### a\n\n##### b\n\n###### c\n\n```\n#### 代码\n```\n\n**整段**';
+    expect(find(capability(md, false), '四级以下标题 → 粗体段落')?.count).toBe(3);
+  });
+
+  it('isDemotedHeading 标记不进入块的可枚举字段(不污染 protocol)', () => {
+    const b = parseMarkdown('#### a')[0];
+    expect(Object.keys(b ?? {})).not.toContain('demotedHeading');
+    expect(JSON.parse(JSON.stringify(b))).toEqual(b);
+  });
+});

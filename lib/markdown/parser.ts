@@ -155,8 +155,12 @@ function matchMathOpen(line: string): 'single' | 'multi' | null {
   if (!line.startsWith('$$')) return null;
   const rest = line.slice(2).trim();
   if (rest === '') return 'multi';
-  // 同行闭合:去掉收尾 `$$` 后中间非空才算(排除 `$$$$` / `$$ $$` 空公式)。
-  if (rest.endsWith('$$') && rest.slice(0, -2).trim() !== '') return 'single';
+  // 同行闭合:去掉收尾 `$$` 后中间非空才算(排除 `$$$$` / `$$ $$` 空公式);中间再含 `$$`
+  // (`$$a^2$$ 与 $$b^2$$`,同行两段行内公式,A14)不是单行公式块,回落普通文本。
+  if (rest.endsWith('$$')) {
+    const body = rest.slice(0, -2);
+    if (body.trim() !== '' && !body.includes('$$')) return 'single';
+  }
   return null;
 }
 
@@ -289,6 +293,18 @@ export interface ParseOptions {
 let optObsidianImg = true;
 let optWikilink = true;
 let optTaskList: 'symbol' | 'plain' = 'symbol';
+
+/**
+ * H4+ 降级块的内部标记(A15):降级产物(unstyled + 整行 BOLD)与「整段加粗段落」同形,能力面板
+ * 只看块形态会把后者误报成降级标题。TextBlock 属 protocol(会传给 injector),不往里加字段——
+ * 用 WeakSet 旁路记录块对象身份:不可枚举、不随序列化/结构化克隆外泄,块被回收时自动释放。
+ */
+const demotedHeadings = new WeakSet<ImportBlock>();
+
+/** 该块是否为 parseMarkdown 产出的「四级及以下标题 → 粗体段落」降级块(仅对原块对象成立)。 */
+export function isDemotedHeading(block: ImportBlock): boolean {
+  return demotedHeadings.has(block);
+}
 
 /** 解析 Markdown 文本为按文档顺序排列的写入块序列。 */
 export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[] {
@@ -510,6 +526,7 @@ function parseLines(lines: string[], onFence?: (open: number, close: number) => 
       const content = stripAtxClosing(heading[2] ?? ''); // 去掉可选的 ATX 闭合 ###
       const inline = walkInline(content);
       let type: TextBlockType;
+      let demoted = false;
       if (level <= 2) {
         type = 'header-one';
       } else if (level === 3) {
@@ -518,9 +535,12 @@ function parseLines(lines: string[], onFence?: (open: number, close: number) => 
         type = 'unstyled';
         if (inline.text.length > 0) {
           inline.inlineStyleRanges.push({ offset: 0, length: inline.text.length, style: 'BOLD' });
+          demoted = true; // 空内容的 `####` 只剩空段落,不算降级标题
         }
       }
-      blocks.push(textBlock(type, inline));
+      const hb = textBlock(type, inline);
+      if (demoted) demotedHeadings.add(hb);
+      blocks.push(hb);
       i += 1;
       continue;
     }
@@ -1217,8 +1237,8 @@ function matchLink(src: string, start: number): { textRaw: string; url: string; 
  * 跳过继续找:`**a ** b**` 的中间 `**` 不闭合,整段 `a ** b` 加粗(CommonMark)。
  *
  * `noCloseFrom`(可选,A2 性能):记录每个定界符「从该位置起已确认无闭符」的最小起点;start ≥ 它直接
- * 返回 -1。仅在扫描**未跨过行内代码**时写入——代码段的切分依赖扫描起点(从中途起扫可能对齐到不同的
- * 反引号),跨过代码段的结论不保证对更靠后的起点成立,宁可不缓存。单字符定界符从同字符连续段中途起扫
+ * 返回 -1。仅在扫描**未跨过行内代码**时写入——代码段从中途起扫可能对齐到不同的反引号,结论不保证对
+ * 更靠后的起点成立;反斜杠转义对的切分不依赖起点(起点紧跟定界符),跨过转义可缓存。单字符定界符从同字符连续段中途起扫
  * 的唯一差异是「start 恰为段末」时可返回 start 本身,调用方均要求 close > start,结论等价。
  */
 function findClosing(src: string, start: number, delim: string, noCloseFrom?: Map<string, number>): number {
@@ -1226,12 +1246,20 @@ function findClosing(src: string, start: number, delim: string, noCloseFrom?: Ma
   if (cachedFrom !== undefined && start >= cachedFrom) return -1;
   const single = delim.length === 1;
   const dch = delim[0] ?? '';
-  let crossedCode = false;
+  // 跨过行内代码后,结论依赖扫描起点的对齐(见下),不写缓存。
+  let alignDependent = false;
   let i = start;
   while (i < src.length) {
     const ch = src[i];
+    // 反斜杠转义(A12):与 walkInline / matchLink 同口径,`\` + ASCII 标点整体跳过,被转义的定界符不能闭合。
+    // 起点总是紧跟定界符(`src[start-1]` 不可能是反斜杠),转义对的切分不依赖起点,故跨过转义仍可写
+    // noCloseFrom 缓存;跨过行内代码则不行。
+    if (ch === '\\' && RE_PUNCT.test(src[i + 1] ?? '')) {
+      i += 2;
+      continue;
+    }
     if (ch === '`') {
-      crossedCode = true;
+      alignDependent = true;
       const cs = matchCodeSpan(src, i);
       i = cs ? cs.end : i + 1;
       continue;
@@ -1250,7 +1278,7 @@ function findClosing(src: string, start: number, delim: string, noCloseFrom?: Ma
     if (src.startsWith(delim, i) && canClose(src, i)) return i;
     i += 1;
   }
-  if (noCloseFrom && !crossedCode && (cachedFrom === undefined || start < cachedFrom)) noCloseFrom.set(delim, start);
+  if (noCloseFrom && !alignDependent && (cachedFrom === undefined || start < cachedFrom)) noCloseFrom.set(delim, start);
   return -1;
 }
 
@@ -1308,7 +1336,10 @@ function canClose(src: string, i: number): boolean {
   return prev !== undefined && !/\s/.test(prev);
 }
 
-/** 是否为 ASCII 字母或数字(用于下划线斜体的词内规避)。 */
+/**
+ * 是否为字母或数字(用于下划线斜体的词内规避)。按 Unicode 判定(A13):`报告_终版_修订` 这类
+ * CJK 词内下划线同样不得开/闭斜体,只认 ASCII 会把它吞成 `报告终版修订`。
+ */
 function isWordChar(ch: string | undefined): boolean {
-  return ch !== undefined && /[A-Za-z0-9]/.test(ch);
+  return ch !== undefined && /[\p{L}\p{N}]/u.test(ch);
 }

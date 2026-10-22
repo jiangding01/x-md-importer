@@ -19,13 +19,10 @@ import {
   type ImportBlock,
   type ImportMode,
   type ImportResponse,
-  type ImportResult,
   type IsoMessage,
   type PreparedImage,
   type ProbeResponse,
-  type ProbeResult,
   type SetTitleResponse,
-  type SetTitleResult,
   type TitleConflict,
 } from '@/lib/bridge/protocol';
 import {
@@ -38,6 +35,7 @@ import {
   saveVaultHandle,
 } from '@/lib/bridge/localVault';
 import type { VaultScope } from '@/lib/bridge/protocol';
+import { normalizeImportResult, normalizeProbeResult, normalizeSetTitleResult } from '@/lib/bridge/resultGuards';
 import { compressImage } from '@/lib/image/compress';
 
 /** content 侧图片压缩参数(来自设置 compress/maxEdge/quality);null=不压。 */
@@ -125,9 +123,18 @@ async function prepareOneImage(block: ImageBlock): Promise<PreparedImage> {
     }
     // local(本地相对路径):从已连接的文件夹读取,逐文件兜底优先级 active(素材板「本篇」)>
     // persistent(设置默认)——active 里没有该文件时继续到 persistent 找;两级都读不到 → file:null,
-    // injector 降级为 fallbackText 写回原文。
-    const file = await resolveLocalImageAcrossScopes(block.source);
-    if (!file) return { file: null, failReason: 'local-not-found' };
+    // injector 降级为 fallbackText 写回原文。C30:未命中按「未连接 / 授权回落 / 真未找到」区分原因码。
+    const resolved = await resolveLocalImageAcrossScopes(block.source);
+    if (!('file' in resolved)) {
+      const failReason =
+        resolved.reason === 'no-folder'
+          ? 'local-no-folder'
+          : resolved.reason === 'permission-lapsed'
+            ? 'local-permission-lapsed'
+            : 'local-not-found';
+      return { file: null, failReason };
+    }
+    const { file } = resolved;
     // 与远程/dataURI 对齐:大小上限 + MIME 白名单(本地文件可能是非图或超大文件)。
     if (file.size > MAX_LOCAL_IMAGE_BYTES) return { file: null, failReason: 'local-too-large' };
     if (!ALLOWED_IMAGE_MIME.has(file.type)) return { file: null, failReason: 'local-bad-type' };
@@ -318,11 +325,12 @@ export default defineContentScript({
      */
     const probeInjector = (): Promise<ProbeResponse> => {
       if (!handshaked) return Promise.resolve({ ok: false, error: 'no-injector' });
-      return bridge.request<ProbeResult, ProbeResponse>(
+      return bridge.request<unknown, ProbeResponse>(
         'probe-result',
         (id) => post({ source: ISO_SOURCE, kind: 'probe', nonce, id }),
         2500,
-        (result) => ({ ok: true, result }),
+        // B9:页面脚本可伪造 result,形状守卫后再交给 sidepanel(不合规 → 四灯全灭 + bad-result)
+        (result) => ({ ok: true, result: normalizeProbeResult(result) }),
         () => ({ ok: false, error: 'timeout' }),
       );
     };
@@ -331,7 +339,7 @@ export default defineContentScript({
      * 向 injector 发起一次写入并等待应答:
      * - 未握手 → 立即回 no-injector;
      * - 已握手 → 经桥发 import(携带 blocks/mode),等匹配的 import-result;30s 超时回 timeout
-     *   (写入含取样轮询 / DOM 落盘,给足冗余)。ImportResult 成功分支含 effectiveMode,透传即可。
+     *   (写入含取样轮询 / DOM 落盘,给足冗余)。ImportResult 经 normalizeImportResult 守卫后透传(含 effectiveMode)。
      */
     const importInjector = async (
       blocks: ImportBlock[],
@@ -368,11 +376,12 @@ export default defineContentScript({
       // 每图 45s(单图 30s 预算 + 归位/清理冗余 + settle 等待余量——settle 最坏每图 +3s,
       // 此前 40s 的冗余被吃紧)+ 封面 20s。
       const timeoutMs = 45_000 + images.length * 45_000 + (cover ? 20_000 : 0);
-      let response = await bridge.request<ImportResult, ImportResponse>(
+      let response = await bridge.request<unknown, ImportResponse>(
         'import-result',
         (id) => post({ source: ISO_SOURCE, kind: 'import', nonce, id, blocks, mode, images, cover, expectedArticleId }),
         timeoutMs,
-        (result) => result,
+        // B9:形状校验 + 截断 + 条数上限;不合规 → { ok:false, error:'bad-result' }
+        normalizeImportResult,
         () => ({ ok: false, error: 'timeout' }),
       );
       // 封面失败补记(index=-1 约定为封面,见 protocol.ts ImageFailure):injector 的明细只覆盖
@@ -446,15 +455,15 @@ export default defineContentScript({
      * 向 injector 发起一次标题设置并等待应答:
      * - 未握手 → 立即回 no-injector;
      * - 已握手 → 经桥发 set-title(携带 title/conflict),等匹配的 set-title-result;
-     *   8s 超时回 timeout。透传 injector 的 SetTitleResult(含 applied 语义)。
+     *   8s 超时回 timeout。injector 的 SetTitleResult 经 normalizeSetTitleResult 守卫后透传(含 applied 语义)。
      */
     const setTitleInjector = (title: string, conflict: TitleConflict): Promise<SetTitleResponse> => {
       if (!handshaked) return Promise.resolve({ ok: false, error: 'no-injector' });
-      return bridge.request<SetTitleResult, SetTitleResponse>(
+      return bridge.request<unknown, SetTitleResponse>(
         'set-title-result',
         (id) => post({ source: ISO_SOURCE, kind: 'set-title', nonce, id, title, conflict }),
         8000,
-        (result) => result,
+        normalizeSetTitleResult, // B9:形状守卫
         () => ({ ok: false, error: 'timeout' }),
       );
     };

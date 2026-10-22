@@ -58,6 +58,12 @@ export const NOT_ARTICLE_EDITOR_ERROR = 'not-article-editor' as const;
 export const ARTICLE_SWITCHED_ERROR = 'article-switched' as const;
 export type InjectorErrorCode = typeof NOT_ARTICLE_EDITOR_ERROR | typeof ARTICLE_SWITCHED_ERROR;
 
+/**
+ * 通道层错误码(B9):injector 经 postMessage 回传的 result 形状不合规(页面脚本能读到广播的
+ * nonce/id,可伪造 result)时,content 侧守卫(lib/bridge/resultGuards.ts)以此拒收。
+ */
+export const BAD_RESULT_ERROR = 'bad-result' as const;
+
 // ---------------------------------------------------------------------------
 // 写入(Import)数据结构 —— 解析器(lib/markdown/parser)产出、注入引擎消费。
 // 形状对齐 Draft.js RawBlock,块映射遵循《技术方案设计.md》§4.2 矩阵。
@@ -188,6 +194,8 @@ export const IMAGE_FAIL_REASONS = [
   'remote-fetch-failed',
   'remote-permission-denied', // 远程图 host 权限未授予(写入时权限申请被拒),抓取被 Chrome 拦截
   'local-not-found',
+  'local-no-folder', // C30:两个作用域都未连接本地文件夹
+  'local-permission-lapsed', // C30:已连接文件夹读权限回落(浏览器重启后 prompt),需重新授权
   'local-too-large',
   'local-bad-type',
   'data-uri-invalid',
@@ -411,7 +419,7 @@ export type ImportResponse =
     }
   | {
       ok: false;
-      error: 'no-injector' | 'timeout' | InjectorErrorCode | string;
+      error: 'no-injector' | 'timeout' | typeof BAD_RESULT_ERROR | InjectorErrorCode | string;
       /** 与 ImportResult 同源透传(B2-2);通道层 timeout 时缺省(content 无从得知是否已提交)。 */
       committed?: boolean;
     };
@@ -419,7 +427,7 @@ export type ImportResponse =
 /** content → sidepanel 的标题设置应答:透传 SetTitleResult,叠加通道层错误。 */
 export type SetTitleResponse =
   | { ok: true; applied: boolean }
-  | { ok: false; error: 'no-injector' | 'timeout' | InjectorErrorCode | string };
+  | { ok: false; error: 'no-injector' | 'timeout' | typeof BAD_RESULT_ERROR | InjectorErrorCode | string };
 
 /** 运行时守卫:窄化「探针请求」——只认判别字段 `type` 匹配的对象。 */
 export function isProbeRequest(msg: unknown): msg is { type: typeof PROBE_REQUEST_TYPE } {

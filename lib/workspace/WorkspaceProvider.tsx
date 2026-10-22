@@ -16,6 +16,7 @@ import { getFolderStatus, importToXTab, probeXTabContent, setTitleOnXTab } from 
 import { requestRemoteImagePermissions } from '@/lib/bridge/imagePermissions';
 import {
   ARTICLE_SWITCHED_ERROR,
+  BAD_RESULT_ERROR,
   classifyImageSource,
   NOT_ARTICLE_EDITOR_ERROR,
   type ImageBlock,
@@ -138,6 +139,7 @@ function importErrorText(error: string, t: Dict): string {
   if (error === 'disconnected') return t.errDisconnected;
   if (error === 'no-injector') return t.errNoInjector;
   if (error === 'timeout') return t.errTimeout;
+  if (error === BAD_RESULT_ERROR) return t.errBadResult; // B9:injector 回传形状不合规
   if (error === NOT_ARTICLE_EDITOR_ERROR) return t.errNotArticleEditor; // B3:injector 拒写非文章编辑页
   // 其他 injector 层错误:统一「写入失败」并附上原始短语,便于诊断。
   return `${t.errWriteFail}: ${error}`;
@@ -152,6 +154,7 @@ function titleResultText(res: SetTitleResponse, t: Dict): string {
   if (res.error === 'disconnected') return `${t.titleFail}: ${t.errDisconnected}`;
   if (res.error === 'no-injector') return `${t.titleFail}: ${t.errNoInjector}`;
   if (res.error === 'timeout') return `${t.titleFail}: ${t.errTimeout}`;
+  if (res.error === BAD_RESULT_ERROR) return `${t.titleFail}: ${t.errBadResult}`;
   if (res.error === NOT_ARTICLE_EDITOR_ERROR) return `${t.titleFail}: ${t.errNotArticleEditor}`;
   return `${t.titleFail}: ${res.error}`;
 }

@@ -61,7 +61,7 @@ export function settingsConfig({ en, folderConnected, folderName, wipeArm }: Con
       num: '03',
       title: T('标题与封面', 'Title & cover'),
       rows: [
-        { k: 'setTitle', t: 'toggle', label: T('设置文章标题', 'Set article title'), desc: T('优先级:frontmatter title > 首个 H1 > 文件名。', 'Priority: frontmatter > first H1 > filename.') },
+        { k: 'setTitle', t: 'toggle', label: T('设置文章标题', 'Set article title'), desc: T('优先级:frontmatter title > 首个 H1。', 'Priority: frontmatter title > first H1.') },
         { k: 'titleConflict', t: 'select', label: T('已有标题时', 'On existing title'), desc: T('编辑器已有标题的处理方式。', 'When the editor already has a title.'), opts: [o('ask', '询问', 'Ask'), o('overwrite', '覆盖', 'Overwrite'), o('keep', '保留原标题', 'Keep original')] },
         { k: 'h1Handle', t: 'select', label: T('H1 处理', 'H1 handling'), desc: T('用作标题后是否从正文移除。', 'Remove from body after using as title.'), opts: [o('remove', '移除', 'Remove'), o('keep', '保留在正文', 'Keep in body')] },
         { k: 'setCover', t: 'toggle', label: T('设置文章封面', 'Set article cover'), desc: T('来源:frontmatter cover > 正文首图。', 'Source: frontmatter cover > first image.') },
@@ -128,7 +128,7 @@ export function settingsConfig({ en, folderConnected, folderName, wipeArm }: Con
       num: '08',
       title: T('快捷键', 'Shortcuts'),
       rows: [
-        { k: 'shortcuts', t: 'action', label: T('打开侧边栏 / 一键写入', 'Open panel / quick write'), desc: T('在 chrome://extensions/shortcuts 中自定义。', 'Customize at chrome://extensions/shortcuts.'), actLabel: T('前往设置', 'Open') },
+        { k: 'shortcuts', t: 'action', label: T('打开侧边栏', 'Open panel'), desc: T('在 chrome://extensions/shortcuts 中自定义。', 'Customize at chrome://extensions/shortcuts.'), actLabel: T('前往设置', 'Open') },
       ],
     },
     {

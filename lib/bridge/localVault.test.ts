@@ -10,6 +10,7 @@ import {
   pickFromIndex,
   resolveLocalFile,
   resolveAcrossRoots,
+  resolveFromScopes,
   splitLocalPath,
   stripQueryHash,
   VAULT_INDEX_MAX_DEPTH,
@@ -524,5 +525,66 @@ describe('resolveLocalFile(C9)', () => {
     // 都无精确路径时才回落索引,仍按作用域优先级(active 先)
     expect(hitPath(await resolveAcrossRoots(roots, 'att/x.png'))).toBe('att/x.png');
     expect(hitPath(await resolveAcrossRoots([roots[0]!, { handle: makeVault('q', ['z/y.png']), cacheKey: 'persistent' }], 'y.png'))).toBe('z/y.png');
+  });
+});
+
+describe('resolveFromScopes(C30 失败归因)', () => {
+  beforeEach(() => {
+    clearVaultIndexCache();
+  });
+
+  it('两个作用域都未连接 → no-folder', async () => {
+    const r = await resolveFromScopes(
+      [
+        { handle: null, granted: false, cacheKey: 'active' },
+        { handle: null, granted: false, cacheKey: 'persistent' },
+      ],
+      'x.png',
+    );
+    expect(r).toEqual({ reason: 'no-folder' });
+  });
+
+  it('已连接但权限全部回落 → permission-lapsed(不读未授权 handle)', async () => {
+    const r = await resolveFromScopes(
+      [
+        { handle: null, granted: false, cacheKey: 'active' },
+        { handle: makeVault('p', ['x.png']), granted: false, cacheKey: 'persistent' },
+      ],
+      'x.png',
+    );
+    expect(r).toEqual({ reason: 'permission-lapsed' });
+  });
+
+  it('有效文件夹里找不到、另一文件夹权限回落 → permission-lapsed', async () => {
+    const r = await resolveFromScopes(
+      [
+        { handle: makeVault('a', ['y.png']), granted: true, cacheKey: 'active' },
+        { handle: makeVault('p', ['x.png']), granted: false, cacheKey: 'persistent' },
+      ],
+      'x.png',
+    );
+    expect(r).toEqual({ reason: 'permission-lapsed' });
+  });
+
+  it('全部有效且找不到 → not-found', async () => {
+    const r = await resolveFromScopes(
+      [
+        { handle: makeVault('a', ['y.png']), granted: true, cacheKey: 'active' },
+        { handle: null, granted: false, cacheKey: 'persistent' },
+      ],
+      'x.png',
+    );
+    expect(r).toEqual({ reason: 'not-found' });
+  });
+
+  it('命中 → { file }(权限回落的作用域不影响有效作用域命中)', async () => {
+    const r = await resolveFromScopes(
+      [
+        { handle: makeVault('a', ['x.png']), granted: false, cacheKey: 'active' },
+        { handle: makeVault('p', ['att/x.png']), granted: true, cacheKey: 'persistent' },
+      ],
+      'att/x.png',
+    );
+    expect('file' in r && hitPath(r.file)).toBe('att/x.png');
   });
 });

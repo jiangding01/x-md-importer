@@ -84,7 +84,7 @@ export function Footer() {
                 padding: '7px 11px',
                 borderRadius: 'var(--btnR)',
                 font: '500 11.5px var(--fUI)',
-                color: lastRunSnapshot.fail > 0 || (lastRunSnapshot.imageFailures?.length ?? 0) > 0 ? 'var(--dgr)' : 'var(--ink2)',
+                color: lastRunSnapshot.deg > 0 || lastRunSnapshot.fail > 0 || (lastRunSnapshot.imageFailures?.length ?? 0) > 0 ? 'var(--dgr)' : 'var(--ink2)',
                 cursor: 'pointer',
               }}
             >
