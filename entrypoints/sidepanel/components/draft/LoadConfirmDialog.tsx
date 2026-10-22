@@ -20,7 +20,8 @@ export function LoadConfirmDialog() {
       <div
         style={{
           width: '100%',
-          background: 'var(--p)',
+          // P2-30:同 OverwriteDialog——弹窗无 backdrop-filter,半透明 --p 会透字,改不透明 --pSolid。
+          background: 'var(--pSolid)',
           border: '1px solid var(--pBorder)',
           borderRadius: 'calc(var(--rEl) + 6px)',
           padding: 20,

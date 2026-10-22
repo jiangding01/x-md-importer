@@ -72,7 +72,7 @@ function LocalFolderRow() {
       showToast(`${t.folderConnectedToast}${res.folderName ?? ''}`);
       return;
     }
-    if (!res.ok && res.error !== 'cancelled') showToast(folderErrText(t, res.error));
+    if (!res.ok && res.error !== 'cancelled') showToast(folderErrText(t, res.error), 'error');
   };
 
   const doClear = async () => {
@@ -82,7 +82,7 @@ function LocalFolderRow() {
       setOpt('activeFolderName', null);
       showToast(t.folderClearedToast);
     } else {
-      showToast(folderErrText(t, res.error));
+      showToast(folderErrText(t, res.error), 'error');
     }
   };
 
@@ -215,13 +215,6 @@ export function AssetsCard() {
             {coverSource}
           </span>
         </div>
-        <button
-          className="mf-btn mf-hover-soft"
-          onClick={() => showToast(t.demoToast)}
-          style={{ border: '1px solid var(--line)', padding: '4px 10px', borderRadius: 'var(--rEl)', font: '500 10px var(--fUI)', color: 'var(--ink2)' }}
-        >
-          {t.change}
-        </button>
       </div>
 
       {hasLocal && <LocalFolderRow />}

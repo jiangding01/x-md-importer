@@ -59,8 +59,8 @@ function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
-/** 解析 dataURI 图片为 File;非图片 / 非白名单 MIME / 解析失败 → null。 */
-function dataUriToFile(uri: string): File | null {
+/** 解析 dataURI 图片为 File;超过 16MB 上限 → 'too-large';非图片 / 非白名单 MIME / 解析失败 → null。 */
+function dataUriToFile(uri: string): File | 'too-large' | null {
   // mime 后允许任意参数段(如 ;charset=utf-8),base64 标记可能夹在参数中间。
   const m = /^data:([^;,]+)?((?:;[^;,]+)*),([\s\S]*)$/.exec(uri);
   if (!m) return null;
@@ -69,6 +69,12 @@ function dataUriToFile(uri: string): File | null {
   if (!ALLOWED_IMAGE_MIME.has(mime)) return null;
   const isBase64 = /;base64\b/.test((m[2] || '').toLowerCase());
   const data = m[3] ?? '';
+  // 体积上限对齐远程(background MAX_BYTES)与本地(MAX_LOCAL_IMAGE_BYTES)的 16MB:此前 dataURI
+  // 无上限,超大内嵌图会完整解码成 File 走结构化克隆送上传,内存峰值无界(B2-5)。
+  // base64 每 4 字符编码 3 字节,编码长度即可精确预判,免得解码完才发现超限;
+  // percent-encoding 的编码长度最高是字节数 3 倍(review 修复:不能拿它当字节数,会把
+  // 合法图误拒),先解码再量。
+  if (isBase64 && Math.floor(data.length * 0.75) > MAX_LOCAL_IMAGE_BYTES) return 'too-large';
   try {
     let bytes: Uint8Array<ArrayBuffer>;
     if (isBase64) {
@@ -78,6 +84,8 @@ function dataUriToFile(uri: string): File | null {
       bytes = new Uint8Array(new ArrayBuffer(enc.length));
       bytes.set(enc);
     }
+    // percent-encoding 路径解码后才知道真实字节数,这里统一兜底核查(base64 已在解码前挡)。
+    if (bytes.length > MAX_LOCAL_IMAGE_BYTES) return 'too-large';
     const ext = mime.slice(mime.indexOf('/') + 1).replace('jpeg', 'jpg');
     return new File([bytes], `image.${ext}`, { type: mime });
   } catch {
@@ -94,8 +102,11 @@ async function prepareOneImage(block: ImageBlock): Promise<PreparedImage> {
   try {
     const kind = classifyImageSource(block.source);
     if (kind === 'data') {
-      const file = dataUriToFile(block.source);
-      return file ? { file } : { file: null, failReason: 'data-uri-invalid' };
+      const parsed = dataUriToFile(block.source);
+      if (parsed instanceof File) return { file: parsed };
+      // 'too-large' 复用 local-too-large 码(报告文案「超出大小上限」对 dataURI 同样准确),
+      // 与「格式无效」区分开——不给用户「合法图被判 invalid」的误导(review 修复)。
+      return { file: null, failReason: parsed === 'too-large' ? 'local-too-large' : 'data-uri-invalid' };
     }
     if (kind === 'remote') {
       const resp = (await browser.runtime.sendMessage({ type: FETCH_IMAGE_TYPE, url: block.source })) as
@@ -320,6 +331,7 @@ export default defineContentScript({
       coverSource: string | null,
       scrollTop: boolean,
       compress: CompressOpts,
+      expectedArticleId: string | null = null,
     ): Promise<ImportResponse> => {
       if (!handshaked) return { ok: false, error: 'no-injector' };
       // B5 缓解:vault handle 存于 x.com origin 的 IndexedDB,页面脚本/XSS 可取出后免手势遍历读
@@ -346,7 +358,7 @@ export default defineContentScript({
       const timeoutMs = 45_000 + images.length * 40_000 + (cover ? 20_000 : 0);
       let response = await bridge.request<ImportResult, ImportResponse>(
         'import-result',
-        (id) => post({ source: ISO_SOURCE, kind: 'import', nonce, id, blocks, mode, images, cover }),
+        (id) => post({ source: ISO_SOURCE, kind: 'import', nonce, id, blocks, mode, images, cover, expectedArticleId }),
         timeoutMs,
         (result) => result,
         () => ({ ok: false, error: 'timeout' }),
@@ -564,6 +576,7 @@ export default defineContentScript({
           message.coverSource ?? null,
           message.scrollTop === true,
           message.compress ?? null,
+          message.expectedArticleId ?? null,
         );
       if (isSetTitleRequest(message)) return setTitleInjector(message.title, message.conflict);
       // scope 用 messageScope 归一(旧消息缺字段时回落 persistent),不裸信任 message.scope。

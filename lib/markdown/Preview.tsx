@@ -2,6 +2,7 @@ import type { CSSProperties } from 'react';
 import Markdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useI18n } from '@/lib/i18n/useI18n';
+import { frontmatterBodyStart } from './parser';
 
 const headingSize: Record<number, string> = { 1: '17px', 2: '14.5px', 3: '13px', 4: '12px', 5: '11.5px', 6: '11px' };
 
@@ -118,18 +119,22 @@ const components: Components = {
   ),
 };
 
-/** 去除顶部 frontmatter（--- ... ---），与设计稿预览一致。 */
-function stripFrontmatter(src: string): string {
-  const lines = src.split('\n');
-  if (lines[0] === '---') {
-    const end = lines.indexOf('---', 1);
-    if (end > 0) return lines.slice(end + 1).join('\n');
-  }
-  return src;
+/**
+ * 去除顶部 frontmatter。判定**复用 parser 的 frontmatterBodyStart**(B3-7 / P2-9)——
+ * 此前这里是第三套实现,与 parser / frontmatter.ts 双重漂移:
+ *  - `split('\n')` 后 CRLF 文档的首行是 `---\r`,与 `'---'` 不等 → 整个 frontmatter 当正文渲染;
+ *  - `indexOf('---', 1)` 无「闭合须在首个空行前」的约束 → 文首装饰性 `---\n\n正文\n\n---`
+ *    会把中间正文当 frontmatter 剥掉(parser 却按分割线 + 正文处理)。
+ * 导出是为了单测(纯函数,不必渲染组件)。
+ */
+export function stripFrontmatterForPreview(src: string): string {
+  const lines = src.split(/\r?\n/);
+  const start = frontmatterBodyStart(lines);
+  return start === 0 ? src : lines.slice(start).join('\n');
 }
 
 export function Preview({ md }: { md: string }) {
-  const { lang } = useI18n();
+  const { lang, t } = useI18n();
   if (!md.trim()) {
     return (
       <div style={{ padding: '30px 0', textAlign: 'center', font: '400 11px var(--fUI)', color: 'var(--ink3)' }}>
@@ -138,8 +143,24 @@ export function Preview({ md }: { md: string }) {
     );
   }
   return (
-    <Markdown remarkPlugins={[remarkGfm]} components={components}>
-      {stripFrontmatter(md)}
-    </Markdown>
+    <>
+      {/* B3-8(P2-10):预览走 react-markdown 的完整 CommonMark,与本项目解析器的子集语义
+          系统性不一致(裸 URL 预览成链接实际是死文本、行内图片、H4-6、`- - -` …)。能力面板
+          花大力气诚实化,预览不能反过来许诺另一套语义——先如实标注,完整对齐列 backlog。 */}
+      <div
+        style={{
+          font: '400 10px/1.6 var(--fUI)',
+          color: 'var(--ink3)',
+          margin: '0 0 12px',
+          paddingBottom: 8,
+          borderBottom: '1px dashed var(--line)',
+        }}
+      >
+        {t.previewNote}
+      </div>
+      <Markdown remarkPlugins={[remarkGfm]} components={components}>
+        {stripFrontmatterForPreview(md)}
+      </Markdown>
+    </>
   );
 }

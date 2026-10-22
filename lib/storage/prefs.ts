@@ -1,4 +1,4 @@
-import { getItem, setItem } from './store';
+import { getItem, removeItem, setItem } from './store';
 import { validatePrefs, type Prefs } from './schema';
 
 // 结构定义(Prefs / defaultPrefs)已下沉 schema.ts,与校验器同处一地——否则 loader 复用
@@ -20,4 +20,9 @@ export async function loadPrefs(): Promise<Prefs> {
 
 export function savePrefs(prefs: Prefs): Promise<void> {
   return setItem(KEY, prefs);
+}
+
+/** 删除界面偏好(B4-4/P2-19,供 wipeAll 用)。见 draftStore.removeDraft 同款注释。 */
+export function removePrefs(): Promise<void> {
+  return removeItem(KEY);
 }

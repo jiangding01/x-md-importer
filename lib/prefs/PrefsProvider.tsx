@@ -28,7 +28,8 @@ export function PrefsProvider({ initial = defaultPrefs, children }: PrefsProvide
   const setPrefs = useCallback((patch: Partial<Prefs>) => {
     setState((prev) => {
       const next = { ...prev, ...patch };
-      void savePrefs(next);
+      // 偏好写失败低危(下次改动会重写),不占 UI,但不许静默吞——落 console 便于诊断(P0-1 配套)。
+      savePrefs(next).catch((err) => console.error('[MarkFlow] prefs persist failed:', err));
       return next;
     });
   }, []);

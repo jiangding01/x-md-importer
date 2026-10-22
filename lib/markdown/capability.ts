@@ -8,7 +8,8 @@
  * 导出签名与 CapItem 结构保持不变(消费方 CapabilityPanel / ReportCard / AssetsCard 不改)。
  */
 
-import { forEachContentLine, parseMarkdown, type ParseOptions } from './parser';
+import { extractTitle } from './frontmatter';
+import { parseMarkdown, type ParseOptions } from './parser';
 
 export type CapBadge = 'native' | 'special' | 'image' | 'warn';
 
@@ -216,38 +217,19 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions): C
   return items;
 }
 
-export type ImageKind = 'local' | 'remote' | 'data';
+// B3-4(P1-7):`images()` 已删除。它用全文正则 `\(([^)]+)\)` 抓 src,把 `![](<https://h/a.png>)`
+// 判成 local(权限不申请 → 下载必被拒)、把 `f(1).png` 截断,还会算上代码块内与行内的图片。
+// 所有图片来源一律取 parseMarkdown 的块级产出:消费方为 AssetsCard(渲染/计数)与
+// requestRemoteImagePermissions(权限申请),两者都已改为块级源。
 
-export interface ImageRef {
-  src: string;
-  kind: ImageKind;
-}
-
-export function images(md: string): ImageRef[] {
-  const out: ImageRef[] = [];
-  const re = /!\[([^\]]*)\]\(([^)]+)\)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(md))) {
-    const src = m[2] ?? '';
-    const kind: ImageKind = src.startsWith('data:') ? 'data' : /^https?:\/\//.test(src) ? 'remote' : 'local';
-    out.push({ src, kind });
-  }
-  return out;
-}
-
+/**
+ * 历史条目/草稿的显示标题。
+ *
+ * B3-12(P2-14):直接复用 `extractTitle`——它才是**真正写进 X 的标题**的唯一来源。
+ * 此前这里自带一套「只认 ATX `# `」的扫描,frontmatter-only 与 setext 标题的文档在记录页
+ * 显示「未命名草稿」,而实际导入的标题是对的:同一份文档两个标题,又一次「UI 撒谎」。
+ * 抽不到才回落默认文案(此处唯一的额外职责,extractTitle 返回 null)。
+ */
 export function firstTitle(md: string, en: boolean): string {
-  // 用 forEachContentLine 跳过围栏代码块——否则代码块内的 `# 注释` 会被当历史条目标题,
-  // 与 extractTitle/stripFirstH1 的判定分裂(它们经同一 helper,历史修复点;单测钉出)。
-  let title: string | null = null;
-  forEachContentLine(md.split(/\r?\n/), (line) => {
-    const m = /^#\s+(.+)$/.exec(line);
-    if (m) {
-      const t = (m[1] ?? '').trim();
-      if (t.length > 0) {
-        title = t;
-        return true;
-      }
-    }
-  });
-  return title ?? (en ? 'Untitled draft' : '未命名草稿');
+  return extractTitle(md)?.title ?? (en ? 'Untitled draft' : '未命名草稿');
 }

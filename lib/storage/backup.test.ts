@@ -169,15 +169,25 @@ describe('validateOptions', () => {
 });
 
 describe('validateHistory', () => {
-  it('缺 id(非 number)丢弃整项', () => {
+  it('非法 id(缺失/NaN/Infinity/null/空串/超长串)丢弃整项', () => {
     const items = [
       { title: 'no id' },
-      { id: '1', title: 'string id' },
       { id: NaN, title: 'nan id' },
       { id: Infinity, title: 'inf id' },
       { id: null, title: 'null id' },
+      { id: '', title: 'empty string id' },
+      { id: 'x'.repeat(65), title: 'oversized string id' },
     ];
     expect(validateHistory(items)).toEqual([]);
+  });
+
+  it('string id(新版 UUID 形状)与 number id(旧版时间戳)均合法保留', () => {
+    const uuid = '5e3f0f9a-1111-4222-8333-444455556666';
+    const items = validateHistory([
+      { id: uuid, title: 'uuid' },
+      { id: 1721300000000, title: 'ts' },
+    ]);
+    expect(items.map((i) => i.id)).toEqual([uuid, 1721300000000]);
   });
 
   it('缺 title/md/date 补默认不丢项', () => {

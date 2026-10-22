@@ -2,6 +2,8 @@
 :root {
   --deskBg: radial-gradient(circle, rgba(25, 27, 31, 0.055) 1px, transparent 1px) 0 0 / 22px 22px, #ece9e2;
   --p: #fbfaf9;
+  /* P2-30:不透明面板色回退值(玻璃主题外与 --p 同值,见 lib/theme/themes.ts skinVars)。 */
+  --pSolid: #fbfaf9;
   --pBorder: rgba(25, 27, 31, 0.12);
   --p2: #f2f0eb;
   --ink: #191b1f;
@@ -86,11 +88,21 @@ input::placeholder {
   background: transparent;
 }
 
+/* 焦点可见性(P1-12):只在键盘导航(:focus-visible)时画焦点环,鼠标点击不画——
+   此前一刀切 outline:none 且无替代样式,键盘用户完全看不到焦点在哪。 */
 select,
 button,
 input,
 textarea {
   outline: none;
+}
+select:focus-visible,
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: 2px;
 }
 
 /* ── 交互原语（inline style 无法处理 :hover，统一在此挂 hover 态）── */

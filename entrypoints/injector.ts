@@ -149,6 +149,18 @@ interface DraftEditorStateStatic {
 }
 
 export default defineUnlistedScript(() => {
+  // 跨实例单例守卫(B2-4):同一页面被二次注入(dev 热重载 / BFCache 恢复叠加重注入)时,
+  // 两个实例会**各自**响应同一条 import 消息并发直写同一 blockMap(各自的 importInFlight
+  // 互不可见)——草稿重复/损坏且 content 只认第一个回包,完全不可见。首个实例占坑,
+  // 后来者直接退出(旧实例继续服务;「新代码不接管」是可接受取舍,生产首要目标是杜绝双执行)。
+  const INSTANCE_KEY = Symbol.for('markflow.injector.v1');
+  const w = window as unknown as Record<symbol, boolean | undefined>;
+  if (w[INSTANCE_KEY]) {
+    console.info('[MarkFlow] injector 已有存活实例,跳过重复初始化');
+    return;
+  }
+  w[INSTANCE_KEY] = true;
+
   // targetOrigin 收敛为本页 origin(而非 '*'):MAIN world 与页面同 JS 上下文,此为**纵深收敛**
   // ——挡住把消息投递到跨 origin 的 iframe/嵌入上下文,缩小误发面;并非完全隔离(同源脚本仍可监听)。
   const post = (msg: MainMessage) => window.postMessage(msg, window.location.origin);
@@ -157,20 +169,37 @@ export default defineUnlistedScript(() => {
   // 两个 runImport 交错直改同一 Draft blockMap 造成重复/错位/按旧 key 找块崩溃)。
   let importInFlight = false;
 
-  // 多级 fallback 选择器(照搬 xposter EDITOR_SELECTOR):优先精确匹配 Draft 正文容器,
-  // 逐级放宽到任意 contenteditable,兼容 X 改版后的结构漂移。
-  const EDITOR_SELECTOR =
-    "[data-contents='true'] [contenteditable='true'], [contenteditable='true'][role='textbox'], [contenteditable='true'].public-DraftEditor-content, [contenteditable='true']";
+  // 多级 fallback 选择器(B2-6 改造):**有序数组逐级尝试**——此前是逗号并集,
+  // querySelectorAll 按文档顺序返回、书写顺序毫无优先级,"分级"实为假象;且原第一级
+  // `[data-contents='true'] [contenteditable='true']` 按 Draft 结构 data-contents 是
+  // contenteditable 的**子**节点,永不命中,已删除。层级从「真机实测指纹」到「裸 contenteditable」
+  // 逐级放宽(data-testid="composer" 与 .public-DraftEditor-content 见 docs/技术方案设计.md §2.1)。
+  // 标题字段是 textarea(非 contenteditable),天然不会被任何一级命中,无需显式排除。
+  const EDITOR_SELECTOR_TIERS = [
+    "[contenteditable='true'][data-testid='composer']",
+    "[contenteditable='true'].public-DraftEditor-content",
+    "[contenteditable='true'][role='textbox']",
+    "[contenteditable='true']",
+  ] as const;
 
   /**
-   * 定位正文编辑器元素:遍历所有匹配,用几何尺寸(宽 > 200 且高 > 80)过滤掉标题输入框等
-   * 小型 contenteditable,取第一个命中。
+   * 定位正文编辑器元素:按层级依次查询,级内用几何尺寸(宽 > 200 且高 > 80)过滤掉小型
+   * contenteditable,取**面积最大者**(而非文档顺序第一个)——同级多命中时正文必然最大。
    */
   const findEditorElement = (): HTMLElement | null => {
-    const nodes = document.querySelectorAll<HTMLElement>(EDITOR_SELECTOR);
-    for (const el of nodes) {
-      const rect = el.getBoundingClientRect();
-      if (rect.width > 200 && rect.height > 80) return el;
+    for (const selector of EDITOR_SELECTOR_TIERS) {
+      let best: HTMLElement | null = null;
+      let bestArea = 0;
+      for (const el of document.querySelectorAll<HTMLElement>(selector)) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 200 || rect.height <= 80) continue;
+        const area = rect.width * rect.height;
+        if (area > bestArea) {
+          best = el;
+          bestArea = area;
+        }
+      }
+      if (best) return best;
     }
     return null;
   };
@@ -527,11 +556,21 @@ export default defineUnlistedScript(() => {
    * 躲过全部 4 轮)。现在必须**连续两轮**读到干净(两轮间留 X commit 时间)才确认收工;
    * 读不到状态节点不再当"干净"。返回「结束时是否确认无残留」,false 交调用方审计上报。
    */
-  const sweepMarkers = async (prefix: string): Promise<boolean> => {
+  /**
+   * 完整 marker 形状:`__MARKFLOW_IMG_{6位随机[0-9a-z]}_{序号}__`(见 runImport 的 markerPrefix)。
+   * 清扫只认**完整形状**——用户正文恰好写了 `__MARKFLOW_IMG_` 字面量(如介绍本扩展的文章)
+   * 不匹配完整形状,一律不动(B2-3:此前含前缀即整块删除,连带删掉用户内容)。
+   */
+  const MARKER_FULL_RE = /__MARKFLOW_IMG_[0-9a-z]+_\d+__/g;
+
+  const sweepMarkers = async (
+    prefix: string,
+    onSwept?: (markerText: string) => void,
+  ): Promise<boolean> => {
     let cleanStreak = 0;
     for (let round = 0; round < 6; round += 1) {
       await delay(round === 0 ? 120 : 220); // 首轮短等,后续留足 X commit 时间
-      const r = sweepMarkersOnce(prefix);
+      const r = sweepMarkersOnce(prefix, onSwept);
       if (r === 'clean') {
         cleanStreak += 1;
         if (cleanStreak >= 2) return true; // 连续两轮确认干净 → 收工
@@ -543,31 +582,63 @@ export default defineUnlistedScript(() => {
   };
 
   /**
-   * 单轮清扫:读最新 state,删掉所有含 prefix 的非 atomic 块。
+   * 单轮清扫(B2-3 改造:剥 marker 保文本,单事务提交):读最新 state,对含 prefix 的
+   * 非 atomic 块剥掉**完整形状**的 marker 串——剥后仍有内容(用户在占位行内打过字)则改写
+   * 块文本保留之,剥后为空才删块;完全不含完整 marker 的块(用户正文含前缀字面量)不动。
+   * 所有改写/删除合并进**一次** blockMap 变更、一次 onChange——逐块各自读写会在同 tick 内
+   * 互相覆盖(每次都读到尚未 commit 的旧 state,只有最后一次生效)。
    * 'clean'=读到最新 state 且无残留;'swept'=发现并处理了残留;'no-node'=读不到状态节点
    * (不可当"干净"——那只是没读到,不是没有)。
+   * onSwept:每处理一个完整 marker 回调一次(供主路径把被清扫的图片索引记入失败明细)。
    */
-  const sweepMarkersOnce = (prefix: string): 'clean' | 'swept' | 'no-node' => {
+  const sweepMarkersOnce = (
+    prefix: string,
+    onSwept?: (markerText: string) => void,
+  ): 'clean' | 'swept' | 'no-node' => {
     const node = findDraftStateNode();
     if (!node) return 'no-node';
     const es = readEditorState(node);
     const content = es.getCurrentContent();
     const blockMap = content.getBlockMap();
     const toDelete: string[] = [];
+    const toRewrite: Array<[string, string]> = []; // [blockKey, strippedText]
+    const sweptMarkers: string[] = [];
     blockMap.forEach((block, key) => {
       if (block.getType() === 'atomic') return;
-      if (block.getText().includes(prefix)) toDelete.push(key);
+      const text = block.getText();
+      if (!text.includes(prefix)) return;
+      MARKER_FULL_RE.lastIndex = 0;
+      const matches = text.match(MARKER_FULL_RE);
+      if (!matches) return; // 只含前缀字面量、无完整 marker → 用户内容,不动
+      sweptMarkers.push(...matches);
+      const stripped = text.replace(MARKER_FULL_RE, '');
+      if (stripped.trim().length === 0) toDelete.push(key);
+      else toRewrite.push([key, stripped]);
     });
-    if (!toDelete.length) return 'clean';
-    // Draft 不接受空 blockMap:若待删覆盖全部块(如纯单图文档 + 上传与降级都失败),
-    // 保留第一个待删块、把它清空为普通空段落,只删其余——避免空 map + 指向已删块的 selection 崩。
-    let survivorCount = 0;
-    blockMap.forEach((_b, key) => {
-      if (!toDelete.includes(key)) survivorCount += 1;
-    });
+    if (!toDelete.length && !toRewrite.length) return 'clean';
+    // 改写块需要样本字符重建 characterList;取不到样本时退回删块(与既有降级一致)。
+    const sample = findCharacterSample(blockMap);
+    if (!sample && toRewrite.length) {
+      for (const [key] of toRewrite) toDelete.push(key);
+      toRewrite.length = 0;
+    }
     let nextMap = blockMap;
+    for (const [key, textAfter] of toRewrite) {
+      const block = blockMap.get(key);
+      if (!block) continue;
+      const plain = sample!.set('style', sample!.getStyle().clear()).set('entity', null);
+      let characterList = block.getCharacterList().clear();
+      for (let i = 0; i < textAfter.length; i += 1) characterList = characterList.push(plain);
+      nextMap = nextMap.set(key, block.merge({ type: 'unstyled', text: textAfter, characterList }));
+    }
+    // Draft 不接受空 blockMap:若待删覆盖全部剩余块(改写块计入幸存者),
+    // 保留第一个待删块、把它清空为普通空段落,只删其余——避免空 map + 指向已删块的 selection 崩。
+    let survivorCount = toRewrite.length;
+    blockMap.forEach((_b, key) => {
+      if (!toDelete.includes(key) && !toRewrite.some(([k]) => k === key)) survivorCount += 1;
+    });
     let delKeys = toDelete;
-    if (survivorCount === 0) {
+    if (survivorCount === 0 && toDelete.length) {
       const keepKey = toDelete[0]!;
       delKeys = toDelete.slice(1);
       const keepBlock = blockMap.get(keepKey);
@@ -588,6 +659,7 @@ export default defineUnlistedScript(() => {
     let ns = ESStatic.push(es, nc, 'remove-range');
     ns = ESStatic.forceSelection(ns, sel);
     (node.props?.onChange as (s: DraftEditorState) => void)(ns);
+    if (onSwept) for (const m of sweptMarkers) onSwept(m);
     return 'swept'; // 本轮处理了残留 → 交外层再验(须此后连续两轮 clean 才算收工)
   };
 
@@ -745,11 +817,21 @@ export default defineUnlistedScript(() => {
     images: PreparedImage[] = [],
     // 封面 File(可选);默认 null 防御旧 content。
     cover: File | null = null,
+    // 期望的目标文章 id(B2-1 双钥,可选;null=不校验,兼容旧 content)。
+    expectedArticleId: string | null = null,
   ): Promise<ImportResult> => {
     if (importInFlight) return { ok: false, error: 'import already in progress' };
     importInFlight = true;
     // 以下声明本身不会抛错,且 catch(stage)/finally 需引用,故留在 try 外层:
     let stage = 'draft node';
+    // B2-2:主 onChange 提交后置 true。提交后再失败(verify 不达标/图片阶段异常)时正文已
+    // (部分)落地,失败结果带上它,UI 才能提示「正文可能已写入」而不是诱导用户重试导致重复。
+    let committed = false;
+    // B2-1 持续校验(review 修复):入口校验只挡得住「点确认前」的切换;空稿取样最长再等 1.6s、
+    // 图片/清扫/封面阶段可达数分钟,期间 SPA 切文章后 findDraftStateNode 会解析到**新文章**的
+    // 编辑器——继续写就砸错目标。故 commit 前与每个后续阶段前都复查,切换即停手。
+    const articleSwitched = (): boolean =>
+      expectedArticleId != null && getArticleId() !== expectedArticleId;
     // 每次运行独立的 marker 前缀,避免与历史残留 / 并发写入串扰。
     const markerPrefix = `__MARKFLOW_IMG_${Math.random().toString(36).slice(2, 8)}_`;
     // 清扫用**通用**前缀:不仅清本次,也清掉「历史遗留」——同一草稿反复导入时,之前某次
@@ -764,6 +846,12 @@ export default defineUnlistedScript(() => {
       // importInFlight 复位,导致该页此后所有合法导入永久收到 'import already in progress'。
       const imageCount = blocks.filter((b) => b.kind === 'image').length;
       console.info('[MarkFlow] 写入开始', { blocks: blocks.length, mode, images: imageCount });
+      // B2-1 双钥校验:在触碰编辑器之前比对目标文章——ask 弹窗挂起期间用户在同一 tab 内
+      // SPA 切到另一篇草稿时(tabId 不变,sidepanel 的钉 tab 挡不住),这里是最后一道闸。
+      if (expectedArticleId != null && getArticleId() !== expectedArticleId) {
+        console.warn('[MarkFlow] 目标文章已切换,拒绝写入', { expected: expectedArticleId, actual: getArticleId() });
+        return { ok: false, error: 'article-switched' };
+      }
       let draftNode = findDraftStateNode();
       if (!draftNode) return { ok: false, error: 'draft state node not found' };
 
@@ -935,9 +1023,12 @@ export default defineUnlistedScript(() => {
         .set('blockMap', nextBlockMap)
         .set('selectionBefore', endSelection)
         .set('selectionAfter', endSelection);
+      // 主提交前最后复查目标文章(空稿取样循环可能 await 过 1.6s):切换即拒写,零副作用。
+      if (articleSwitched()) return { ok: false, error: 'article-switched' };
       let next = EditorStateClass.push(editorState, nextContent, 'insert-fragment');
       next = EditorStateClass.forceSelection(next, endSelection);
       (draftNode.props?.onChange as (s: DraftEditorState) => void)(next);
+      committed = true; // B2-2:此后任何失败都属「提交后失败」,结果须如实带 committed
       console.info('[MarkFlow] onChange 已提交,块数', built.length);
 
       // --- 轻验证(仅 replace 强校验:新 blockMap 含我们的 key 数 ≥ blocks.length)------
@@ -969,7 +1060,7 @@ export default defineUnlistedScript(() => {
           // 确实仍不达标才判失败。此 return 不走 catch,故此处显式补一次清扫——
           // 否则随正文提交的 __MARKFLOW_IMG_* 占位块会残留用户草稿(仅在确有图片 marker 时清)。
           if (imageMarkers.length) await sweepMarkers(MARKER_SWEEP_PREFIX);
-          return { ok: false, error: `verify: only ${hit}/${blocks.length} blocks landed` };
+          return { ok: false, error: `verify: only ${hit}/${blocks.length} blocks landed`, committed };
         }
       }
 
@@ -996,6 +1087,11 @@ export default defineUnlistedScript(() => {
         });
       };
       for (const { marker, imageIndex, fallbackText, source } of imageMarkers) {
+        // 每张图前复查:中途切文章立即停手(marker 留在原文章,由错误文案引导用户回去检查),
+        // 绝不对切换后的文章做 replace/sweep/封面等任何改写。
+        if (articleSwitched()) {
+          return { ok: false, error: 'article-switched', committed };
+        }
         const prep = images[imageIndex];
         const file = prep?.file ?? null;
         if (!file) {
@@ -1033,12 +1129,22 @@ export default defineUnlistedScript(() => {
       // 兜底清扫:任何残留 marker(本次走 fallbackIndex 未删的 + 历史遗留的)一并清掉。
       // 用通用前缀而非本次随机 prefix——否则清不掉之前导入残留的其它 prefix 的 marker。
       let sweepConfirmedClean = true;
-      if (imageMarkers.length) sweepConfirmedClean = await sweepMarkers(MARKER_SWEEP_PREFIX);
+      // onSwept 只做诊断日志,不计失败明细:能被 sweep 清掉的 marker 主要来自 fallbackIndex
+      // 「已配对成功」路径(图已在文中,marker 交清扫收尾)——图没丢,upload 失败的账在上传
+      // 循环里已如实记过;清扫成功 = 无需用户手动处理,报 'marker-residue' 反而是虚警。
+      // 真正清不掉的残留仍由下方审计如实上报。
+      if (articleSwitched()) return { ok: false, error: 'article-switched', committed };
+      if (imageMarkers.length) {
+        sweepConfirmedClean = await sweepMarkers(MARKER_SWEEP_PREFIX, (markerText) =>
+          console.info('[MarkFlow] 清扫收尾 marker', markerText),
+        );
+      }
 
       // --- 封面(如有):把 File 塞进封面 fileInput,X 自行上传;失败不影响正文成功结论 ---
       // 契约(D4,见 protocol.ts):未请求封面时 coverSet 为 undefined(而非 false);
       // 仅在真正请求了封面时才返回 true/false 表示是否落地。
       let coverSet: boolean | undefined;
+      if (articleSwitched()) return { ok: false, error: 'article-switched', committed };
       if (cover) {
         stage = 'cover';
         coverSet = await setCoverImage(cover);
@@ -1049,24 +1155,34 @@ export default defineUnlistedScript(() => {
       // 此前残留完全不可见:报告 0 失败、console 无 error(真机回归批次三 T6)。本次 run 的
       // marker 能从尾部序号映射回第几张图 → 计入明细(reason 'marker-residue');历史前缀的
       // 残留映射不回本次图,仅 console 告警。放在封面阶段之后审计,多留 X 异步 commit 的时间。
-      if (!sweepConfirmedClean) {
+      // 审计**始终执行**(review 修复):sweep 只认完整 marker 形状,用户中途在占位行内回车/
+      // X commit 切块可能留下「残片」(含本次随机前缀但缺尾部 `__`)——sweep 对残片按用户内容
+      // 跳过并报 clean,若审计只在 !sweepConfirmedClean 时跑,残片就静默留在正文。本次随机
+      // 前缀不会与用户正文撞车(用户写 `__MARKFLOW_IMG_` 字面量不含随机段),据此精确识别。
+      if (imageMarkers.length || !sweepConfirmedClean) {
         const node = findDraftStateNode();
         if (node) {
           const auditMap = readEditorState(node).getCurrentContent().getBlockMap();
           const re = new RegExp(`${markerPrefix}(\\d+)__`, 'g'); // markerPrefix 仅含字母数字下划线,无需转义
           const residueIdx = new Set<number>();
           let foreignResidue = false;
+          let fragmentResidue = false;
           auditMap.forEach((block) => {
             if (block.getType() === 'atomic') return;
             const text = block.getText();
             let m: RegExpExecArray | null;
             re.lastIndex = 0;
             while ((m = re.exec(text))) residueIdx.add(Number(m[1]));
+            // 剥掉全部完整形状后仍含本次前缀 → 残片(不完整 marker,sweep 不动它)。
+            if (text.replace(new RegExp(`${markerPrefix}\\d+__`, 'g'), '').includes(markerPrefix)) {
+              fragmentResidue = true;
+            }
             if (text.includes(MARKER_SWEEP_PREFIX) && !text.includes(markerPrefix)) foreignResidue = true;
           });
           for (const idx of residueIdx) {
             pushFailure(idx, imageMarkers[idx]?.source ?? '', 'upload', 'marker-residue');
           }
+          if (fragmentResidue) console.warn('[MarkFlow] 检测到本次导入 marker 的残片(不完整形状),请在正文手动检查删除');
           if (foreignResidue) console.warn('[MarkFlow] 检测到历史导入残留的 marker(非本次),清扫未果,请在正文手动删除');
         }
       }
@@ -1091,7 +1207,7 @@ export default defineUnlistedScript(() => {
       } catch {
         /* 兜底清扫本身失败则放弃 */
       }
-      return { ok: false, error: `${stage}: ${String(err)}` };
+      return { ok: false, error: `${stage}: ${String(err)}`, committed };
     } finally {
       importInFlight = false;
     }
@@ -1224,7 +1340,7 @@ export default defineUnlistedScript(() => {
       post({ source: MAIN_SOURCE, kind: 'probe-result', nonce: msg.nonce, id: msg.id, result });
     } else if (msg.kind === 'import') {
       // 执行写入(async:取样轮询 / 图片上传都要 await),回显 nonce/id
-      const result = await runImport(msg.blocks, msg.mode, msg.images, msg.cover);
+      const result = await runImport(msg.blocks, msg.mode, msg.images, msg.cover, msg.expectedArticleId ?? null);
       post({ source: MAIN_SOURCE, kind: 'import-result', nonce: msg.nonce, id: msg.id, result });
     } else if (msg.kind === 'set-title') {
       // 设置标题(仅 UI 通道),回显 nonce/id

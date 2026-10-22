@@ -5,6 +5,75 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 批次五 · 体验打磨(对应审查报告 P2-22~P2-24、P2-26、P2-29~P2-31 + 相关 P3;限定清单 10 项)
+
+- **AudioContext 用后释放(P2-22)**:`playSound` 音效播放结束后 `osc.onended` 里 `ctx.close()`——Chrome 对并存 AudioContext 数量有硬上限,此前多次导入后新建静默失败,音效开关看似开着却哑掉。
+- **预览模式禁用工具栏(P2-23)**:`EditorCard` 预览态下 textarea 已卸载,点工具栏此前会走 `insert()` 兜底分支把 `**`/表格模板等静默拼到正文末尾、预览里看不出来。改为预览态整体 `disabled` + 置灰。
+- **拖拽态修复(P2-24)**:`onDrop` 无条件先 `setDragging(false)`(此前只在 `readFile` 的 `onload` 里清,拖入非文件/读取失败会让遮罩永久卡住);`readFile` 补 `reader.onerror`(清 dragging + `errWriteFail` 错误 toast);`onDragLeave` 判 `relatedTarget` 是否仍在容器内,滑过工具栏/文本框等子元素不再闪烁。
+- **历史单条删除二次确认(P2-26)**:`HistoryTab` 单删改 arm 式(按 `id` 记录武装态,不是一个全局布尔——点开一条不会把整份列表变红),2.6s 超时自动回落,对齐「清空全部」既有模式;「×」按钮补 `histDelete` 词条(zh「删除」/en "Delete")做 title/aria-label。
+- **`--ink3` 四主题对比度提到 ≥3:1(P2-29)**:极简浅色 `#A6ABB2→#7D8086`(2.16:1→3.80:1)、极简暗色 `#5F666E→#686F77`(3.06:1→3.49:1,原值压线故一并留余量)、控制台 `#4E5A64→#65717B`(2.57:1→3.64:1)、纸感浅色 `#A08D74→#93816A`(2.97:1→3.49:1)、玻璃浅色 alpha `.42→.55`(合成后约 2.5:1→3.6:1)、玻璃暗色 alpha `.4→.48`(约 2.6:1→4.3:1,原实现四套里最低)。均维持低于 `--ink2` 的对比度,信息层级不变,只调色值。
+- **玻璃主题不透明面板 `--pSolid`(P2-30)**:非玻璃主题与 `--p` 同值,玻璃主题给出不透明版本(浅色 `#FFFFFF`、暗色 `#161C2A`);`OverwriteDialog`/`TitleConflictDialog`/`LoadConfirmDialog` 三个弹窗背景、`Toast`/`Header` logo 的前景文字色改用它——弹窗无 backdrop-filter 时半透明 `--p` 会把身后内容透上来糊字,玻璃皮下 60% 透明前景文字对比度不足,均已修复。
+- **表格模板 + `toggle theme` aria-label 进 dict(P2-31)**:`EditorCard` 硬编码中文表格模板(`| 列 A | 列 B |`)改从 `t.tableTemplate` 取(zh/en 各自模板,英文界面不再插入中文列名);`Header.tsx` 的 `aria-label="toggle theme"` 改 `t.ariaToggleTheme`。
+- **死代码清理(P3)**:`checkStep`/`stageIdx` 及 `runCheck` 里 `260ms × 5` 的逐步动画定时器链——grep 确认全仓零消费(`PreflightCard` 只读 `checkVisible`)后连同 `Timers.check` 一并删除,`runCheck`/`closeCheck` 本身保留(预检卡开合仍用);dict 死词条 `deskHint`/`pbPage` 同样 grep 确认零消费后删除。
+- **clipboard 复制真实结果(P3)**:`copyHistoryItem` 的 `navigator.clipboard.writeText` 改 promise 链,成功才 toast `copiedToast`,失败 toast(`errWriteFail`,error 型)——此前无条件 toast 成功,reject 也照样谎报。
+- **compress 联动置灰(P3)**:`SettingsTab` 里 `compress` 关闭时 `maxEdge`/`quality` 两行控件 `disabled` + 置灰,但不强制展示成第一档(与静态「未接实现」装饰项的 `disabled` 语义区分——重新打开 compress 后仍显示用户之前选的档位)。
+- **code review 追加修复 6 项**:AudioContext suspended 态守卫 + 1s 兜底关闭(自动播放策略下 onended 不触发,泄漏原样发生);单删武装态改专属文案 `histDeleteConfirm`「确认删除?」(误用「确认清空?」会被当成清空全部)且 aria-label 同步切换(读屏可感知两步确认);文件读取失败/复制失败改专属词条(不再误报「写入失败」);clipboard 不存在时(非安全上下文)先判存在再调用,不抛同步 TypeError;`insert()` 的无编辑器兜底从「拼到全文末尾」改 no-op(危险行为不留作 fallback)。arm 模式已存在五处手写副本,抽共享 hook 列入 backlog。
+- 单测 488 保持全绿(本批未新增/修改测试用例——UI 组件此前即无 RTL 测试覆盖,逻辑改动均在既有测试路径内)。
+
+### 批次四 · 信任一致性(对应审查报告 P2-15~P2-19、P2-25、P2-27)
+
+- **备份导入校验(P2-15)**:`importBackup` 断言 `kind==='backup'`(诊断快照不再被当备份「恢复成功」);version 分支 2 原生 / 1 兼容 / 其他明确拒收;四类错误码各有专属文案。
+- **恢复安全化(P2-16)**:恢复前 arm 二次确认 + 自动先导出当前数据(导出失败即中止);写回改顺序执行、失败即停,如实报告已恢复/失败切片;部分恢复延迟刷新对齐内存与 storage(防陈旧对象覆写刚恢复的数据)。
+- **导出真实结果(P2-17 收尾)**:备份/诊断导出失败均有明确错误提示(下载通道批次一已统一)。
+- **wipe 对齐文案(P2-19)**:「清除所有数据」真清 4 个 storage key(各 store 新增 remove\*)+ 成功后 reload;失败如实报错不再静默;清除前掐死草稿防抖管线(防 pagehide flush 把刚删的草稿写回);另一窗口经 onChanged 的 key 删除分支同步清空。
+- **Toast 分型(P2-27)**:success/error 两型(✕ 图标 + 危险色);时长按文案长度浮动(2.2s~6s);容器加 `role="status" aria-live="polite"`;全部错误调用点逐一标注。
+- **报告数据源钉死(P2-25)**:导入成功时冻结 `lastRunSnapshot`(md + parseOpts + 真实写入结果),报告卡明细与汇总统一读它——导入期间改稿、切设置开关、删历史记录都不再让报告漂移;HistoryItem 存 `parseOpts` 快照供日后历史回看(schema 就地校验)。
+- **idbRun 加固(P2-18)**:事务创建/objectStore 同步抛转 reject(坏库状态不再悬挂「连接文件夹」按钮);补 onabort/onerror 且所有路径关库;**写事务以 `tx.oncomplete` 为可信成功时机**(request onsuccess ≠ 已落盘,防 Quota abort 被吞成「已连接」);`sendFolderRequest` 超时按类型分型(状态/清除 10s,连接不设——用户选文件夹耗时不可控,content 侧本有 180s 兜底)。
+- **修复一处批次二引入的回归**(本批 code review 抓回):`importToXTab`/`setTitleOnXTab` 的 `pinnedTabId ?? ` 钉死逻辑曾被批量文本替换误还原为无条件重解析——B1 防线只剩注释。已恢复并加警示注释。
+- 单测 463 → **488**(+25),新增 importBackup/importArticle(withTimeout)测试文件与 idbRun 假库错误路径用例。
+
+### 批次三 · 解析正确性(对应审查报告 P1-4~P1-7、P2-7~P2-14;12 项全修)
+
+- **图片 title 剥离(P1-4)**:`![](url "标题")`(Typora/Pandoc 默认输出)不再把 title 吞进 src 导致上传必败;只剥 `"…"`/`'…'`,统一落在 `normalizeImageSrc`(裸图行与带链接图共用)。
+- **推文正则(P1-5)**:X 官方「复制链接」的 `?s=20` 带参形态、`mobile.` 子域、行尾空格均正确识别为 TWEET 嵌入;尾缀只认可打印 ASCII——「URL 直接接中文正文」整行回落文本,正文不丢。
+- **标题抽取跳过 frontmatter(P1-6)**:YAML `# 注释` 不再被抽成文章标题/被 `h1Handle=remove` 误删;`forEachContentLine` 加显式 `skipFrontmatter` 参数(不隐式改语义)。
+- **权限申请改块级源(P1-7)**:`requestRemoteImagePermissions(blocks, …)` 与实际上传同源;`<>` 包裹远程图不再漏申请 host 权限;`capability.images()` 全文正则连同测试删除。
+- **hr 变体(P2-7)**:`- - -`/`* * *`/`___`(含 Tab 分隔/尾随)识别为分割线,不再产出垃圾列表项;divider 保持顶格(列表下缩进 `---` 语义不变),段落+`---`=setext 四象限回归钉死。
+- **0-3 空格缩进块(P2-8)**:标题/引用/围栏按 CommonMark 接受 0-3 空格缩进;围栏三处判定同源化(`RE_FENCE_LINE` 单一来源);段落前导空白逐行剥(≤3 列,≥4 空格原样保留);闭栏行尾随全角空格 U+3000 仍闭合。
+- **Preview frontmatter 复用 parser 判定(P2-9)**:CRLF 文档预览不再把 frontmatter 当正文;`frontmatter.ts` 的判定同样委托 `frontmatterBodyStart`——三套平行实现收敛为一。
+- **预览语义标注(P2-10 低成本)**:预览顶部注明「以能力面板为准」;完整对齐列 backlog。
+- **frontmatter 值健壮性(P2-11)**:`title: >`/`|` block scalar 回落 H1;行内 ` # 注释` 按 YAML 规则剥离(仅 title 分支、引号值不剥、`\"`/`''` 转义引号正确处理不截断)。
+- **cover wiki 别名(P2-12)**:`cover: "![[x.png|封面]]"` 剥 `|alt`,与 parser 口径一致。
+- **有序列表打断段落收紧(P2-13)**:软折行段落中 `2024. ` 不再被硬切成列表(仅 `1.` 可打断);块首起列表仍任意数字。
+- **历史标题口径统一(P2-14)**:`firstTitle` 复用 `extractTitle`——frontmatter-only/setext 标题的历史条目不再显示「未命名草稿」。
+- 单测 377 → **463**(+86,全部红→绿驱动),新增 imagePermissions/preview 两个测试文件。
+
+### 批次二 · 写入安全(对应审查报告 P1-1/P1-2/P1-3/P2-2/P2-5 + P3 dataURI)
+
+- **目标钉死双钥 tabId + articleId(P1-1)**:`writeX` 两条路径(ask 与直写)都在进入任何挂起窗口(确认弹窗 / host 权限申请)**之前**探测并钉死目标;`import` 消息带 `expectedArticleId`,injector 在入口、主提交前、每张图前、清扫前、封面前**持续复查**当前文章 id,SPA 同 tab 切文章立即停手(新错误码 `article-switched`,专属文案提示)。堵住「探 A 写 B」竞态在正文通道的复发(B1 修过标题通道)。
+- **提交后失败可区分(P1-3)**:`ImportResult`/`ImportResponse` 失败分支新增 `committed`;verify 不达标/图片阶段异常时正文已落地,UI 改用「正文可能已写入,请先检查再重试」文案族(通道 timeout 同样归入——injector 可能仍在后台完成提交),阻止「按失败直觉重试」造成整篇重复。
+- **marker 清扫保文本(P2-2)**:清扫只认**完整 marker 形状**并单事务**剥离**而非整块删除——用户在占位行内打过的字保留、正文恰含 `__MARKFLOW_IMG_` 字面量的内容不再被误删;残留审计改为始终执行并新增「残片」检测(console 告警)。
+- **injector 单例守卫(P2-5)**:`Symbol.for` 标记防双注入并发直写同一 blockMap。
+- **编辑器定位分级(P1-2 降级)**:逗号并集(实为 DOM 顺序)改**有序层级**逐级尝试(`data-testid="composer"` → `.public-DraftEditor-content` → `role=textbox` → 裸 contenteditable,删除永不命中的原第一级),级内取面积最大者。
+- **dataURI 16MB 上限(P3)**:对齐远程/本地;超限报「超出大小上限」而非「无效」,percent-encoding 按解码后字节数量(不误拒)。
+- **失败路径文件夹校准**:涉本地图的导入失败后同样就地校准素材板/设置的文件夹状态(content 无论成败都清 vault handle,此前失败分支 UI 撒谎)。
+
+### 批次一 · 上线阻断修复(对应 docs/review/上线前全面审查-2026-08-18.md)
+
+- **存储写失败可见化(P0-1)**:`setItem` 不再吞错;草稿/历史写失败按来源记账并在草稿页亮**常驻错误条**(附「导出当前草稿」自救按钮);手动「保存」await 成功才提示、失败如实报错;设置/偏好写失败落 console。新增 store.ts 错误传播单测(`vi.resetModules` + chrome stub 动态导入,钉住 chrome 路径)。
+- **草稿写入防抖(P2-21)**:每键整串写 storage 改为 250ms trailing + **2s max-wait**(连续输入不再无限顺延,崩溃最坏丢 ≤2s);blur / visibilitychange(hidden) / pagehide / 手动保存均强制 flush。
+- **双窗口同步(P0-2)**:订阅 `chrome.storage.onChanged`(仅 local 区),草稿/历史外部变更采纳回灌;echo 以 mdRef / id 序列判定;本地有未落盘编辑或导入进行中不采纳(pending 闸门保数据);采纳时 toast 告知。draftStore/historyStore 导出 `DRAFT_KEY`/`HISTORY_KEY` 供监听引用(防 key 漂移)。
+- **历史 id 改 UUID**:双窗口同毫秒导入不再撞 number id;`HistoryItem.id: string | number`,校验器双形状兼容(旧时间戳照收);备份 `version` 随之 bump 到 **2**。
+- **`unlimitedStorage`(P1-8)**:历史全文累积不再受 10MB 配额压顶(storage 权限本就有,零额外弹窗)。
+- **崩溃恢复屏自救出口(P1-9)**:新增「导出数据备份」(自包含实现,导出为**可被「设置 → 恢复」直接吃下的 BackupData 形状** + 附全量 raw dump);「重置」改为先自动导出、等下载发起再清;导出失败有内联反馈,且需二次点击才强制重置。
+- **`autoReport=anomaly` 生效(P1-10)**:「仅异常时」如实只在有降级/失败时自动展开报告(此前与 always 等价)。
+- **删除「演示环境」占位(P1-11)**:素材卡封面「更换」死按钮移除;SettingsTab 不可达兜底改 console.warn;`demoToast` 词条删除。
+- **键盘焦点可见(P1-12)**:`:focus-visible` 焦点环替代一刀切 `outline:none`。
+- **ask 断开有反馈(P2-20)**:覆盖询问前的即时探测发现断开时 toast 提示,不再静默无响应。
+- **导出通道统一 + 假成功修复(P2-17 前置)**:新增 `lib/ui/download`(失败必抛);SettingsTab 的 `downloadJson` 迁移其上,备份/诊断导出失败不再谎报成功。
+
 ## [0.4.0] - 2026-07-25
 
 ### 新增 · 数学块 `$$…$$` → X 原生 LaTeX 块

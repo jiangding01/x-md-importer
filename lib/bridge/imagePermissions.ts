@@ -1,4 +1,4 @@
-import { images } from '@/lib/markdown/capability';
+import type { ImportBlock } from '@/lib/bridge/protocol';
 
 /**
  * 远程图片的 host 权限运行时申请。
@@ -7,10 +7,21 @@ import { images } from '@/lib/markdown/capability';
  * 友好,不静态声明广域 host,而是在写入时(用户点击手势内)按草稿里出现的远程图 origin
  * 用 chrome.permissions.request 申请。用户拒绝 → 那些图上传失败、降级为原文(不阻断正文)。
  *
+ * 图片来源取**调用方已解析好的 blocks**(B3-4 / P1-7),不在本模块再解析一次:
+ *  - 旧实现用 capability.images() 的全文正则 `\(([^)]+)\)` 抓 src,`![](<https://h/a.png>)`
+ *    抓到带 `<>` 的串被判成 local → 该 origin 不申请 → background 下载必被 Chrome 拒;
+ *  - 全文正则还会把代码块内 / 行内的图片算进来(它们根本不会上传),申请多余的 host 权限;
+ *  - 传 blocks 而非 md,也避免「同一份文档第三次全量解析」与随之而来的口径漂移
+ *    (AssetsCard 已因此立过规矩:必须用 parseMarkdown 的块级结果)。
+ *
  * ⚠️ 必须在用户手势(写入按钮点击链)的同步阶段发起——故调用方应把它放在 startImport 的
- * 最前面、任何 await 之前。
+ * 最前面、任何 await 之前。parseMarkdown 是**同步**函数,把解析提到本调用之前不引入新的
+ * await,该约束不受影响。
  */
-export async function requestRemoteImagePermissions(md: string, extraUrls: string[] = []): Promise<void> {
+export async function requestRemoteImagePermissions(
+  blocks: ImportBlock[],
+  extraUrls: string[] = [],
+): Promise<void> {
   const origins = new Set<string>();
   const addRemote = (src: string) => {
     if (!/^https?:\/\//i.test(src)) return; // 仅远程需要 host 权限
@@ -20,8 +31,8 @@ export async function requestRemoteImagePermissions(md: string, extraUrls: strin
       /* 非法 URL 跳过 */
     }
   };
-  for (const img of images(md)) if (img.kind === 'remote') addRemote(img.src);
-  // 额外来源(如 frontmatter cover 可能不在正文 images() 里)
+  for (const b of blocks) if (b.kind === 'image') addRemote(b.source);
+  // 额外来源(如 frontmatter cover 不在正文图片块里)
   for (const url of extraUrls) addRemote(url);
   if (origins.size === 0) return;
 

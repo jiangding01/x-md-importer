@@ -2,6 +2,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -19,19 +20,43 @@ import { capability, firstTitle } from '@/lib/markdown/capability';
 import { extractCover, extractTitle, stripFirstH1 } from '@/lib/markdown/frontmatter';
 import { parseMarkdown } from '@/lib/markdown/parser';
 import { sampleEn, sampleZh } from '@/lib/markdown/sample';
-import { saveDraft } from '@/lib/storage/draftStore';
-import { saveHistory, type HistoryItem } from '@/lib/storage/historyStore';
+import { DRAFT_KEY, removeDraft, saveDraft } from '@/lib/storage/draftStore';
+import { HISTORY_KEY, removeHistory, saveHistory, type HistoryItem } from '@/lib/storage/historyStore';
+import { removeOptions } from '@/lib/storage/optionsStore';
+import { removePrefs } from '@/lib/storage/prefs';
+import { validateHistory } from '@/lib/storage/schema';
+import { downloadText } from '@/lib/ui/download';
 import type { Tab } from '@/entrypoints/sidepanel/types';
 import type { Dict } from '@/lib/i18n/dict';
 
 type Mode = 'edit' | 'preview';
 
+/** toast 的展示种类(B4-5/P2-27):error 型换图标+危险色、时长按文案长度浮动;
+ * 成功/中性提示不传第二参即为缺省(沿用原有观感)。 */
+export type ToastKind = 'success' | 'error';
+
+/**
+ * 报告卡的数据快照(B4-6/P2-25):导入收尾时钉死,ReportCard 只认它,不读当前 md/当前设置
+ * (会随后续编辑/切换开关跳变),也不读 history[0](用户在「记录」页删除/清空历史会让它
+ * 突然跳变甚至消失)。字段比文档描述的 `{ md, parseOpts }` 更宽——ok/deg/fail/imageFailures
+ * 来自本次写入的真实结果(图片上传是否失败等,单靠重新 parse md 推不出来),一并冻结进快照
+ * 才能让「明细」与「汇总」真正共享同一个不可变数据源,而不是只钉住明细、汇总仍读可变数组。
+ */
+export interface LastRunSnapshot {
+  md: string;
+  parseOpts: { obsidianImg: boolean; wikilink: boolean; taskList: 'symbol' | 'plain' };
+  ok: number;
+  deg: number;
+  fail: number;
+  imageFailures?: ImageFailure[];
+}
+
 interface WorkspaceValue {
   // 全局
   tab: Tab;
   setTab: (tab: Tab) => void;
-  toast: string | null;
-  showToast: (msg: string) => void;
+  toast: { msg: string; kind: ToastKind } | null;
+  showToast: (msg: string, kind?: ToastKind) => void;
   // 草稿
   md: string;
   setMd: (md: string) => void;
@@ -39,6 +64,9 @@ interface WorkspaceValue {
   setMode: (mode: Mode) => void;
   dragging: boolean;
   setDragging: (v: boolean) => void;
+  // 持久化健康:任一草稿/历史写入失败(如配额满)时置位,DraftTab 展示常驻错误条(P0-1)。
+  storageError: boolean;
+  exportDraft: () => void;
   save: () => void;
   clear: () => void;
   clearArm: boolean;
@@ -53,12 +81,10 @@ interface WorkspaceValue {
   toggleCap: () => void;
   // 预检
   checkVisible: boolean;
-  checkStep: number;
   runCheck: () => void;
   closeCheck: () => void;
   // 导入
   importing: boolean;
-  stageIdx: number;
   stagePct: number;
   stageLabel: string;
   writeX: () => void;
@@ -75,6 +101,7 @@ interface WorkspaceValue {
   // 报告 / 庆祝
   reportVisible: boolean;
   closeReport: () => void;
+  lastRunSnapshot: LastRunSnapshot | null;
   celebrating: boolean;
   // 记录
   history: HistoryItem[];
@@ -82,17 +109,16 @@ interface WorkspaceValue {
   setHistQ: (q: string) => void;
   loadHistoryItem: (item: HistoryItem) => void;
   copyHistoryItem: (item: HistoryItem) => void;
-  deleteHistoryItem: (id: number) => void;
+  deleteHistoryItem: (id: string | number) => void;
   clearHistory: () => void;
   histClearArm: boolean;
-  wipeAll: () => void;
+  wipeAll: () => Promise<void>;
 }
 
 const WorkspaceContext = createContext<WorkspaceValue | null>(null);
 
 interface Timers {
   toast?: ReturnType<typeof setTimeout>;
-  check?: ReturnType<typeof setTimeout>;
   celebrate?: ReturnType<typeof setTimeout>;
   clearArm?: ReturnType<typeof setTimeout>;
   histArm?: ReturnType<typeof setTimeout>;
@@ -139,19 +165,19 @@ export function WorkspaceProvider({
   const en = lang === 'en';
 
   const [tab, setTab] = useState<Tab>('draft');
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ msg: string; kind: ToastKind } | null>(null);
   const [md, setMdState] = useState(initialMd);
   const [mode, setMode] = useState<Mode>('edit');
   const [dragging, setDragging] = useState(false);
   const [clearArm, setClearArm] = useState(false);
   const [capOpen, setCapOpen] = useState(false);
   const [checkVisible, setCheckVisible] = useState(false);
-  const [checkStep, setCheckStep] = useState(-1);
   const [importing, setImporting] = useState(false);
-  const [stageIdx, setStageIdx] = useState(0);
   const [stagePct, setStagePct] = useState(0);
   const [stageLabel, setStageLabel] = useState('');
   const [reportVisible, setReportVisible] = useState(false);
+  // B4-6(P2-25):报告卡的不可变数据源,导入收尾时钉死、setMd 时随报告一起清空(见 setMd)。
+  const [lastRunSnapshot, setLastRunSnapshot] = useState<LastRunSnapshot | null>(null);
   const [askOverwrite, setAskOverwrite] = useState(false);
   const [askTitleOverwrite, setAskTitleOverwrite] = useState(false);
   const [pendingTitle, setPendingTitle] = useState<string | null>(null);
@@ -175,29 +201,183 @@ export function WorkspaceProvider({
   // 双击间隔内两次 writeX 都可能读到陈旧的 importing=false)。ref 写入同步生效,
   // 只做「进入即锁、结束即解」的闸门作用,UI 展示仍用 importing state。
   const importingRef = useRef(false);
+  // B2-1:ask 弹窗挂起期间钉死的写入目标(tabId + articleId 双钥),确认/取消后即清。
+  const pendingAskTarget = useRef<{ tabId: number; articleId: string | null } | null>(null);
 
-  const showToast = useCallback((msg: string) => {
+  const showToast = useCallback((msg: string, kind: ToastKind = 'success') => {
     if (timers.current.toast) clearTimeout(timers.current.toast);
-    setToast(msg);
-    timers.current.toast = setTimeout(() => setToast(null), 2200);
+    setToast({ msg, kind });
+    // 时长按文案长度浮动(B4-5/P2-27):固定 2200ms 读不完 50+ 字的拼接文案(如「文件夹已安全
+    // 断开,下篇导入需重新连接」这类必读提示),但也不能无限长——钳制在 2200~6000ms。
+    const duration = Math.min(6000, Math.max(2200, msg.length * 90));
+    timers.current.toast = setTimeout(() => setToast(null), duration);
   }, []);
 
-  const setMd = useCallback((v: string) => {
-    setMdState(v);
-    void saveDraft(v);
-    // 内容一变,旧预检 / 导入报告就不对应当前 md 了 → 一并收起,不残留过期结果。
-    // setMd 是所有「内容替换」的唯一入口(清空 / 载入示例 / 读文件 / 载入历史 / 编辑输入),放这一处全覆盖。
-    // 写入流程 startImport 不经 setMd(它自行 setReportVisible(true)),故不会把刚出的报告清掉。
-    setCheckVisible(false);
-    setCheckStep(-1);
-    setReportVisible(false);
+  // ── 草稿持久化(P0-1 + P2-21)──
+  // md 的最新值镜像:onChanged 监听器/flush 以 [] 依赖注册,读闭包 state 会拿到陈旧快照,
+  // 一切「当前草稿是什么」的判断只准读这个 ref。所有 setMdState 写入点必须同步更新它。
+  const mdRef = useRef(initialMd);
+  // 持久化健康:草稿/历史任一写失败(配额满等)置位 → DraftTab 常驻错误条。
+  // 按来源分账(review 修复):草稿 flush 成功只清草稿位——历史写失败后草稿写成功不许把
+  // 错误条清掉(失败的历史列表没有重试队列,直到下次历史变更前始终未落盘,错误条要如实亮着)。
+  const [storageError, setStorageError] = useState(false);
+  const persistFail = useRef({ draft: false, history: false });
+  const markPersist = useCallback((source: 'draft' | 'history', ok: boolean) => {
+    persistFail.current[source] = !ok;
+    setStorageError(persistFail.current.draft || persistFail.current.history);
   }, []);
+  // 250ms trailing 防抖 + 2s max-wait:此前每次键入整串写 storage(长文卡顿 + 写放大)。
+  // trailing 会被连续键入无限顺延,崩溃(OOM/进程被杀,不触发 blur/pagehide)就丢整段——
+  // max-wait 把最坏丢失从「整段连续输入」压回 ≤2s(review 修复)。
+  // pending 非 null = 有未落盘的本地编辑;flush 失败会把值放回 pending 供下次重试。
+  const pendingDraft = useRef<string | null>(null);
+  const pendingSince = useRef(0);
+  const persistTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  const commitHistory = useCallback((next: HistoryItem[]) => {
-    historyRef.current = next; // 同步镜像,供挂起后的 finishImport 读最新值
-    setHistory(next);
-    void saveHistory(next);
-  }, []);
+  const flushDraft = useCallback(async (): Promise<boolean> => {
+    if (persistTimer.current) {
+      clearTimeout(persistTimer.current);
+      persistTimer.current = undefined;
+    }
+    const v = pendingDraft.current;
+    if (v === null) return true;
+    pendingDraft.current = null;
+    try {
+      await saveDraft(v);
+      markPersist('draft', true);
+      return true;
+    } catch (err) {
+      console.error('[MarkFlow] draft persist failed:', err);
+      // 失败值放回 pending(除非期间已有更新的编辑),下次 flush 触发时重试,不静默丢。
+      if (pendingDraft.current === null) pendingDraft.current = v;
+      markPersist('draft', false);
+      return false;
+    }
+  }, [markPersist]);
+
+  const schedulePersist = useCallback(
+    (v: string) => {
+      if (pendingDraft.current === null) pendingSince.current = Date.now();
+      pendingDraft.current = v;
+      if (persistTimer.current) clearTimeout(persistTimer.current);
+      // max-wait:pending 已积压超 2s → 立即落盘,不再顺延。
+      if (Date.now() - pendingSince.current >= 2000) {
+        void flushDraft();
+        return;
+      }
+      persistTimer.current = setTimeout(() => void flushDraft(), 250);
+    },
+    [flushDraft],
+  );
+
+  const setMd = useCallback(
+    (v: string) => {
+      setMdState(v);
+      mdRef.current = v;
+      schedulePersist(v);
+      // 内容一变,旧预检 / 导入报告就不对应当前 md 了 → 一并收起,不残留过期结果。
+      // setMd 是所有「内容替换」的唯一入口(清空 / 载入示例 / 读文件 / 载入历史 / 编辑输入),放这一处全覆盖。
+      // 写入流程 startImport 不经 setMd(它自行 setReportVisible(true)),故不会把刚出的报告清掉。
+      setCheckVisible(false);
+      setReportVisible(false);
+      // B4-6:报告快照与 reportVisible 同生命周期——内容一变,快照就不再代表「当前草稿」,
+      // 一并清空(而不是留着一份对不上号的旧快照,靠 reportVisible=false 隐藏 UI 兜底)。
+      setLastRunSnapshot(null);
+    },
+    [schedulePersist],
+  );
+
+  const commitHistory = useCallback(
+    (next: HistoryItem[]) => {
+      historyRef.current = next; // 同步镜像,供挂起后的 finishImport 读最新值
+      setHistory(next);
+      // 写失败必须可见(P0-1):按来源记账,亮/清常驻错误条(见 persistFail 注释)。
+      saveHistory(next).then(
+        () => markPersist('history', true),
+        (err) => {
+          console.error('[MarkFlow] history persist failed:', err);
+          markPersist('history', false);
+        },
+      );
+    },
+    [markPersist],
+  );
+
+  // flush 触发点:防抖到点之外,面板隐藏/卸载/失焦(用户点回 X 页面)都立即落盘——
+  // 侧边栏被关闭时卸载事件不保证给足异步 IPC 时间,所以尽量在还活着的时机就写完。
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') void flushDraft();
+    };
+    const onPageHide = () => void flushDraft();
+    const onBlur = () => void flushDraft();
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('blur', onBlur);
+      void flushDraft();
+    };
+  }, [flushDraft]);
+
+  // ── 双窗口同步(P0-2)──
+  // 每个浏览器窗口一个 sidePanel 实例,此前各实例持挂载时快照、整体覆写 last-write-wins:
+  // 窗口 A 写了半小时,回到 B 敲一个字符就用陈旧内容覆盖掉。订阅 onChanged 让非活跃实例跟随。
+  useEffect(() => {
+    if (typeof chrome === 'undefined' || !chrome.storage?.onChanged) return;
+    const handler = (
+      changes: Record<string, chrome.storage.StorageChange>,
+      areaName: string,
+    ) => {
+      if (areaName !== 'local') return;
+      const draftChange = changes[DRAFT_KEY];
+      // newValue 为 undefined = key 被删除(另一窗口 wipeAll)——按空草稿采纳,否则本窗口
+      // 留着旧内容,一次键入就把「已清除」的数据整份写回 storage(review 修复)。
+      if (draftChange && (typeof draftChange.newValue === 'string' || draftChange.newValue === undefined)) {
+        const incoming = typeof draftChange.newValue === 'string' ? draftChange.newValue : '';
+        // 采纳条件(顺序即优先级):非 echo、本地无未落盘编辑、非导入中。
+        // 有 pending 时不采纳:本地更新,随后 flush 会写回并再广播,吞掉 pending 才是丢数据。
+        // 导入中不采纳:startImport 闭包依赖 md 一致性(blocks/历史都取自它)。
+        // **不看 hasFocus**(review 修复):onChanged 是边沿触发,「聚焦时拒收」的更新永远不会
+        // 再送达——A 窗口 blur-flush 的广播若晚于 B 获得焦点,B 会永远停在陈旧草稿上,
+        // 第一次键入就把 A 的整段编辑覆盖回去(正是 P0-2 要堵的丢法)。聚焦但无 pending
+        // = 本地已全部落盘,采纳外部新值是安全的;真正的并发编辑由 pending 闸门保护。
+        const adoptable =
+          incoming !== mdRef.current &&
+          pendingDraft.current === null &&
+          !importingRef.current;
+        if (adoptable) {
+          mdRef.current = incoming;
+          setMdState(incoming);
+          setCheckVisible(false);
+          setReportVisible(false);
+          setLastRunSnapshot(null); // 与 setMd 的清空逻辑保持一致(B4-6):外部值替换同样使旧报告失真
+          showToast(t.draftSynced);
+        }
+      }
+      const histChange = changes[HISTORY_KEY];
+      // 同上:undefined = 另一窗口 wipeAll 删除了 key,按空历史采纳。
+      if (histChange && histChange.newValue === undefined && historyRef.current.length > 0) {
+        historyRef.current = [];
+        setHistory([]);
+      }
+      if (histChange && Array.isArray(histChange.newValue)) {
+        const incoming = validateHistory(histChange.newValue);
+        const cur = historyRef.current;
+        // echo 判定:长度 + id 序列一致即本窗口刚写入的回声(条目不可变,只有增删)。
+        const same =
+          incoming.length === cur.length && incoming.every((it, i) => it.id === cur[i]?.id);
+        if (!same) {
+          historyRef.current = incoming;
+          setHistory(incoming);
+        }
+      }
+    };
+    chrome.storage.onChanged.addListener(handler);
+    return () => chrome.storage.onChanged.removeListener(handler);
+  }, [showToast, t.draftSynced]);
 
   const playSound = useCallback(() => {
     if (!opts.sound || opts.soundStyle === 'mute') return;
@@ -212,18 +392,44 @@ export function WorkspaceProvider({
       gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
       osc.connect(gain);
       gain.connect(ctx.destination);
+      // P2-22:用后即关——Chrome 对同时存活的 AudioContext 有硬上限,不 close 的话
+      // 多次导入攒够数量后新建会静默失败(不抛错、也不出声),音效开关看似开着却哑掉。
+      // suspended 守卫(review 修复):自动播放策略下(长导入后用户激活已过期)context 可能
+      // 生而 suspended——振荡器根本不会播,onended 永不触发,泄漏原样发生。suspended 直接
+      // 关掉放弃这次音效;再加 1s 兜底定时关,onended 无论如何丢失都不留活 context。
+      if (ctx.state === 'suspended') {
+        void ctx.close();
+        return;
+      }
       osc.start();
       osc.stop(ctx.currentTime + 0.4);
+      osc.onended = () => void ctx.close();
+      setTimeout(() => {
+        if (ctx.state !== 'closed') void ctx.close();
+      }, 1000);
     } catch {
       /* WebAudio 不可用则静默 */
     }
   }, [opts.sound, opts.soundStyle]);
 
   // ── 草稿动作 ──
+  // 手动保存 = 强制 flush 并如实汇报:此前无条件 toast「已保存」,写失败也谎报成功(P0-1)。
   const save = useCallback(() => {
-    void saveDraft(md);
-    showToast(t.savedToast);
-  }, [md, showToast, t.savedToast]);
+    pendingDraft.current = mdRef.current; // 即便无变更也强制写一次,让「保存」语义真实
+    void flushDraft().then((ok) => showToast(ok ? t.savedToast : t.errStorageWrite, ok ? undefined : 'error'));
+  }, [flushDraft, showToast, t.savedToast, t.errStorageWrite]);
+
+  // 常驻错误条上的自救出口:把当前草稿(读 ref,含未落盘的 pending 值)下载成 .md 文件。
+  const exportDraft = useCallback(() => {
+    try {
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+      downloadText(`markflow-draft-${stamp}.md`, mdRef.current, 'text/markdown');
+      showToast(t.draftExported);
+    } catch (err) {
+      console.error('[MarkFlow] draft export failed:', err);
+      showToast(t.errExportFail, 'error');
+    }
+  }, [showToast, t.draftExported, t.errExportFail]);
 
   const clear = useCallback(() => {
     if (!clearArm) {
@@ -259,29 +465,29 @@ export function WorkspaceProvider({
         if (md.trim() && incoming !== md) setPendingLoad(() => apply);
         else apply();
       };
+      // P2-24:读取失败(权限被拒/文件被移动等)此前无 onerror,拖拽高亮会永久卡住——
+      // 清 dragging 并如实提示。专用「文件读取失败」词条(review 修复):报「写入失败」会让
+      // 用户误以为是草稿持久化出了问题,实际坏的是拖进来的文件。
+      reader.onerror = () => {
+        setDragging(false);
+        console.error('[MarkFlow] file read failed:', reader.error);
+        showToast(`${t.errReadFail}: ${String(reader.error?.message ?? reader.error)}`, 'error');
+      };
       reader.readAsText(file);
     },
-    [md, setMd, showToast, t.importedToast],
+    [md, setMd, showToast, t.importedToast, t.errReadFail],
   );
 
   // ── 预检 ──
+  // P3 死代码清理:此前这里有 checkStep/`260ms × 5` 的逐步动画链,但 PreflightCard 只读
+  // checkVisible(见其组件,grep 全仓零消费 checkStep)——动画状态从未被任何 UI 渲染,
+  // 纯粹空转定时器。runCheck/closeCheck 本身保留(预检卡仍要开合),砍掉的只是这条死链。
   const runCheck = useCallback(() => {
     setCheckVisible(true);
-    setCheckStep(0);
-    let step = 0;
-    const tick = () => {
-      step += 1;
-      if (step > 5) return;
-      setCheckStep(step);
-      timers.current.check = setTimeout(tick, 260);
-    };
-    timers.current.check = setTimeout(tick, 260);
   }, []);
 
   const closeCheck = useCallback(() => {
-    if (timers.current.check) clearTimeout(timers.current.check);
     setCheckVisible(false);
-    setCheckStep(-1);
   }, []);
 
   // ── 导入 ──
@@ -316,12 +522,14 @@ export function WorkspaceProvider({
   ) => {
     // parseOpts 透传:面板计数须与本次实际写入用的同一套解析开关一致(否则关掉
     // obsidianImg/wikilink/taskList 后报告仍按默认开的口径统计,又是一次 UI 撒谎)。
-    const cap = capability(md, en, { obsidianImg: opts.obsidianImg, wikilink: opts.wikilink, taskList: opts.taskList });
+    const parseOptsSnapshot = { obsidianImg: opts.obsidianImg, wikilink: opts.wikilink, taskList: opts.taskList };
+    const cap = capability(md, en, parseOptsSnapshot);
     const ok = Math.max(0, blockCount - imageFail);
     const deg = cap.filter((c) => c.badge === 'warn').reduce((a, c) => a + c.count, 0);
     const now = new Date();
     const item: HistoryItem = {
-      id: now.getTime(),
+      // UUID 而非 Date.now():双窗口同毫秒导入会撞 number id(React key 冲突、删除连删两条)。
+      id: crypto.randomUUID(),
       title: firstTitle(md, en),
       date: `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')} ${now.toTimeString().slice(0, 5)}`,
       ok,
@@ -331,10 +539,17 @@ export function WorkspaceProvider({
       md,
       // 失败明细(序号/来源/阶段/原因)随记录持久化,供报告卡展示与事后排查。
       imageFailures,
+      // 解析开关快照(B4-6):随记录持久化,供历史回看按「当时口径」重算能力明细。
+      parseOpts: parseOptsSnapshot,
     };
 
     setImporting(false);
-    setReportVisible(opts.autoReport !== 'never');
+    // autoReport 三档如实生效(P1-10):此前只区分 never/非 never,「仅异常时」(默认值)形同 always。
+    const hasAnomaly = deg > 0 || imageFail > 0;
+    setReportVisible(opts.autoReport === 'always' || (opts.autoReport === 'anomaly' && hasAnomaly));
+    // B4-6(P2-25):报告卡的数据源在此钉死——与 reportVisible 同一刻写入,后续 md 编辑/opts
+    // 切换/history 删改都不会再影响报告卡已展示的内容(ReportCard 只读这份快照)。
+    setLastRunSnapshot({ md, parseOpts: parseOptsSnapshot, ok, deg, fail: imageFail, imageFailures });
 
     const limit = opts.histLimit === 'inf' ? Infinity : Number(opts.histLimit);
     // 读 historyRef.current(最新值)而非闭包 history:标题 ask 弹窗挂起期间用户可能已在记录页
@@ -375,14 +590,13 @@ export function WorkspaceProvider({
   }, []);
 
   const startImport = useCallback(
-    async (mode: ImportMode) => {
+    async (mode: ImportMode, pinnedTarget?: { tabId: number; articleId: string | null }) => {
       // 同步闸门优先于一切:极快双击时第二次调用在这里直接短路,
       // 不会重复触发下载阶段(在任何 await 之前完成拦截)。
       if (importingRef.current) return;
       importingRef.current = true;
       setImporting(true);
       setReportVisible(false);
-      setStageIdx(0);
       try {
         setStageLabel(t.stParse);
         setStagePct(40);
@@ -427,24 +641,30 @@ export function WorkspaceProvider({
           (coverSource !== null && classifyImageSource(coverSource) === 'local');
 
         // 远程图 / 封面 host 权限:必须在用户手势内、任何其它 await 之前(上面全同步)。
-        await requestRemoteImagePermissions(md, coverSource ? [coverSource] : []);
+        // 传**已解析的 blocks**(B3-4 / P1-7):权限申请的图片来源与实际上传的来源同一份,
+        // 不再走全文正则(`<>` 包裹的远程图曾被判 local → 该 origin 不申请 → 下载必被拒)。
+        await requestRemoteImagePermissions(blocks, coverSource ? [coverSource] : []);
 
-        // review B1:正文写入前解析目标 X 标签**一次**并全程钉死。放在权限申请(首个 await)
-        // 之后而非之前——权限申请必须是手势链首个 await(见 imagePermissions 注释),此处再解析
+        // review B1 + B2-1:正文写入前解析目标 X 标签**一次**并全程钉死。ask 流程传入
+        // pinnedTarget(writeX 探测时已钉的 tabId+articleId 双钥)则直接用——目标在弹窗
+        // 弹出**之前**就定死,挂起期间切 tab/切文章都写不到别处(articleId 由 injector
+        // 在 commit 前终验)。未传时(非 ask 路径)维持原逻辑:放在权限申请(首个 await)
+        // 之后解析——权限申请必须是手势链首个 await(见 imagePermissions 注释),此处再解析
         // 不消耗手势;且权限弹窗结束时焦点仍在当前 X 草稿,此刻定位即准。拿不到(切走了/非 X)
         // → 按 disconnected 提前返回,importing 由 finally 复位。
-        const pinnedTabId = await resolveTargetXTab();
+        const pinnedTabId = pinnedTarget?.tabId ?? (await resolveTargetXTab());
         if (pinnedTabId === null) {
-          showToast(importErrorText('disconnected', t));
+          showToast(importErrorText('disconnected', t), 'error');
           return;
         }
+        const expectedArticleId = pinnedTarget?.articleId ?? null;
 
         // 写入中(等待 content → injector 直写)
         setStageLabel(t.stBody);
         setStagePct(75);
         // 压缩参数:compress 开时传 { maxEdge, quality };关时 null(content 侧不压)。
         const compress = opts.compress ? { maxEdge: opts.maxEdge, quality: Number(opts.quality) } : null;
-        const res = await importToXTab(blocks, mode, coverSource, opts.scrollTop, compress, pinnedTabId);
+        const res = await importToXTab(blocks, mode, coverSource, opts.scrollTop, compress, pinnedTabId, expectedArticleId);
         if (res.ok) {
           setStagePct(100);
           // #7:所选 append 但引擎实际降级为 replace(编辑器为空)→ 明确提示,不静默。
@@ -490,11 +710,26 @@ export function WorkspaceProvider({
           finishImport(toastMsg, res.imageFail, res.blockCount, imageFailures);
         } else {
           // 失败:不写成功记录,以可读中文/英文提示错误(复位在 finally 统一处理)。
-          showToast(importErrorText(res.error, t));
+          // B2-2:提交后失败(committed)或通道超时(injector 可能仍在后台完成提交,content
+          // 无从得知)→ 用「正文可能已写入」文案族,阻止用户按「失败」直觉重试造成整篇重复;
+          // 并重探一次让状态条反映编辑器真实内容。
+          const maybeCommitted = res.committed === true || res.error === 'timeout';
+          if (maybeCommitted) {
+            showToast(t.errFailedButCommitted, 'error');
+            void refreshProbe();
+          } else if (res.error === 'article-switched') {
+            showToast(t.errArticleSwitched, 'error');
+          } else {
+            showToast(importErrorText(res.error, t), 'error');
+          }
+          // B5 的失败路径同步(review 修复):content 对「涉本地图的导入」**无论成败**都会清
+          // vault handle,此前只有成功分支校准文件夹 UI——失败后素材板仍显示「已连接」,
+          // 下次导入本地图静默找不到文件。失败也就地校准,UI 不撒谎。
+          if (usesLocalImage) void recalibrateFolders();
         }
       } catch (err) {
         // 解析异常(如超深嵌套导致栈溢出)等意外:兜底提示,不留残局。
-        showToast(`${t.errWriteFail}: ${String(err)}`);
+        showToast(`${t.errWriteFail}: ${String(err)}`, 'error');
       } finally {
         // 无论成功/失败/抛错,importing 一定复位——否则写入按钮会被永久禁用。
         // finishImport 已在成功路径把 importing 置 false,此处再置一次是幂等的。
@@ -507,7 +742,7 @@ export function WorkspaceProvider({
     // setCover/coverKeep/scrollTop/obsidianImg/wikilink…),逐列极易漏(漏了会 stale-closure
     // 读到旧值——切开关后不改 md 就点写入即失效)。setOpt 每次产生新 opts 引用,依赖整个 opts
     // 让任一设置切换都重建回调,正确且防再漏。
-    [md, en, t, opts, finishImport, showToast, askTitleConflict, recalibrateFolders],
+    [md, en, t, opts, finishImport, showToast, askTitleConflict, recalibrateFolders, refreshProbe],
   );
 
   const writeX = useCallback(async () => {
@@ -517,31 +752,55 @@ export function WorkspaceProvider({
       // 即时探一次拿新鲜 hasContent,而非依赖 useConnection 的 editorHasContent 快照。
       // 这几个 tab-API await 不消耗手势(仅 permissions.request 消耗),后续 startImport 里
       // 权限申请仍在手势窗口内(见其内注释)。
+      // B2-1:探测的同时拿到 {tabId, articleId} 双钥并钉死——此前 pinnedTabId 在用户点
+      // 「覆盖」**之后**才解析,确认弹窗挂起期间切到另一篇草稿 B,hasContent 检查的是 A、
+      // blockMap.clear() 砸的却是 B(B1 修过标题通道的同款竞态,正文通道当时没堵)。
       const fresh = await probeXTabContent();
       void refreshProbe(); // 同步刷新共享状态条,与写入决策使用同一真相
-      if (!fresh.connected) return; // 新鲜探测发现已断开 → 中止,不误写
+      if (!fresh.connected || fresh.tabId === null) {
+        // 新鲜探测发现已断开 → 中止,并明确告知(P2-20:此前静默 return,按钮「点了没反应」)。
+        showToast(importErrorText('disconnected', t), 'error');
+        return;
+      }
+      const pinned = { tabId: fresh.tabId, articleId: fresh.articleId };
       if (fresh.hasContent) {
+        pendingAskTarget.current = pinned; // 弹窗确认后透传给 startImport,取消时清掉
         setAskOverwrite(true);
         return;
       }
-      // 编辑器确为空 → 直接整体写入(与原空态行为一致:replace)。
-      void startImport('replace');
+      // 编辑器确为空 → 直接整体写入(与原空态行为一致:replace),沿用刚探测的目标。
+      void startImport('replace', pinned);
       return;
     }
-    // 非询问模式:按设置直接决定模式(总是追加 / 总是覆盖)。
+    // 非询问模式:按设置直接决定模式(总是追加 / 总是覆盖)。同样先探测钉死双钥
+    // (review 修复):此路径虽无确认弹窗,但 startImport 里的 host 权限申请是**无限期**
+    // 等用户决定的挂起窗口,期间切文章同样会「探 A 写 B」。probe 的 tab-API await 不消耗
+    // 手势,权限申请仍是 startImport 内手势链首个 await,约束不破坏。
     const mode: ImportMode = opts.onExisting === 'append' ? 'append' : 'replace';
-    void startImport(mode);
-  }, [md, importing, connected, opts.onExisting, startImport, refreshProbe]);
+    const freshDirect = await probeXTabContent();
+    if (!freshDirect.connected || freshDirect.tabId === null) {
+      showToast(importErrorText('disconnected', t), 'error');
+      return;
+    }
+    void startImport(mode, { tabId: freshDirect.tabId, articleId: freshDirect.articleId });
+  }, [md, importing, connected, opts.onExisting, startImport, refreshProbe, showToast, t]);
 
   const overwriteAppend = useCallback(() => {
     setAskOverwrite(false);
-    void startImport('append');
+    const pinned = pendingAskTarget.current;
+    pendingAskTarget.current = null;
+    void startImport('append', pinned ?? undefined);
   }, [startImport]);
   const overwriteConfirm = useCallback(() => {
     setAskOverwrite(false);
-    void startImport('replace');
+    const pinned = pendingAskTarget.current;
+    pendingAskTarget.current = null;
+    void startImport('replace', pinned ?? undefined);
   }, [startImport]);
-  const overwriteCancel = useCallback(() => setAskOverwrite(false), []);
+  const overwriteCancel = useCallback(() => {
+    setAskOverwrite(false);
+    pendingAskTarget.current = null; // 必须清:否则下一次写入可能误用陈旧目标
+  }, []);
   const titleOverwriteConfirm = useCallback(() => settleTitleAsk(true), [settleTitleAsk]);
   const titleOverwriteKeep = useCallback(() => settleTitleAsk(false), [settleTitleAsk]);
 
@@ -570,17 +829,26 @@ export function WorkspaceProvider({
   const loadCancel = useCallback(() => setPendingLoad(null), []);
   const copyHistoryItem = useCallback(
     (item: HistoryItem) => {
-      try {
-        void navigator.clipboard.writeText(item.md || '');
-      } catch {
-        /* 剪贴板不可用则静默 */
+      // P3:此前无条件 toast「已复制」,clipboard reject(权限被拒/非安全上下文等)也照样
+      // 谎报成功。改 promise 链——成功才提示成功,失败提示真实失败(error 型 toast,
+      // 专用「复制失败」词条,不误报成「写入失败」)。clipboard 本身可能整个不存在
+      // (非安全上下文/精简 webview,review 修复:直接点访问会同步 TypeError),先判存在。
+      if (!navigator.clipboard?.writeText) {
+        showToast(t.errCopyFail, 'error');
+        return;
       }
-      showToast(t.copiedToast);
+      navigator.clipboard.writeText(item.md || '').then(
+        () => showToast(t.copiedToast),
+        (err) => {
+          console.error('[MarkFlow] clipboard write failed:', err);
+          showToast(t.errCopyFail, 'error');
+        },
+      );
     },
-    [showToast, t.copiedToast],
+    [showToast, t.copiedToast, t.errWriteFail],
   );
   const deleteHistoryItem = useCallback(
-    (id: number) => commitHistory(history.filter((h) => h.id !== id)),
+    (id: string | number) => commitHistory(history.filter((h) => h.id !== id)),
     [history, commitHistory],
   );
   const clearHistory = useCallback(() => {
@@ -593,10 +861,37 @@ export function WorkspaceProvider({
     setHistClearArm(false);
     commitHistory([]);
   }, [histClearArm, commitHistory]);
-  const wipeAll = useCallback(() => {
-    commitHistory([]);
-    setMd('');
-  }, [commitHistory, setMd]);
+  // B4-4(P2-19):此前只清 history+draft 的内存态(commitHistory([])+setMd('')),设置与主题
+  // 仍留在 storage 里——与「删除全部草稿、记录与设置」的文案(见 settings/config.ts wipe 行)
+  // 不符。改为顺序 await 四个 store 的 remove*,全部落盘后再 reload——reload 是让 UI 与
+  // storage 重新对齐的唯一自然路径,不必再手动 commitHistory/setMd 更新内存态。
+  // 顺序而非并发:与 importBackup 的顺序执行同一考量,避免中途失败时不清楚删到哪一步。
+  const wipeAll = useCallback(async () => {
+    // 先掐死草稿持久化管线(review 修复):清防抖定时器与 pending,否则 reload 触发的
+    // pagehide flush 会把刚删掉的草稿原样写回 storage——「清除所有数据」变成静默无效。
+    // 内存态同步清空,双窗口经 onChanged 的 key 删除分支跟随。
+    if (persistTimer.current) {
+      clearTimeout(persistTimer.current);
+      persistTimer.current = undefined;
+    }
+    pendingDraft.current = null;
+    mdRef.current = '';
+    setMdState('');
+    historyRef.current = [];
+    setHistory([]);
+    try {
+      await removeDraft();
+      await removeHistory();
+      await removeOptions();
+      await removePrefs();
+      location.reload();
+    } catch (err) {
+      // 任一删除失败:不 reload(用户能看到提示),如实报错——此前静默吞掉,用户点了
+      // 「确认清除」却毫无反馈、数据可能只删了一半(review 修复)。
+      console.error('[MarkFlow] wipeAll failed:', err);
+      showToast(t.errWipeFail, 'error');
+    }
+  }, [showToast, t.errWipeFail]);
 
   const value = useMemo<WorkspaceValue>(
     () => ({
@@ -610,6 +905,8 @@ export function WorkspaceProvider({
       setMode,
       dragging,
       setDragging,
+      storageError,
+      exportDraft,
       save,
       clear,
       clearArm,
@@ -621,11 +918,9 @@ export function WorkspaceProvider({
       capOpen,
       toggleCap: () => setCapOpen((v) => !v),
       checkVisible,
-      checkStep,
       runCheck,
       closeCheck,
       importing,
-      stageIdx,
       stagePct,
       stageLabel,
       writeX,
@@ -640,6 +935,7 @@ export function WorkspaceProvider({
       editorHasContent,
       reportVisible,
       closeReport: () => setReportVisible(false),
+      lastRunSnapshot,
       celebrating,
       history,
       histQ,
@@ -652,12 +948,12 @@ export function WorkspaceProvider({
       wipeAll,
     }),
     [
-      tab, toast, showToast, md, setMd, mode, dragging, save, clear, clearArm, loadSample, readFile,
+      tab, toast, showToast, md, setMd, mode, dragging, storageError, exportDraft, save, clear, clearArm, loadSample, readFile,
       pendingLoad, loadConfirm, loadCancel,
-      capOpen, checkVisible, checkStep, runCheck, closeCheck, importing, stageIdx, stagePct, stageLabel,
+      capOpen, checkVisible, runCheck, closeCheck, importing, stagePct, stageLabel,
       writeX, askOverwrite, overwriteAppend, overwriteConfirm, overwriteCancel,
       askTitleOverwrite, pendingTitle, titleOverwriteConfirm, titleOverwriteKeep,
-      editorHasContent, reportVisible, celebrating, history, histQ, loadHistoryItem, copyHistoryItem,
+      editorHasContent, reportVisible, lastRunSnapshot, celebrating, history, histQ, loadHistoryItem, copyHistoryItem,
       deleteHistoryItem, clearHistory, histClearArm, wipeAll,
     ],
   );

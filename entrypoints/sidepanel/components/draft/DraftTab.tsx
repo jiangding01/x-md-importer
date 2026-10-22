@@ -16,7 +16,7 @@ const X_ARTICLES_URL = 'https://x.com/compose/articles';
 
 export function DraftTab() {
   const { t } = useI18n();
-  const { readFile } = useWorkspace();
+  const { readFile, storageError, exportDraft } = useWorkspace();
   const { connected } = useConnection();
   const { status } = useProbe();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -47,6 +47,32 @@ export function DraftTab() {
       />
 
       <div style={{ flex: 1, overflow: 'auto', minHeight: 0, paddingBottom: 8 }}>
+        {storageError && (
+          <div
+            role="alert"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 11,
+              margin: '12px 18px 0',
+              padding: '12px 14px',
+              border: '1px solid var(--dgr)',
+              borderRadius: 'var(--rEl)',
+              background: 'var(--p2)',
+            }}
+          >
+            <span style={{ flex: 1, font: '400 11px/1.5 var(--fUI)', color: 'var(--dgr)' }}>
+              {t.storageErrBanner}
+            </span>
+            <button
+              className="mf-btn"
+              onClick={exportDraft}
+              style={{ flex: 'none', background: 'var(--btnBg)', color: 'var(--btnFg)', padding: '6px 13px', borderRadius: 'var(--btnR)', font: '500 11px var(--fUI)' }}
+            >
+              {t.exportDraftBtn}
+            </button>
+          </div>
+        )}
         {!connected && (
           <div
             style={{

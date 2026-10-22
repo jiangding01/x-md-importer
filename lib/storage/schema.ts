@@ -39,9 +39,13 @@ export const defaultPrefs: Prefs = {
   lang: 'auto',
 };
 
-/** 一条导入历史。 */
+/**
+ * 一条导入历史。
+ * id:新记录用 `crypto.randomUUID()`(string,双窗口同毫秒导入不再撞 key);
+ * 旧记录是 `Date.now()`(number),读入照收——两种形状都是合法主键。
+ */
 export interface HistoryItem {
-  id: number;
+  id: string | number;
   title: string;
   date: string;
   ok: number;
@@ -50,6 +54,12 @@ export interface HistoryItem {
   md: string;
   /** 图片失败明细(fail=0 或旧记录时缺省)——存进历史供事后排查,不只当次展示。 */
   imageFailures?: ImageFailure[];
+  /**
+   * 本次导入实际使用的解析开关快照(B4-6/P2-25):供历史回看按「当时口径」重算能力明细。
+   * 旧记录 / 备份缺省时为 undefined——消费方按「无快照」处理,不臆测一个不属实的默认值。
+   * 注:taskList 是 'symbol'|'plain' 枚举(与 Options.taskList 同源),不是布尔。
+   */
+  parseOpts?: { obsidianImg: boolean; wikilink: boolean; taskList: 'symbol' | 'plain' };
 }
 
 // ---------------------------------------------------------------------------
@@ -171,17 +181,37 @@ export function validateImageFailures(raw: unknown): ImageFailure[] | undefined 
 }
 
 /**
+ * 校验 parseOpts 快照(B4-6):三个字段全部合法才保留,任一非法则整体丢弃(undefined)——
+ * 与 validateImageFailures 同一「宁缺毋滥」口径:拼一个不属实的解析开关比「不展示明细」
+ * 更容易误导用户(用户会以为「当时就是这个开关」)。obsidianImg/wikilink 是 pickBool 风格的
+ * 布尔校验;taskList 是 'symbol'|'plain' 枚举(非布尔),按同一严格 = 精确匹配处理。
+ */
+function pickParseOpts(v: unknown): HistoryItem['parseOpts'] {
+  if (!isObj(v)) return undefined;
+  // pickBool 只在类型合法时才有意义地"保留原值"——这里靠 typeof 直接判定合法性
+  // (而非借 pickBool 的默认值兜底),因为任一字段非法就要整体丢弃,不是逐字段回落默认。
+  if (typeof v.obsidianImg !== 'boolean' || typeof v.wikilink !== 'boolean') return undefined;
+  if (v.taskList !== 'symbol' && v.taskList !== 'plain') return undefined;
+  return { obsidianImg: v.obsidianImg, wikilink: v.wikilink, taskList: v.taskList };
+}
+
+/**
  * 校验历史记录:逐项校验必需字段,合格项规整为标准 HistoryItem,不合格的项**丢弃**。
- * id(number)是主键 / React key / 删除依据,缺失即无法安全承载 → 丢弃;title/md/date/数值
- * 缺失则补默认(不丢整项),保证下游 toLowerCase / 渲染不再抛。
+ * id 是主键 / React key / 删除依据,缺失即无法安全承载 → 丢弃;合法形状 = 非空 string
+ * (新版 UUID)或有限 number(旧版时间戳)。title/md/date/数值缺失则补默认(不丢整项),
+ * 保证下游 toLowerCase / 渲染不再抛。
  */
 export function validateHistory(raw: unknown): HistoryItem[] {
   if (!Array.isArray(raw)) return [];
   const out: HistoryItem[] = [];
   for (const it of raw) {
-    if (!isObj(it) || typeof it.id !== 'number' || !Number.isFinite(it.id)) continue;
+    if (!isObj(it)) continue;
+    const idOk =
+      (typeof it.id === 'string' && it.id.length > 0 && it.id.length <= 64) ||
+      (typeof it.id === 'number' && Number.isFinite(it.id));
+    if (!idOk) continue;
     out.push({
-      id: it.id,
+      id: it.id as string | number,
       title: typeof it.title === 'string' ? it.title : '',
       date: typeof it.date === 'string' ? it.date : '',
       ok: pickNum(it.ok, 0),
@@ -189,6 +219,7 @@ export function validateHistory(raw: unknown): HistoryItem[] {
       fail: pickNum(it.fail, 0),
       md: typeof it.md === 'string' ? it.md : '',
       imageFailures: validateImageFailures(it.imageFailures),
+      parseOpts: pickParseOpts(it.parseOpts),
     });
   }
   return out;

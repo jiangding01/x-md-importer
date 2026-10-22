@@ -232,7 +232,16 @@ export type ImportResult =
       /** 图片失败明细(imageFail=0 时缺省)。可选字段,旧 injector 不回传时 UI 自然不展示。 */
       imageFailures?: ImageFailure[];
     }
-  | { ok: false; error: string };
+  | {
+      ok: false;
+      error: string;
+      /**
+       * 正文是否已经过主 onChange 提交(B2-2):verify 不达标/图片阶段异常时旧内容已清、
+       * 新内容已(部分)落地,与「提交前失败」必须区分——否则用户看到「失败」就重试,
+       * append 整篇重复、图片重复上传。UI 据此提示「正文可能已写入,请先检查再重试」。
+       */
+      committed?: boolean;
+    };
 
 /**
  * 标题冲突策略(编辑器已有非空标题时):overwrite 强制覆盖;keep 保留原标题、跳过设置。
@@ -263,6 +272,8 @@ export type IsoMessage =
       images: PreparedImage[];
       /** 封面图 File(已在 content 准备好);null=不设封面。injector 设到 X 封面 fileInput。 */
       cover: File | null;
+      /** 期望的目标文章 id(B2-1,见 RuntimeRequest 同名字段);缺省/null=不校验。 */
+      expectedArticleId?: string | null;
     }
   | { source: IsoSource; kind: 'set-title'; nonce: string; id: string; title: string; conflict: TitleConflict };
 
@@ -309,6 +320,12 @@ export type RuntimeRequest =
       scrollTop?: boolean;
       /** 图片压缩参数(对应设置 compress/maxEdge/quality);null/缺省=不压。content 侧压所有来源的 File。 */
       compress?: { maxEdge: string; quality: number } | null;
+      /**
+       * 期望的目标文章 id(B2-1 双钥):ask 弹窗挂起期间用户可能在**同一 tab** 内 SPA 切到
+       * 另一篇草稿(tabId 不变,钉 tab 挡不住)。injector 在触碰编辑器前比对当前 articleId,
+       * 不符即拒写(error 'article-switched')。缺省/null=不校验(向后兼容旧调用方)。
+       */
+      expectedArticleId?: string | null;
     }
   | { type: typeof SET_TITLE_REQUEST_TYPE; title: string; conflict: TitleConflict }
   // forcePick=true 强制重新 showDirectoryPicker 选文件夹(「更换」);缺省/false 时若存量 handle
@@ -347,7 +364,12 @@ export type ImportResponse =
       /** 图片失败明细(与 ImportResult 同源透传,imageFail=0 时缺省)。 */
       imageFailures?: ImageFailure[];
     }
-  | { ok: false; error: 'no-injector' | 'timeout' | string };
+  | {
+      ok: false;
+      error: 'no-injector' | 'timeout' | string;
+      /** 与 ImportResult 同源透传(B2-2);通道层 timeout 时缺省(content 无从得知是否已提交)。 */
+      committed?: boolean;
+    };
 
 /** content → sidepanel 的标题设置应答:透传 SetTitleResult,叠加通道层错误。 */
 export type SetTitleResponse =
@@ -371,6 +393,7 @@ export function isImportRequest(msg: unknown): msg is {
   coverSource?: string | null;
   scrollTop?: boolean;
   compress?: { maxEdge: string; quality: number } | null;
+  expectedArticleId?: string | null;
 } {
   return (
     typeof msg === 'object' &&

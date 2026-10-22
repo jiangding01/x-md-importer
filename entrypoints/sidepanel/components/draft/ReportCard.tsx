@@ -1,7 +1,6 @@
 import { useMemo, type CSSProperties } from 'react';
 import { useI18n } from '@/lib/i18n/useI18n';
 import { useWorkspace } from '@/lib/workspace/WorkspaceProvider';
-import { useSettings } from '@/lib/settings/SettingsProvider';
 import { capability } from '@/lib/markdown/capability';
 import type { Dict } from '@/lib/i18n/dict';
 import type { ImageFailReason } from '@/lib/bridge/protocol';
@@ -43,22 +42,23 @@ const card: CSSProperties = {
 
 export function ReportCard() {
   const { t, lang } = useI18n();
-  const { reportVisible, closeReport, md, history } = useWorkspace();
-  const { opts } = useSettings();
+  const { reportVisible, closeReport, lastRunSnapshot } = useWorkspace();
   const en = lang === 'en';
-  const lastRun = history[0];
 
+  // B4-6(P2-25):明细(能力映射列表)与汇总(ok/deg/fail/imageFailures)统一读同一份
+  // lastRunSnapshot——导入收尾时钉死的不可变快照,不是当前 md/当前设置(会随后续编辑/切换
+  // 开关跳变),也不是 history[0](可被用户在「记录」页删除/清空,报告卡展开期间会突然
+  // 失真)。此前明细读当前 md/opts、汇总读 history[0],二者数据源不一致正是 P2-25 的成因。
   // review B6-UI:useMemo 缓存 capability 解析(须在 return 之前,遵守 Hooks 规则);
   // 解析抛错由 App 层 ErrorBoundary 兜底。
-  // 传入 parseOpts:报告须复盘「本次实际写入用的解析开关」,与面板同理避免统计口径漂移。
   const items = useMemo(
-    () => capability(md, en, { obsidianImg: opts.obsidianImg, wikilink: opts.wikilink, taskList: opts.taskList }),
-    [md, en, opts.obsidianImg, opts.wikilink, opts.taskList],
+    () => (lastRunSnapshot ? capability(lastRunSnapshot.md, en, lastRunSnapshot.parseOpts) : []),
+    [lastRunSnapshot, en],
   );
 
-  if (!reportVisible || !lastRun) return null;
+  if (!reportVisible || !lastRunSnapshot) return null;
 
-  const summary = `${lastRun.ok} ${t.rOk} · ${lastRun.deg} ${t.rDeg} · ${lastRun.fail} ${t.rFail}`;
+  const summary = `${lastRunSnapshot.ok} ${t.rOk} · ${lastRunSnapshot.deg} ${t.rDeg} · ${lastRunSnapshot.fail} ${t.rFail}`;
 
   return (
     <div style={card}>
@@ -83,10 +83,10 @@ export function ReportCard() {
           </span>
         </div>
       ))}
-      {lastRun.imageFailures && lastRun.imageFailures.length > 0 && (
+      {lastRunSnapshot.imageFailures && lastRunSnapshot.imageFailures.length > 0 && (
         <div style={{ borderTop: '1px solid var(--lsoft)', padding: '8px 13px 10px', background: 'color-mix(in oklab,var(--dgr),transparent 95%)' }}>
           <div style={{ font: '600 10.5px var(--fUI)', color: 'var(--dgr)', marginBottom: 6 }}>{t.imgFailTitle}</div>
-          {lastRun.imageFailures.map((f, i) => (
+          {lastRunSnapshot.imageFailures.map((f, i) => (
             // key 用数组位置:index 语义是文档序号,坏备份可能重复,不适合当 React key。
             <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '4px 0' }}>
               <span style={{ font: '500 10.5px var(--fUI)', color: 'var(--ink)' }}>

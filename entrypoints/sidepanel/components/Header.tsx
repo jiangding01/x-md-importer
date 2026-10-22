@@ -14,7 +14,9 @@ const logo: CSSProperties = {
   height: 30,
   borderRadius: 9,
   background: 'var(--ink)',
-  color: 'var(--p)',
+  // P2-30:玻璃主题下 --p 是半透明面板色,当前景文字色会被 --ink 底透出,对比度不足——
+  // 改用不透明的 --pSolid(其余主题与 --p 同值,视觉零变化)。
+  color: 'var(--pSolid)',
   display: 'grid',
   placeItems: 'center',
   font: "700 14px var(--fDisp)",
@@ -99,7 +101,7 @@ export function Header() {
         <button
           className="mf-btn mf-hover-soft"
           onClick={toggleTheme}
-          aria-label="toggle theme"
+          aria-label={t.ariaToggleTheme}
           style={{
             width: 27,
             height: 27,

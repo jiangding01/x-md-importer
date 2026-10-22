@@ -1,9 +1,9 @@
-// lib/markdown/capability.ts 单测:capability / images / firstTitle。
+// lib/markdown/capability.ts 单测:capability / firstTitle。
 // capability() 基于 parseMarkdown 的块级产出统计(而非独立正则),本文件重点覆盖
 // 模块注释中提到的历史回归点。测试按当前实际行为编写;若发现疑似生产 bug,
 // 以注释标注(不修改生产代码),并在最终报告汇总。
 import { describe, expect, it } from 'vitest';
-import { capability, images, firstTitle } from './capability';
+import { capability, firstTitle } from './capability';
 import { parseMarkdown } from './parser';
 import { extractTitle } from './frontmatter';
 
@@ -146,6 +146,13 @@ describe('capability · 其余块类型', () => {
   });
 });
 
+describe('capability · 随 parser 口径自动跟随(B3-11)', () => {
+  it('软折行段落里的 `2024. ` 行不再虚增列表计数', () => {
+    const md = '那年冬天特别冷,\n2024. 冬天的第一场雪来得很晚。';
+    expect(find(capability(md, false), '列表')).toBeUndefined();
+  });
+});
+
 describe('capability · 空文档与 count=0 项', () => {
   it('空文档 → 空数组', () => {
     expect(capability('', false)).toEqual([]);
@@ -163,31 +170,8 @@ describe('capability · 空文档与 count=0 项', () => {
   });
 });
 
-describe('images()', () => {
-  it('空文档 → 空数组', () => {
-    expect(images('')).toEqual([]);
-  });
-
-  it('识别独占行与行内图片(与 capability 的 imageCount 不同,images() 不区分是否独占行)', () => {
-    // 疑似设计差异(非必然 bug,记录当前行为):capability() 的 imageCount 基于 parseMarkdown
-    // 的块级产出,仅独占行图片计数;而 images() 用独立正则扫描全文,行内图片也会被收进来。
-    // 两者语义不同,消费方若混用两个数字可能产生"图片计数对不上"的困惑。
-    const md = '![cover](x.png)\n\n正文里还有 ![inline](y.png) 图片。';
-    const result = images(md);
-    expect(result).toHaveLength(2);
-    expect(result.map((r) => r.src)).toEqual(['x.png', 'y.png']);
-  });
-
-  it('local / remote / data 三种 kind 分类', () => {
-    const md = '![a](local.png) ![b](https://example.com/b.png) ![c](data:image/png;base64,AAAA)';
-    const result = images(md);
-    expect(result).toEqual([
-      { src: 'local.png', kind: 'local' },
-      { src: 'https://example.com/b.png', kind: 'remote' },
-      { src: 'data:image/png;base64,AAAA', kind: 'data' },
-    ]);
-  });
-});
+// B3-4(P1-7):`images()` 已删除(全文正则口径与真实写入不一致),其用例随之移除;
+// 权限申请侧的替代覆盖见 lib/bridge/imagePermissions.test.ts。
 
 describe('capability · 多级列表(depth > 0)', () => {
   it('嵌套一层的列表项计入多级列表,顶层项不计', () => {
@@ -391,5 +375,23 @@ describe('firstTitle()', () => {
     const md = '```\n# fake title in code\n```\n\n# Real Title\n';
     expect(firstTitle(md, false)).toBe('Real Title');
     expect(extractTitle(md)).toEqual({ title: 'Real Title', source: 'h1' }); // 与 frontmatter.ts 一致
+  });
+
+  // B3-12(P2-14):历史条目标题必须与「实际导入的标题」同源,否则 frontmatter-only /
+  // setext 标题的文档在记录页显示「未命名草稿」,而 X 上的标题是对的(UI 撒谎)。
+  it('frontmatter title 的文档:历史标题与 extractTitle 一致,不再回落默认文案', () => {
+    const md = '---\ntitle: FM 标题\n---\n\n正文没有 H1';
+    expect(firstTitle(md, false)).toBe('FM 标题');
+    expect(extractTitle(md)?.title).toBe('FM 标题');
+  });
+
+  it('setext 一级标题的文档:历史标题取到该标题', () => {
+    const md = '我的 setext 标题\n===\n\n正文';
+    expect(firstTitle(md, false)).toBe('我的 setext 标题');
+  });
+
+  it('frontmatter title 优先于正文 H1(与 extractTitle 同序)', () => {
+    const md = '---\ntitle: FM\n---\n\n# 正文 H1\n';
+    expect(firstTitle(md, false)).toBe('FM');
   });
 });
