@@ -1,6 +1,7 @@
 // protocol.ts 纯函数 + 运行时守卫单测。
 import { describe, expect, it } from 'vitest';
 import {
+  ARTICLE_SWITCHED_ERROR,
   classifyImageSource,
   IMAGE_FAIL_REASONS,
   isImportRequest,
@@ -8,9 +9,13 @@ import {
   isSetTitleRequest,
   IMPORT_REQUEST_TYPE,
   messageScope,
+  NOT_ARTICLE_EDITOR_ERROR,
   PROBE_REQUEST_TYPE,
   SET_TITLE_REQUEST_TYPE,
   truncateForReport,
+  type ImportResult,
+  type ProbeResult,
+  type SetTitleResult,
 } from './protocol';
 
 describe('classifyImageSource', () => {
@@ -212,10 +217,64 @@ describe('ImportResult / ImportResponse 的 committed 契约(B2-2)', () => {
     } satisfies import('./protocol').ImportResult;
     const channelFail = {
       ok: false,
-      error: 'article-switched',
+      error: ARTICLE_SWITCHED_ERROR,
       committed: false,
     } satisfies import('./protocol').ImportResponse;
     expect(engineFail.committed).toBe(true);
     expect(channelFail.committed).toBe(false);
+  });
+});
+
+describe('ProbeResult 契约(B3 isArticleEditor 必填 / B5 error 可选)', () => {
+  it('isArticleEditor 为必填布尔(编译期契约:缺字段此文件即红)', () => {
+    const ready = {
+      hasEditor: true,
+      hasDraftNode: true,
+      hasOnFilesAdded: true,
+      articleId: null, // 新建文章页 articleId 为 null,但仍是文章编辑路由
+      hasContent: false,
+      isArticleEditor: true,
+    } satisfies ProbeResult;
+    expect(ready.isArticleEditor).toBe(true);
+  });
+
+  it('探针异常时可携带 error,且三灯按未就绪填 false', () => {
+    const failed = {
+      hasEditor: false,
+      hasDraftNode: false,
+      hasOnFilesAdded: false,
+      articleId: null,
+      hasContent: false,
+      isArticleEditor: true,
+      error: 'TypeError: getCurrentContent is not a function',
+    } satisfies ProbeResult;
+    expect(failed.error).toContain('getCurrentContent');
+    expect(failed.hasDraftNode).toBe(false);
+  });
+});
+
+describe('注入引擎具名错误码(B3)', () => {
+  it('常量值与 UI 映射使用的字面量一致', () => {
+    expect(NOT_ARTICLE_EDITOR_ERROR).toBe('not-article-editor');
+    expect(ARTICLE_SWITCHED_ERROR).toBe('article-switched');
+  });
+
+  it('ImportResult / SetTitleResult 的失败分支可携带 not-article-editor(编译期契约)', () => {
+    const importFail = { ok: false, error: NOT_ARTICLE_EDITOR_ERROR } satisfies ImportResult;
+    const titleFail = { ok: false, error: NOT_ARTICLE_EDITOR_ERROR } satisfies SetTitleResult;
+    expect(importFail.error).toBe('not-article-editor');
+    expect(titleFail.error).toBe('not-article-editor');
+  });
+
+  it('ImportResult 成功分支可携带 settleTimeouts 诊断(B1,可选)', () => {
+    const ok = {
+      ok: true,
+      blockCount: 3,
+      effectiveMode: 'replace',
+      imageOk: 1,
+      imageFail: 0,
+      settleTimeouts: ['relocate-media#0'],
+    } satisfies ImportResult;
+    expect(ok.settleTimeouts).toHaveLength(1);
   });
 });

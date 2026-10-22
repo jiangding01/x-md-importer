@@ -1,5 +1,7 @@
 import {
+  ARTICLE_SWITCHED_ERROR,
   MAIN_SOURCE,
+  NOT_ARTICLE_EDITOR_ERROR,
   isIsoMessage,
   truncateForReport,
   type ImageFailReason,
@@ -129,6 +131,8 @@ interface DraftContentState {
 /** Draft.js SelectionState 实例(Immutable Record:merge 返回新实例)。 */
 interface DraftSelection {
   merge(props: Record<string, unknown>): DraftSelection;
+  /** 锚点所在块 key(settle 判定「光标已钉到 marker 块」用;调用处先 typeof 守卫,X 包装可能缺)。 */
+  getAnchorKey?(): string;
 }
 
 /** Draft.js SelectionState 类(从 editorState.getSelection().constructor 取得)。 */
@@ -156,7 +160,7 @@ export default defineUnlistedScript(() => {
   const INSTANCE_KEY = Symbol.for('markflow.injector.v1');
   const w = window as unknown as Record<symbol, boolean | undefined>;
   if (w[INSTANCE_KEY]) {
-    console.info('[MarkFlow] injector 已有存活实例,跳过重复初始化');
+    if (import.meta.env.DEV) console.info('[MarkFlow] injector 已有存活实例,跳过重复初始化');
     return;
   }
   w[INSTANCE_KEY] = true;
@@ -277,23 +281,49 @@ export default defineUnlistedScript(() => {
     return m?.[1] ?? null;
   };
 
-  /** 执行三灯探针 + 文章 id,组装 ProbeResult。 */
+  /**
+   * 当前页是否为 X 文章编辑路由(B3)。文章列表 / 新建 / 编辑页 URL 均以 `/compose/articles`
+   * 为前缀(docs/技术方案设计.md §入口 实测)。推文 compose 弹窗(`/compose/post`)、私信框等
+   * 同样是 Draft.js 且尺寸达标,三灯探针会误判「可写」——写入/设标题入口与 connected 判定
+   * 都以此为闸门。不能用 articleId:新建文章页 articleId 本就为 null。
+   */
+  const isArticleEditorRoute = (): boolean => location.pathname.startsWith('/compose/articles');
+
+  /**
+   * 执行三灯探针 + 文章 id + 路由判定,组装 ProbeResult。
+   * B5:整体 try/catch——X 改版导致 `getCurrentContent` 不是函数等异常此前会让 promise reject、
+   * `probe-result` 永不发出,content 只见 timeout;现在异常时回「三灯全灭 + error 诊断串」。
+   */
   const runProbe = (): ProbeResult => {
-    const hasEditor = findEditorElement() !== null;
-    const draftNode = findDraftStateNode();
-    const hasDraftNode = draftNode !== null;
-    const hasOnFilesAdded = findOnFilesAdded() !== null;
-    // hasContent:遍历 blockMap 任一块 text 非空即为 true;拿不到 draftNode 时恒 false。
-    let hasContent = false;
-    if (draftNode) {
-      readEditorState(draftNode)
-        .getCurrentContent()
-        .getBlockMap()
-        .forEach((block) => {
-          if (block.getText().length > 0) hasContent = true;
-        });
+    const isArticleEditor = isArticleEditorRoute();
+    try {
+      const hasEditor = findEditorElement() !== null;
+      const draftNode = findDraftStateNode();
+      const hasDraftNode = draftNode !== null;
+      const hasOnFilesAdded = findOnFilesAdded() !== null;
+      // hasContent:遍历 blockMap 任一块 text 非空即为 true;拿不到 draftNode 时恒 false。
+      let hasContent = false;
+      if (draftNode) {
+        readEditorState(draftNode)
+          .getCurrentContent()
+          .getBlockMap()
+          .forEach((block) => {
+            if (block.getText().length > 0) hasContent = true;
+          });
+      }
+      return { hasEditor, hasDraftNode, hasOnFilesAdded, articleId: getArticleId(), hasContent, isArticleEditor };
+    } catch (err) {
+      console.warn('[MarkFlow] 探针异常', err);
+      return {
+        hasEditor: false,
+        hasDraftNode: false,
+        hasOnFilesAdded: false,
+        articleId: null,
+        hasContent: false,
+        isArticleEditor,
+        error: String(err),
+      };
     }
-    return { hasEditor, hasDraftNode, hasOnFilesAdded, articleId: getArticleId(), hasContent };
   };
 
   // -------------------------------------------------------------------------
@@ -306,6 +336,50 @@ export default defineUnlistedScript(() => {
   /** 从 draftNode 上取 Draft EditorState 实例(受控收口)。 */
   const readEditorState = (node: FiberStateNode): DraftEditorState =>
     node.props?.editorState as DraftEditorState;
+
+  /**
+   * B1 诊断账本:本次 runImport 中 settle 超时的阶段名(随 ImportResult.settleTimeouts 回传)。
+   * 模块级而非逐层传参——写入由 importInFlight 串行化,同一时刻只有一次 runImport 在用它;
+   * runImport 入口清空。
+   */
+  let settleTimeouts: string[] = [];
+
+  /**
+   * 等待 React 提交(B1 核心)。`onChange(ns)` 只是把新 state 交给 X 的 setState,
+   * `stateNode.props.editorState` 要等 React 重渲染才更新;此前「读 props → 改 → onChange」
+   * 连做两轮、中间不等待,第二轮读到的是**陈旧** state,会把第一轮的改动整体回滚(≥2 图且
+   * 非最后一张失败时:写回的原文被回滚、marker 重现、再被 sweepMarkers 整块删掉)。
+   * xposter §9「所有 sleep 都是等待 React 提交」的节奏控制,这里换成**按预期状态轮询**。
+   *
+   * 每 ~50ms 重新 findDraftStateNode()(React 重渲染后旧 stateNode 的 editorState 已过期,
+   * 找不到时退回传入的 node)并用 `expect(content, editorState)` 判定预期是否已落盘;
+   * **不用 `props.editorState === ns` 恒等判定**——X 的 onChange 可能包装/派生 state,恒等可能
+   * 永不成立。超时返回 false(不抛、不中断导入):记 warn + 账本,调用方继续走降级/清扫。
+   */
+  const settle = async (
+    stageName: string,
+    node: FiberStateNode | null,
+    expect: (content: DraftContentState, editorState: DraftEditorState) => boolean,
+    timeoutMs = 1500,
+  ): Promise<boolean> => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const current = findDraftStateNode() ?? node;
+      if (current) {
+        try {
+          const es = readEditorState(current);
+          if (es && expect(es.getCurrentContent(), es)) return true;
+        } catch {
+          /* 中间态读取抛错:视为尚未提交,下一轮再试 */
+        }
+      }
+      if (Date.now() >= deadline) break;
+      await delay(50);
+    }
+    console.warn(`[MarkFlow] settle timeout: ${stageName}`);
+    settleTimeouts.push(stageName);
+    return false;
+  };
 
   /**
    * 遍历 blockMap 各块的 characterList,找出第一个带 `set`/`getStyle` 方法的字符实例作为样本。
@@ -350,8 +424,12 @@ export default defineUnlistedScript(() => {
     return hit;
   };
 
-  /** 把光标钉到 marker 块起始——X 的 onFilesAdded 会把 MEDIA 块插到光标处。 */
-  const placeSelectionAtMarker = (node: FiberStateNode, marker: string): boolean => {
+  /**
+   * 把光标钉到 marker 块起始——X 的 onFilesAdded 会把 MEDIA 块插到光标处。
+   * 提交后 settle 等 selection 的 anchorKey 指向 marker 块(B1);页面 SelectionState 缺
+   * getAnchorKey 时无法从 state 判定,退化为固定 delay(250)。
+   */
+  const placeSelectionAtMarker = async (node: FiberStateNode, marker: string): Promise<boolean> => {
     const es = readEditorState(node);
     const loc = findMarkerBlock(es.getCurrentContent(), marker);
     if (!loc) return false;
@@ -359,6 +437,14 @@ export default defineUnlistedScript(() => {
     const ESStatic = es.constructor as unknown as DraftEditorStateStatic;
     const sel = SelStatic.createEmpty(loc.blockKey).merge({ anchorOffset: 0, focusOffset: 0 });
     (node.props?.onChange as (s: DraftEditorState) => void)(ESStatic.forceSelection(es, sel));
+    if (typeof sel.getAnchorKey === 'function') {
+      await settle('place-selection', node, (_c, state) => {
+        const s = state.getSelection();
+        return typeof s.getAnchorKey === 'function' && s.getAnchorKey() === loc.blockKey;
+      });
+    } else {
+      await delay(250);
+    }
     return true;
   };
 
@@ -414,6 +500,188 @@ export default defineUnlistedScript(() => {
   const PENDING_MIN_AGE_MS = 20_000;
   const PENDING_CAP_MS = 32_000;
 
+
+  // -------------------------------------------------------------------------
+  // B2 晚到追回 —— 图 k 超时降级(写回原文)后,X 的上传并未取消;k 的 MEDIA 若在图 k+1 的
+  // 等待期才插入,旧实现会把它当成 k+1 的结果归位到 marker k+1,此后逐张错位、末张成孤儿。
+  // 现在登记每张超时图的「原文写回位置」,轮询发现**来历不明的已确认 MEDIA** 时先按 FIFO
+  // 还给最早超时的图:删掉其原文、MEDIA 归位到该处,再继续等本图自己的 MEDIA。
+  // -------------------------------------------------------------------------
+
+  /**
+   * 一张超时降级、等待晚到 MEDIA 的图。
+   * - fallbackKey:replaceMarkerWithText 写回原文所在块 key(块 merge 保 key)。定位时还要求
+   *   该块文本仍含 fallbackText;不满足(X 重建了块 key)则退回「整块文本 === fallbackText」搜索。
+   * - pendingKey:超时那刻已出现但未确认(无 mediaId)的 MEDIA 块 key。它已在后续图的 before
+   *   快照内、不会被误当新块;只按 key 精确等它拿到 mediaId,不参与 FIFO——除非该块消失
+   *   (X 可能换新 key 落定),此时退回 FIFO。
+   */
+  type LateEntry = {
+    imageIndex: number;
+    fallbackKey: string | null;
+    fallbackText: string;
+    pendingKey: string | null;
+  };
+  /** 待追回队列(按超时先后 = FIFO)。模块级同 settleTimeouts:importInFlight 串行化,runImport 入口清零。 */
+  let pendingLate: LateEntry[] = [];
+  /** 已追回的图片下标(runImport 收尾据此 imageOk++ 并移除对应 upload-timeout 明细)。 */
+  let lateRecovered: number[] = [];
+  /**
+   * 已有归属的 MEDIA 块 key:图片阶段开始时正文已有的 + 每张图 waitForNewMedia 认领的(含未确认)
+   * + 已追回的。末轮追回(无 before 快照可用)以此排除「有主」的块。
+   */
+  let claimedMedia = new Set<string>();
+  /**
+   * 追回会**写正文**(此前 waitForNewMedia 只读),必须服从 runImport 的切文章闸门:
+   * runImport 入口挂上 articleSwitched,finally 复位为「一律禁止」。
+   */
+  let lateWriteBlocked: () => boolean = () => true;
+
+  /** 块是否为 MEDIA atomic 块:'ready'=已带 mediaId;'pending'=entity 在但无 mediaId;null=不是。 */
+  const mediaBlockState = (content: DraftContentState, block: DraftBlock): 'ready' | 'pending' | null => {
+    if (block.getType() !== 'atomic') return null;
+    const ek = block.getEntityAt(0);
+    if (!ek) return null;
+    try {
+      const ent = content.getEntity(ek);
+      if (ent.getType() !== 'MEDIA') return null;
+      return extractMediaId(ent.getData()) !== null ? 'ready' : 'pending';
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * 把晚到 MEDIA 归位到超时图的原文处:原文独占整块 → MEDIA 顶替该块;原文混在其他文字中
+   * (marker 当初非独占) → 抠掉原文子串、MEDIA 插在该块之前(同 xposter §3.3 relocate 口径)。
+   * 单次 blockMap 重排 + 一次 onChange,提交后 settle 等落盘。找不到原文返回 false(不改正文)。
+   */
+  const relocateLateMedia = async (node: FiberStateNode, entry: LateEntry, mediaKey: string): Promise<boolean> => {
+    const es = readEditorState(node);
+    const content = es.getCurrentContent();
+    const blockMap = content.getBlockMap();
+    if (!blockMap.has(mediaKey)) return false;
+    const holds = (key: string | null): key is string => {
+      if (!key || key === mediaKey) return false;
+      const b = blockMap.get(key);
+      return !!b && b.getType() !== 'atomic' && b.getText().includes(entry.fallbackText);
+    };
+    let targetKey: string | null = holds(entry.fallbackKey) ? entry.fallbackKey : null;
+    if (!targetKey) {
+      // 兜底:整块文本恰为原文;排除其他待追回图登记的块,免得抢走别人的位置。
+      const othersKeys = new Set(pendingLate.filter((e) => e !== entry).map((e) => e.fallbackKey));
+      const want = entry.fallbackText.trim();
+      blockMap.forEach((b, k) => {
+        if (targetKey || othersKeys.has(k) || b.getType() === 'atomic') return;
+        if (b.getText().trim() === want) targetKey = k;
+      });
+    }
+    if (!targetKey) return false;
+    const tk: string = targetKey;
+    const target = blockMap.get(tk)!;
+    const text = target.getText();
+    const at = text.indexOf(entry.fallbackText);
+    const remainder = at >= 0 ? text.slice(0, at) + text.slice(at + entry.fallbackText.length) : '';
+    const dropTarget = remainder.trim().length === 0;
+    let rewritten: DraftBlock | null = null;
+    if (!dropTarget) {
+      const sample = findCharacterSample(blockMap);
+      if (!sample) return false;
+      const plain = sample.set('style', sample.getStyle().clear()).set('entity', null);
+      let characterList = target.getCharacterList().clear();
+      for (let i = 0; i < remainder.length; i += 1) characterList = characterList.push(plain);
+      rewritten = target.merge({ type: 'unstyled', text: remainder, characterList });
+    }
+
+    const orderedKeys: string[] = [];
+    blockMap.forEach((_b, key) => {
+      if (key === mediaKey) return;
+      if (key === tk) {
+        orderedKeys.push(mediaKey);
+        if (!dropTarget) orderedKeys.push(key);
+      } else {
+        orderedKeys.push(key);
+      }
+    });
+    let nextMap = blockMap.clear();
+    for (const k of orderedKeys) {
+      const b = k === tk && rewritten ? rewritten : blockMap.get(k);
+      if (b) nextMap = nextMap.set(k, b);
+    }
+    const SelStatic = es.getSelection().constructor as unknown as DraftSelectionStatic;
+    const ESStatic = es.constructor as unknown as DraftEditorStateStatic;
+    const sel = SelStatic.createEmpty(orderedKeys[orderedKeys.length - 1] ?? mediaKey);
+    const nc = content.set('blockMap', nextMap).set('selectionBefore', sel).set('selectionAfter', sel);
+    let ns = ESStatic.push(es, nc, 'move-block');
+    ns = ESStatic.forceSelection(ns, sel);
+    (node.props?.onChange as (s: DraftEditorState) => void)(ns);
+    await settle('late-relocate', node, (c) => {
+      const bm = c.getBlockMap();
+      if (!bm.has(mediaKey)) return false;
+      return dropTarget ? !bm.has(tk) : bm.get(tk)?.getText() === remainder;
+    });
+    return true;
+  };
+
+  /**
+   * 单次追回尝试:读最新 state,至多追回**一张**,返回是否发生了认领(调用方据此重钉光标/再试)。
+   * 1) 精确:登记了 pendingKey 且该块仍在 → 它拿到 mediaId 即还给该图;
+   * 2) FIFO(仅 allowFifo=true,即图片循环结束后的末轮扫描):最早一张「无 pendingKey 或其块已
+   *    消失」的超时图,认领第一个**来历不明**的已确认 MEDIA——排除 exclude、ownPending(本图等待期
+   *    已跟踪过的 pending 块,视为本图自己的占位)、claimedMedia、及任何登记过的 pendingKey。
+   *    取舍:循环进行中**不做 FIFO**——第 k+1 张图的块可能「首次被看到即 ready」(从未以 pending
+   *    形态进入 ownPending),FIFO 会把它抢给超时的第 k 张,造成反向错位。末轮时所有图都已认领
+   *    完自己的块,剩余无归属的 ready MEDIA 才可安全按 FIFO 分给最早超时图,其余交孤儿审计。
+   * 只认 ready(带 mediaId)的块:pending 块无法区分是谁的,交本图自己的稳定性判定。
+   * 认领即出队并记入 exclude/claimedMedia——即使归位失败(原文找不到)也不再让它被本图误认,
+   * 留给收尾的 orphan-media 审计如实上报。
+   */
+  const recoverLateOnce = async (
+    exclude: Set<string>,
+    ownPending: Set<string>,
+    allowFifo: boolean,
+  ): Promise<boolean> => {
+    if (!pendingLate.length || lateWriteBlocked()) return false;
+    const node = findDraftStateNode();
+    if (!node) return false;
+    const content = readEditorState(node).getCurrentContent();
+    const bm = content.getBlockMap();
+    let pick: { entry: LateEntry; mediaKey: string } | null = null;
+    for (const entry of pendingLate) {
+      const pk = entry.pendingKey;
+      if (!pk) continue;
+      const b = bm.get(pk);
+      if (b && mediaBlockState(content, b) === 'ready') {
+        pick = { entry, mediaKey: pk };
+        break;
+      }
+    }
+    if (!pick && allowFifo) {
+      const fifo = pendingLate.find((e) => !e.pendingKey || !bm.has(e.pendingKey));
+      if (fifo) {
+        const registered = new Set(pendingLate.map((e) => e.pendingKey).filter((k): k is string => !!k));
+        let readyKey: string | null = null;
+        bm.forEach((b, k) => {
+          if (readyKey || exclude.has(k) || ownPending.has(k) || claimedMedia.has(k) || registered.has(k)) return;
+          if (mediaBlockState(content, b) === 'ready') readyKey = k;
+        });
+        if (readyKey) pick = { entry: fifo, mediaKey: readyKey };
+      }
+    }
+    if (!pick) return false;
+    const { entry, mediaKey } = pick;
+    pendingLate = pendingLate.filter((e) => e !== entry);
+    exclude.add(mediaKey);
+    claimedMedia.add(mediaKey);
+    if (await relocateLateMedia(node, entry, mediaKey)) {
+      lateRecovered.push(entry.imageIndex);
+      if (import.meta.env.DEV) console.info('[MarkFlow] 晚到图片已追回归位', { imageIndex: entry.imageIndex, mediaKey });
+    } else {
+      console.warn('[MarkFlow] 晚到图片认领但原文位置已找不到,留待孤儿审计', { imageIndex: entry.imageIndex });
+    }
+    return true;
+  };
+
   /**
    * 轮询等待「快照外新增的 MEDIA atomic 块」。
    * - 出现 mediaId → confirmed:true(上传确认完成);
@@ -421,16 +689,27 @@ export default defineUnlistedScript(() => {
    *   或出现满 32s 封顶 → confirmed:true(正文图放行);未达标而 budget 到点 → confirmed:false(未确认);
    * - 全程未出现新 MEDIA 块 → null。
    * 返回 confirmed 交由调用方决定成功/降级——**「有块但未确认」绝不谎报成功**。
+   * B2:每轮先给此前超时图按 pendingKey 精确追回晚到 MEDIA(recoverLateOnce,不做 FIFO——
+   * 防止把本图「首见即 ready」的块抢给前一张超时图);追回会改 selection,
+   * 随后把光标重钉回本图 marker 再继续等本图——budget 不延长(通道超时预算不放大)。
    */
   const waitForNewMedia = async (
     before: Set<string>,
     budgetMs: number,
+    marker: string,
   ): Promise<{ key: string; confirmed: boolean } | null> => {
     const deadline = Date.now() + budgetMs;
     // 当前 pending 块的跟踪:firstSeen=首次出现时刻;signature/signatureSince=最近签名及其保持起始时刻。
     let pending: { key: string; firstSeen: number; signature: string; signatureSince: number } | null = null;
+    // 本图等待期跟踪过的 pending 块:视为本图自己的占位,晚到追回的 FIFO 不得认领它。
+    const ownPending = new Set<string>();
     while (Date.now() < deadline) {
       await delay(350);
+      if (pendingLate.length && (await recoverLateOnce(before, ownPending, false))) {
+        const n = findDraftStateNode();
+        if (n && !lateWriteBlocked()) await placeSelectionAtMarker(n, marker);
+        continue;
+      }
       const node = findDraftStateNode();
       if (!node) continue;
       const content = readEditorState(node).getCurrentContent();
@@ -451,6 +730,7 @@ export default defineUnlistedScript(() => {
           } else if (!pendingKey) {
             pendingKey = key;
             pendingData = data;
+            ownPending.add(key);
           }
         } catch {
           /* ignore */
@@ -480,8 +760,12 @@ export default defineUnlistedScript(() => {
     return pending ? { key: pending.key, confirmed: false } : null;
   };
 
-  /** 重排 blockMap:删除 marker 块,把 MEDIA 块移到 marker 原位置。 */
-  const relocateMediaToMarker = (node: FiberStateNode, marker: string, mediaKey: string): boolean => {
+  /**
+   * 重排 blockMap:删除 marker 块,把 MEDIA 块移到 marker 原位置。
+   * 提交后 settle 等「MEDIA 块仍在位 且 marker 已清」落盘(B1),再让下一张图读 state。
+   * 返回 true 表示已提交重排(settle 超时也算已提交,不回滚、只记账)。
+   */
+  const relocateMediaToMarker = async (node: FiberStateNode, marker: string, mediaKey: string): Promise<boolean> => {
     const es = readEditorState(node);
     const content = es.getCurrentContent();
     const blockMap = content.getBlockMap();
@@ -510,6 +794,11 @@ export default defineUnlistedScript(() => {
     let ns = ESStatic.push(es, nc, 'move-block');
     ns = ESStatic.forceSelection(ns, sel);
     (node.props?.onChange as (s: DraftEditorState) => void)(ns);
+    await settle(
+      'relocate-media',
+      node,
+      (c) => c.getBlockMap().has(mediaKey) && findMarkerBlock(c, marker) === null,
+    );
     return true;
   };
 
@@ -522,17 +811,22 @@ export default defineUnlistedScript(() => {
   const relocateMediaByFallbackIndex = (node: FiberStateNode, mediaKey: string): boolean =>
     readEditorState(node).getCurrentContent().getBlockMap().has(mediaKey);
 
-  /** 把 marker 块整体替换为一段普通文本(上传失败时写回 fallbackText 原文,不静默丢内容)。 */
-  const replaceMarkerWithText = (node: FiberStateNode, marker: string, text: string): void => {
+  /**
+   * 把 marker 块整体替换为一段普通文本(上传失败时写回 fallbackText 原文,不静默丢内容)。
+   * 提交后 settle 等「该 marker 已不在任何块中」落盘(B1)——否则下一张图的读-改-写会基于
+   * 陈旧 state 把这次写回整体回滚,marker 重现后被 sweepMarkers 整块删掉(原文静默丢失)。
+   * 返回写回所在块的 key(块 merge 保 key)——B2 晚到追回据此定位该段原文;未写回返回 null。
+   */
+  const replaceMarkerWithText = async (node: FiberStateNode, marker: string, text: string): Promise<string | null> => {
     const es = readEditorState(node);
     const content = es.getCurrentContent();
     const blockMap = content.getBlockMap();
     const loc = findMarkerBlock(content, marker);
-    if (!loc) return;
+    if (!loc) return null;
     const block = blockMap.get(loc.blockKey);
-    if (!block) return;
+    if (!block) return null;
     const sample = findCharacterSample(blockMap);
-    if (!sample) return;
+    if (!sample) return null;
     const nextText = loc.exact ? text : block.getText().split(marker).join(text);
     let characterList = block.getCharacterList().clear();
     const plain = sample.set('style', sample.getStyle().clear()).set('entity', null);
@@ -546,6 +840,8 @@ export default defineUnlistedScript(() => {
     let ns = ESStatic.push(es, nc, 'change-block-data');
     ns = ESStatic.forceSelection(ns, sel);
     (node.props?.onChange as (s: DraftEditorState) => void)(ns);
+    await settle('replace-marker', node, (c) => findMarkerBlock(c, marker) === null);
+    return loc.blockKey;
   };
 
   /**
@@ -576,9 +872,27 @@ export default defineUnlistedScript(() => {
         if (cleanStreak >= 2) return true; // 连续两轮确认干净 → 收工
       } else {
         cleanStreak = 0; // 本轮扫掉了残留 / 读不到节点 → 重新累计确认
+        // B1:本轮删了块就等它真正落盘再进下一轮——否则下一轮读到的陈旧 state 里 marker
+        // "还在",会对同一批块再提交一次删除(基于旧 map 的二次 onChange 可能回滚中间的变更)。
+        // 超时不中断:连续两轮干净的退出条件(HANDOFF §8)原样保留在上面。
+        if (r === 'swept') await settle('sweep-markers', null, (c) => !hasFullMarker(c, prefix));
       }
     }
     return false;
+  };
+
+  /** 任一非 atomic 块是否仍含**完整形状**的 marker(settle 判定用,与 sweepMarkersOnce 口径一致)。 */
+  const hasFullMarker = (content: DraftContentState, prefix: string): boolean => {
+    let found = false;
+    content.getBlockMap().forEach((block) => {
+      if (found || block.getType() === 'atomic') return;
+      const text = block.getText();
+      if (!text.includes(prefix)) return;
+      MARKER_FULL_RE.lastIndex = 0;
+      if (MARKER_FULL_RE.test(text)) found = true;
+    });
+    MARKER_FULL_RE.lastIndex = 0;
+    return found;
   };
 
   /**
@@ -664,7 +978,10 @@ export default defineUnlistedScript(() => {
   };
 
   /** uploadOneImage 的结果:失败时带原因码(在知道原因的这一层产生,调用方只透传进失败明细)。 */
-  type UploadOutcome = { ok: true } | { ok: false; reason: ImageFailReason; detail?: string };
+  type UploadOutcome =
+    | { ok: true }
+    // pendingKey:仅 upload-timeout 且超时时已有未确认 MEDIA 块时带上(B2 晚到追回按 key 精确等它)。
+    | { ok: false; reason: ImageFailReason; detail?: string; pendingKey?: string };
 
   /**
    * 上传单张图:钉光标到 marker → 找 onFilesAdded → 交 File → 轮询新 MEDIA → 归位 + 清 marker。
@@ -674,7 +991,8 @@ export default defineUnlistedScript(() => {
   const uploadOneImage = async (marker: string, file: File, budgetMs: number): Promise<UploadOutcome> => {
     let node = findDraftStateNode();
     if (!node) return { ok: false, reason: 'upload-no-editor' };
-    if (!placeSelectionAtMarker(node, marker)) return { ok: false, reason: 'upload-marker-lost' };
+    // placeSelectionAtMarker 内部已 settle 等 selection 落盘(B1);这 80ms 留给 DOM selection 同步。
+    if (!(await placeSelectionAtMarker(node, marker))) return { ok: false, reason: 'upload-marker-lost' };
     await delay(80);
 
     node = findDraftStateNode();
@@ -690,9 +1008,11 @@ export default defineUnlistedScript(() => {
       return { ok: false, reason: 'upload-exception', detail: String(err) };
     }
 
-    const media = await waitForNewMedia(before, budgetMs);
+    const media = await waitForNewMedia(before, budgetMs, marker);
+    // 本图认领的块(含未确认)记入有主集合——末轮追回不得把它当来历不明的晚到块。
+    if (media) claimedMedia.add(media.key);
     // 无新 MEDIA 块,或有块但未确认(无 mediaId 且稳定性未达标)→ 未确认成功,交调用方降级。
-    if (!media || !media.confirmed) return { ok: false, reason: 'upload-timeout' };
+    if (!media || !media.confirmed) return { ok: false, reason: 'upload-timeout', pendingKey: media?.key };
 
     await delay(120);
     node = findDraftStateNode();
@@ -700,7 +1020,7 @@ export default defineUnlistedScript(() => {
     // 与「超时」的排查方向完全不同(不该去查网络/重试,而该看正文结构)。
     if (!node) return { ok: false, reason: 'upload-relocate-failed' };
     // 归位:优先精确顶替 marker 位置;失败则走 §3.3 fallbackIndex 兜底;仍失败(MEDIA 块丢失)才算失败。
-    if (relocateMediaToMarker(node, marker, media.key)) return { ok: true };
+    if (await relocateMediaToMarker(node, marker, media.key)) return { ok: true };
     node = findDraftStateNode();
     if (node && relocateMediaByFallbackIndex(node, media.key)) return { ok: true };
     return { ok: false, reason: 'upload-relocate-failed' };
@@ -821,7 +1141,14 @@ export default defineUnlistedScript(() => {
     expectedArticleId: string | null = null,
   ): Promise<ImportResult> => {
     if (importInFlight) return { ok: false, error: 'import already in progress' };
+    // B3:非文章编辑路由(推文 compose 弹窗 / 私信框也是 Draft.js)一律拒写,放在占坑之前、
+    // 不触碰编辑器,零副作用。
+    if (!isArticleEditorRoute()) {
+      console.warn('[MarkFlow] 当前不是 X 文章编辑页,拒绝写入', location.pathname);
+      return { ok: false, error: NOT_ARTICLE_EDITOR_ERROR };
+    }
     importInFlight = true;
+    settleTimeouts = []; // B1 诊断账本按次清零
     // 以下声明本身不会抛错,且 catch(stage)/finally 需引用,故留在 try 外层:
     let stage = 'draft node';
     // B2-2:主 onChange 提交后置 true。提交后再失败(verify 不达标/图片阶段异常)时正文已
@@ -830,8 +1157,14 @@ export default defineUnlistedScript(() => {
     // B2-1 持续校验(review 修复):入口校验只挡得住「点确认前」的切换;空稿取样最长再等 1.6s、
     // 图片/清扫/封面阶段可达数分钟,期间 SPA 切文章后 findDraftStateNode 会解析到**新文章**的
     // 编辑器——继续写就砸错目标。故 commit 前与每个后续阶段前都复查,切换即停手。
+    // 路由也纳入:SPA 离开文章编辑路由(如切到推文 compose)时无论是否带 articleId 都视为切换。
     const articleSwitched = (): boolean =>
-      expectedArticleId != null && getArticleId() !== expectedArticleId;
+      !isArticleEditorRoute() || (expectedArticleId != null && getArticleId() !== expectedArticleId);
+    // B2 晚到追回的模块级账本按次清零;追回写正文须服从本次的切文章闸门(finally 复位为禁止)。
+    pendingLate = [];
+    lateRecovered = [];
+    claimedMedia = new Set();
+    lateWriteBlocked = articleSwitched;
     // 每次运行独立的 marker 前缀,避免与历史残留 / 并发写入串扰。
     const markerPrefix = `__MARKFLOW_IMG_${Math.random().toString(36).slice(2, 8)}_`;
     // 清扫用**通用**前缀:不仅清本次,也清掉「历史遗留」——同一草稿反复导入时,之前某次
@@ -845,12 +1178,12 @@ export default defineUnlistedScript(() => {
       // blocks.filter / blocks.length 会抛 TypeError——放 try 外会跳过 finally 的
       // importInFlight 复位,导致该页此后所有合法导入永久收到 'import already in progress'。
       const imageCount = blocks.filter((b) => b.kind === 'image').length;
-      console.info('[MarkFlow] 写入开始', { blocks: blocks.length, mode, images: imageCount });
+      if (import.meta.env.DEV) console.info('[MarkFlow] 写入开始', { blocks: blocks.length, mode, images: imageCount });
       // B2-1 双钥校验:在触碰编辑器之前比对目标文章——ask 弹窗挂起期间用户在同一 tab 内
       // SPA 切到另一篇草稿时(tabId 不变,sidepanel 的钉 tab 挡不住),这里是最后一道闸。
       if (expectedArticleId != null && getArticleId() !== expectedArticleId) {
         console.warn('[MarkFlow] 目标文章已切换,拒绝写入', { expected: expectedArticleId, actual: getArticleId() });
-        return { ok: false, error: 'article-switched' };
+        return { ok: false, error: ARTICLE_SWITCHED_ERROR };
       }
       let draftNode = findDraftStateNode();
       if (!draftNode) return { ok: false, error: 'draft state node not found' };
@@ -905,7 +1238,7 @@ export default defineUnlistedScript(() => {
         if (b.getText().length > 0) contentEmpty = false;
       });
       const effectiveMode: ImportMode = forcedReplace || contentEmpty ? 'replace' : mode;
-      console.info('[MarkFlow] 写入模式', { effectiveMode, forcedReplace, contentEmpty });
+      if (import.meta.env.DEV) console.info('[MarkFlow] 写入模式', { effectiveMode, forcedReplace, contentEmpty });
 
       // --- 逐块构造(在一个 contentState 事务里累积 entity)---------------------
       stage = 'build blocks';
@@ -1024,16 +1357,22 @@ export default defineUnlistedScript(() => {
         .set('selectionBefore', endSelection)
         .set('selectionAfter', endSelection);
       // 主提交前最后复查目标文章(空稿取样循环可能 await 过 1.6s):切换即拒写,零副作用。
-      if (articleSwitched()) return { ok: false, error: 'article-switched' };
+      if (articleSwitched()) return { ok: false, error: ARTICLE_SWITCHED_ERROR };
       let next = EditorStateClass.push(editorState, nextContent, 'insert-fragment');
       next = EditorStateClass.forceSelection(next, endSelection);
       (draftNode.props?.onChange as (s: DraftEditorState) => void)(next);
       committed = true; // B2-2:此后任何失败都属「提交后失败」,结果须如实带 committed
-      console.info('[MarkFlow] onChange 已提交,块数', built.length);
+      if (import.meta.env.DEV) console.info('[MarkFlow] onChange 已提交,块数', built.length);
 
       // --- 轻验证(仅 replace 强校验:新 blockMap 含我们的 key 数 ≥ blocks.length)------
       stage = 'verify';
-      await delay(150);
+      // B1:replace / append 两条路径都等「全部新块 key 已出现在 blockMap」真正落盘,再进入
+      // 后续读-改-写(此前只 delay(150) 且 append 不复核,图片阶段首轮可能读到提交前的旧 state)。
+      // 超时不中断:replace 路径下方 verify 仍会重数并判定;append 路径记账后继续。
+      await settle('commit', draftNode, (c) => {
+        const bm = c.getBlockMap();
+        return built.every(([k]) => bm.has(k));
+      });
       if (effectiveMode === 'replace') {
         const ourKeys = new Set(built.map(([k]) => k));
         // 重读一轮最新 blockMap 并重数命中的新块 key。X 的 onChange 是异步 commit
@@ -1086,11 +1425,16 @@ export default defineUnlistedScript(() => {
           detail: detail === undefined ? undefined : truncateForReport(detail, 200),
         });
       };
+      // B2:图片阶段开始时正文已有的 MEDIA(append 模式的旧图)——既是「有主」集合的起点,
+      // 也是收尾 orphan-media 审计的基线(新增 MEDIA 数 = 终态 MEDIA − 基线)。
+      const mediaBaseNode = imageMarkers.length ? findDraftStateNode() : null;
+      const initialMedia = mediaBaseNode ? snapshotMediaKeys(mediaBaseNode) : null;
+      if (initialMedia) for (const k of initialMedia) claimedMedia.add(k);
       for (const { marker, imageIndex, fallbackText, source } of imageMarkers) {
         // 每张图前复查:中途切文章立即停手(marker 留在原文章,由错误文案引导用户回去检查),
         // 绝不对切换后的文章做 replace/sweep/封面等任何改写。
         if (articleSwitched()) {
-          return { ok: false, error: 'article-switched', committed };
+          return { ok: false, error: ARTICLE_SWITCHED_ERROR, committed };
         }
         const prep = images[imageIndex];
         const file = prep?.file ?? null;
@@ -1100,7 +1444,7 @@ export default defineUnlistedScript(() => {
           // (典型:扩展更新后旧 content 未刷新,消息无 images)→ 'prepare-missing',
           // 提示刷新页面,不误报成崩溃类异常。
           const node = findDraftStateNode();
-          if (node) replaceMarkerWithText(node, marker, fallbackText);
+          if (node) await replaceMarkerWithText(node, marker, fallbackText);
           if (prep) pushFailure(imageIndex, source, 'prepare', prep.failReason ?? 'prepare-exception', prep.failDetail);
           else pushFailure(imageIndex, source, 'prepare', 'prepare-missing');
           continue;
@@ -1118,7 +1462,26 @@ export default defineUnlistedScript(() => {
         } else {
           pushFailure(imageIndex, source, 'upload', outcome.reason, outcome.detail);
           const node = findDraftStateNode();
-          if (node) replaceMarkerWithText(node, marker, fallbackText);
+          const fallbackKey = node ? await replaceMarkerWithText(node, marker, fallbackText) : null;
+          // B2:超时 ≠ X 放弃上传——登记待追回,后续图的等待期若出现晚到 MEDIA 先还给它。
+          if (outcome.reason === 'upload-timeout') {
+            pendingLate.push({ imageIndex, fallbackKey, fallbackText, pendingKey: outcome.pendingKey ?? null });
+          }
+        }
+      }
+      // B2 末轮追回:所有图已认领完自己的块,此处先精确(pendingKey)、再 FIFO 把剩余无归属的
+      // ready MEDIA 分给最早超时图(FIFO 只在这里做,见 recoverLateOnce)。只扫当前 state、
+      // 不额外等待——通道超时(基础 45s + 每图 45s)不随此放大;此后才到的计入 orphan-media 审计。
+      while (pendingLate.length && (await recoverLateOnce(new Set(claimedMedia), new Set(), true))) {
+        /* 每轮至多追回一张,直至无可认领 */
+      }
+      // 追回的图:计成功、移除其 upload-timeout 明细(同一事实只记一份账,imageFail 仍由明细派生)。
+      const recoveredSet = new Set(lateRecovered);
+      if (recoveredSet.size) {
+        imageOk += recoveredSet.size;
+        for (let i = imageFailures.length - 1; i >= 0; i -= 1) {
+          const f = imageFailures[i]!;
+          if (f.reason === 'upload-timeout' && recoveredSet.has(f.index)) imageFailures.splice(i, 1);
         }
       }
       // 同一事实只记一份账:失败数从明细派生,天然不会与明细条数漂移。
@@ -1133,10 +1496,11 @@ export default defineUnlistedScript(() => {
       // 「已配对成功」路径(图已在文中,marker 交清扫收尾)——图没丢,upload 失败的账在上传
       // 循环里已如实记过;清扫成功 = 无需用户手动处理,报 'marker-residue' 反而是虚警。
       // 真正清不掉的残留仍由下方审计如实上报。
-      if (articleSwitched()) return { ok: false, error: 'article-switched', committed };
+      if (articleSwitched()) return { ok: false, error: ARTICLE_SWITCHED_ERROR, committed };
       if (imageMarkers.length) {
-        sweepConfirmedClean = await sweepMarkers(MARKER_SWEEP_PREFIX, (markerText) =>
-          console.info('[MarkFlow] 清扫收尾 marker', markerText),
+        sweepConfirmedClean = await sweepMarkers(MARKER_SWEEP_PREFIX, (markerText) => {
+          if (import.meta.env.DEV) console.info('[MarkFlow] 清扫收尾 marker', markerText);
+        },
         );
       }
 
@@ -1144,11 +1508,11 @@ export default defineUnlistedScript(() => {
       // 契约(D4,见 protocol.ts):未请求封面时 coverSet 为 undefined(而非 false);
       // 仅在真正请求了封面时才返回 true/false 表示是否落地。
       let coverSet: boolean | undefined;
-      if (articleSwitched()) return { ok: false, error: 'article-switched', committed };
+      if (articleSwitched()) return { ok: false, error: ARTICLE_SWITCHED_ERROR, committed };
       if (cover) {
         stage = 'cover';
         coverSet = await setCoverImage(cover);
-        console.info('[MarkFlow] 封面设置', { coverSet });
+        if (import.meta.env.DEV) console.info('[MarkFlow] 封面设置', { coverSet });
       }
 
       // --- marker 残留审计:sweep 未能确认干净时,读最终 state 如实上报,不再静默 ---
@@ -1187,8 +1551,29 @@ export default defineUnlistedScript(() => {
         }
       }
 
-      console.info('[MarkFlow] 写入成功', { blockCount: blocks.length, effectiveMode, imageOk, imageFail, coverSet });
+      // --- B2 孤儿图审计:正文新增 MEDIA 块数 > imageOk → 有晚到却无法归属的图,如实上报 ---
+      // 放在封面之后,给末张超时图的晚到上传多留时间被「看见」(此时不再归位,只上报)。
+      // 不计 imageFail(同 marker-residue,在 imageFail 取值之后才推入明细)。
+      let orphanMedia = 0;
+      if (initialMedia) {
+        const node = findDraftStateNode();
+        if (node) {
+          let added = 0;
+          for (const k of snapshotMediaKeys(node)) if (!initialMedia.has(k)) added += 1;
+          orphanMedia = Math.max(0, added - imageOk);
+          if (orphanMedia > 0) {
+            // 归属取「最可能的来源」:最早仍未追回的超时图;无则首个 upload 失败图;再无取末张图。
+            const firstUploadFail = imageFailures.find((f) => f.stage === 'upload' && f.index >= 0);
+            const idx = pendingLate[0]?.imageIndex ?? firstUploadFail?.index ?? imageMarkers.length - 1;
+            pushFailure(idx, imageMarkers[idx]?.source ?? '', 'upload', 'orphan-media', `${orphanMedia} unmatched MEDIA block(s)`);
+            console.warn('[MarkFlow] 正文多出无法归属的图片,请手动检查删除', { orphanMedia, added, imageOk });
+          }
+        }
+      }
+
+      if (import.meta.env.DEV) console.info('[MarkFlow] 写入成功', { blockCount: blocks.length, effectiveMode, imageOk, imageFail, coverSet });
       if (imageFailures.length) console.warn('[MarkFlow] 图片失败明细', imageFailures);
+      if (settleTimeouts.length) console.warn('[MarkFlow] settle 超时阶段', settleTimeouts);
       return {
         ok: true,
         blockCount: blocks.length,
@@ -1197,6 +1582,9 @@ export default defineUnlistedScript(() => {
         imageFail,
         coverSet,
         imageFailures: imageFailures.length ? imageFailures : undefined,
+        settleTimeouts: settleTimeouts.length ? [...settleTimeouts] : undefined,
+        imageLateRecovered: recoveredSet.size || undefined,
+        orphanMedia: orphanMedia || undefined,
       };
     } catch (err) {
       // 打完整 err 对象(含堆栈),便于定位崩在 Draft 内部的哪一步
@@ -1207,8 +1595,15 @@ export default defineUnlistedScript(() => {
       } catch {
         /* 兜底清扫本身失败则放弃 */
       }
-      return { ok: false, error: `${stage}: ${String(err)}`, committed };
+      return {
+        ok: false,
+        error: `${stage}: ${String(err)}`,
+        committed,
+        settleTimeouts: settleTimeouts.length ? [...settleTimeouts] : undefined,
+      };
     } finally {
+      lateWriteBlocked = () => true;
+      pendingLate = [];
       importInFlight = false;
     }
   };
@@ -1282,16 +1677,33 @@ export default defineUnlistedScript(() => {
    * applied=false 表示因 keep 策略遇到已有非空标题而跳过(非错误)。
    */
   const setTitle = (title: string, conflict: TitleConflict): SetTitleResult => {
-    const field = findTitleField();
+    // B3:非文章编辑路由一律拒绝——推文 compose 弹窗没有标题框,但 findTitleField 的打分
+    // 可能命中页面其它带 title 关键词的输入框(搜索框等),覆盖掉用户输入。
+    if (!isArticleEditorRoute()) return { ok: false, error: NOT_ARTICLE_EDITOR_ERROR };
+
+    // B5:定位阶段也可能抛(findEditorElement → fiber 遍历 / X 改版 DOM 形状变化),此前无 try
+    // → promise reject、set-title-result 永不发出、content 只见 timeout。明确失败码便于归类。
+    let field: TitleFieldLike | null;
+    try {
+      field = findTitleField();
+    } catch (err) {
+      console.warn('[MarkFlow] 标题框定位异常', err);
+      return { ok: false, error: `title-field-lookup-exception: ${String(err)}` };
+    }
     if (!field) return { ok: false, error: 'title field not found' };
 
-    // keep 策略:已有非空标题则跳过,不视为错误。
-    const existing = readTitleValue(field);
-    if (existing.trim().length > 0 && conflict === 'keep') {
-      return { ok: true, applied: false };
-    }
-
     try {
+      const existing = readTitleValue(field);
+      // C33:现有标题与目标相同 → 视同已设好,不构成冲突(ask 模式以 keep 探测,此前会
+      // 返回 applied:false 触发「覆盖/保留」弹窗,同标题也问一遍)。不写入,免得无谓派发事件。
+      if (existing.trim().length > 0 && existing.trim() === title.trim()) {
+        return { ok: true, applied: true };
+      }
+      // keep 策略:已有非空标题则跳过,不视为错误。
+      if (existing.trim().length > 0 && conflict === 'keep') {
+        return { ok: true, applied: false };
+      }
+
       if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) {
         // 原生 value setter 绕过 React 受控组件(直接赋 .value 不会触发 React 的 change 追踪)。
         const proto =
@@ -1335,18 +1747,46 @@ export default defineUnlistedScript(() => {
       // 回执握手,回显 ISOLATED 侧生成的 nonce
       post({ source: MAIN_SOURCE, kind: 'hello-ack', nonce: msg.nonce });
     } else if (msg.kind === 'probe') {
-      // 执行探针,回显请求的 nonce/id 以便 content 侧精确匹配并发请求
-      const result = runProbe();
+      // 执行探针,回显请求的 nonce/id 以便 content 侧精确匹配并发请求。
+      // B5:runProbe 内部已兜底 try/catch,这里再兜一层——无论如何都要发出 probe-result,
+      // 否则 content 只见 2.5s timeout、三灯无从得知真实原因。
+      let result: ProbeResult;
+      try {
+        result = runProbe();
+      } catch (err) {
+        result = {
+          hasEditor: false,
+          hasDraftNode: false,
+          hasOnFilesAdded: false,
+          articleId: null,
+          hasContent: false,
+          isArticleEditor: isArticleEditorRoute(),
+          error: String(err),
+        };
+      }
       post({ source: MAIN_SOURCE, kind: 'probe-result', nonce: msg.nonce, id: msg.id, result });
     } else if (msg.kind === 'import') {
-      // 执行写入(async:取样轮询 / 图片上传都要 await),回显 nonce/id
-      const result = await runImport(msg.blocks, msg.mode, msg.images, msg.cover, msg.expectedArticleId ?? null);
+      // 执行写入(async:取样轮询 / 图片上传都要 await),回显 nonce/id。
+      // runImport 自身全程 try/catch;这里兜底的是其 try 之外的极少数语句(B5 同类:永远有应答)。
+      let result: ImportResult;
+      try {
+        result = await runImport(msg.blocks, msg.mode, msg.images, msg.cover, msg.expectedArticleId ?? null);
+      } catch (err) {
+        console.error('[MarkFlow] runImport 未捕获异常', err);
+        result = { ok: false, error: `import-exception: ${String(err)}` };
+      }
       post({ source: MAIN_SOURCE, kind: 'import-result', nonce: msg.nonce, id: msg.id, result });
     } else if (msg.kind === 'set-title') {
-      // 设置标题(仅 UI 通道),回显 nonce/id
-      console.info('[MarkFlow] 设置标题开始', { conflict: msg.conflict });
-      const result = setTitle(msg.title, msg.conflict);
-      console.info('[MarkFlow] 设置标题结果', result);
+      // 设置标题(仅 UI 通道),回显 nonce/id;B5:任何异常都回明确失败码而非无应答。
+      if (import.meta.env.DEV) console.info('[MarkFlow] 设置标题开始', { conflict: msg.conflict });
+      let result: SetTitleResult;
+      try {
+        result = setTitle(msg.title, msg.conflict);
+      } catch (err) {
+        console.error('[MarkFlow] setTitle 未捕获异常', err);
+        result = { ok: false, error: `set-title-exception: ${String(err)}` };
+      }
+      if (import.meta.env.DEV) console.info('[MarkFlow] 设置标题结果', result);
       post({ source: MAIN_SOURCE, kind: 'set-title-result', nonce: msg.nonce, id: msg.id, result });
     }
   });

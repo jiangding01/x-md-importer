@@ -3,7 +3,7 @@
 // (与 injector.ts/content.ts 同类,靠真机 QA 回归覆盖,见 vitest.config.ts 顶部注释);
 // 但 withTimeout 是纯粹的 Promise 时序逻辑,与 chrome/browser 全局无关,直接单测钉住。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { TimeoutError, withTimeout } from './importArticle';
+import { createTimeoutError, isTimeoutError, TIMEOUT_ERROR_NAME, withTimeout } from './importArticle';
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -28,22 +28,38 @@ describe('withTimeout', () => {
     await expect(wrapped).rejects.toThrow('inner failure');
   });
 
-  it('被包装的 promise 比超时慢 → 到点 reject(TimeoutError),不等原 promise 结算', async () => {
+  it('被包装的 promise 比超时慢 → 到点 reject(超时 Error),不等原 promise 结算', async () => {
     const p = new Promise<string>((resolve) => setTimeout(() => resolve('too late'), 20_000));
     const wrapped = withTimeout(p, 10_000);
     // 断言前先挂上 catch,避免超时抛错先于 expect 附加导致的 unhandled rejection 警告。
-    const assertion = expect(wrapped).rejects.toBeInstanceOf(TimeoutError);
+    const assertion = expect(wrapped).rejects.toSatisfy((err: unknown) => isTimeoutError(err));
     vi.advanceTimersByTime(10_000);
     await assertion;
   });
 
-  it('超时错误的 name 是 TimeoutError(供调用方 instanceof 判定,而非裸字符串比对)', async () => {
+  it('超时错误的 name 是 TimeoutError(调用方按 name 判定,不依赖 class/instanceof)', async () => {
     const p = new Promise<string>(() => {
       /* 永不 settle */
     });
     const wrapped = withTimeout(p, 5_000);
-    const assertion = expect(wrapped).rejects.toMatchObject({ name: 'TimeoutError' });
+    const assertion = expect(wrapped).rejects.toMatchObject({ name: TIMEOUT_ERROR_NAME });
     vi.advanceTimersByTime(5_000);
     await assertion;
+  });
+});
+
+describe('createTimeoutError / isTimeoutError', () => {
+  it('工厂产出普通 Error 实例,name 为 TimeoutError,消息含毫秒数', () => {
+    const err = createTimeoutError(1234);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe('TimeoutError');
+    expect(err.message).toContain('1234');
+    expect(isTimeoutError(err)).toBe(true);
+  });
+
+  it('普通 Error / 非 Error 值不被判为超时', () => {
+    expect(isTimeoutError(new Error('x'))).toBe(false);
+    expect(isTimeoutError({ name: 'TimeoutError' })).toBe(false);
+    expect(isTimeoutError(null)).toBe(false);
   });
 });

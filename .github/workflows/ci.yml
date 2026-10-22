@@ -21,7 +21,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          # 必须 ≥ 22.13:pnpm 11.12 用到 node:sqlite(Node 22.5+ 内置),Node 20 会崩
+          # 必须 ≥ 22.13:pnpm 11.x 用到 node:sqlite(Node 22.5+ 内置),Node 20 会崩
           # (v0.2.0 发版翻过的车,见 release.yml 同款注释)。
           node-version: 22
           cache: pnpm

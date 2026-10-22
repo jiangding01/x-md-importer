@@ -1,0 +1,14 @@
+{
+  "extName": {
+    "message": "MarkFlow — X 文章 Markdown 导入器",
+    "description": "扩展名称,显示于 Chrome 应用商店与 chrome://extensions。"
+  },
+  "extDesc": {
+    "message": "把 Markdown 一键导入 X 文章编辑器，全格式自动排版。本地优先，无遥测，不向开发者服务器发送任何数据。",
+    "description": "扩展描述,不得超过 132 个字符。"
+  },
+  "actionTitle": {
+    "message": "MarkFlow",
+    "description": "工具栏图标的悬停提示。"
+  }
+}

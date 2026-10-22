@@ -56,6 +56,19 @@ export interface ProbeState {
 
 const PROBE_REQUEST: RuntimeRequest = { type: PROBE_REQUEST_TYPE };
 
+/**
+ * content 正常应答后的状态判定(纯函数,便于单测)。
+ * 旧 injector fail-closed 提示:扩展更新后未刷新的 X 页仍跑旧 injector,探针结果**缺**
+ * `isArticleEditor` 字段(类型上必填,但旧版本运行时确实不回)——此时三灯可能全绿而
+ * connected=false,若按 ready 处理,UI 会误导用户「去打开 X Articles」。故 hasDraftNode 为真
+ * 且该字段缺失 → 归为 needs-refresh,复用「请刷新此 X 页面」文案。
+ */
+export function classifyProbeResult(result: ProbeResult): ProbeStatus {
+  const isArticleEditor = (result as Partial<ProbeResult>).isArticleEditor;
+  if (result.hasDraftNode && isArticleEditor === undefined) return 'needs-refresh';
+  return 'ready';
+}
+
 const ProbeContext = createContext<ProbeState | null>(null);
 
 interface ProbeProviderProps {
@@ -100,7 +113,8 @@ export function ProbeProvider({ children }: ProbeProviderProps) {
       if (!response) {
         settle('needs-refresh', null);
       } else if (response.ok) {
-        settle('ready', response.result);
+        const next = classifyProbeResult(response.result);
+        settle(next, next === 'ready' ? response.result : null);
       } else {
         settle(response.error, null);
       }
@@ -117,10 +131,12 @@ export function ProbeProvider({ children }: ProbeProviderProps) {
 
   // 自动重探:监听标签页事件,免用户手动点刷新。事件驱动(非轮询)——
   //  - onActivated:切换到别的标签(如切到 X 文章页)后重探;
-  //  - onUpdated:当前活动 X 标签的 ①URL 变化(SPA pushState,如切换文章)或 ②加载完成
+  //  - onUpdated:当前活动标签的 ①URL 变化(SPA pushState,如切换文章)或 ②加载完成
   //    (status==='complete')后重探。**②不可省**:整页刷新(⌘R)/首次进入时 URL 不变、
   //    changeInfo.url 为空,只有 status——此时 content script 刚重新注入,必须靠 complete 感知,
   //    否则「刷新后连不上、要手动点刷新」(实测暴露)。
+  //    **不按 URL 过滤是否 X 页**(C29):无 tabs 权限时非 X 页的 url 本就读不到;且从 x.com
+  //    跳到 example.com 也必须重探,否则状态条停留「已连接」。探针对非 X 页自然落到断开态。
   // 400ms 防抖:SPA 导航 / 加载会连发多个事件,合并成一次探测。
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -132,12 +148,12 @@ export function ProbeProvider({ children }: ProbeProviderProps) {
     const onUpdated = (
       _tabId: number,
       changeInfo: { url?: string; status?: string },
-      tab: { url?: string; active?: boolean },
+      tab: { active?: boolean },
     ) => {
-      // 仅「当前活动 X 标签」的 URL 变化 或 加载完成 才重探——跟随当前标签,后台标签不影响显示。
+      // 仅「当前活动标签」的 URL 变化 或 加载完成 才重探——跟随当前标签,后台标签不影响显示。
+      // changeInfo.url 仅在有该页 host 权限(X 页)时出现;非 X 页只能靠 status==='complete'。
       if (!tab.active) return;
-      if (!changeInfo.url && changeInfo.status !== 'complete') return;
-      if (/^https?:\/\/(?:[^/]+\.)?(?:x|twitter)\.com\//.test(tab.url ?? '')) schedule();
+      if (changeInfo.url || changeInfo.status === 'complete') schedule();
     };
     browser.tabs.onActivated.addListener(onActivated);
     browser.tabs.onUpdated.addListener(onUpdated);

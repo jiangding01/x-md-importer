@@ -8,14 +8,18 @@ import { parseMarkdown } from '../markdown/parser';
 
 /** 每次调用记录一次 origins 参数;未调用则数组为空。 */
 const requested: string[][] = [];
+/** request() 的行为:true/false = 用户授权/拒绝;'throw' = 环境不支持或脱离手势被拒。 */
+let answer: boolean | 'throw' = true;
 
 beforeEach(() => {
   requested.length = 0;
+  answer = true;
   (globalThis as unknown as { browser: unknown }).browser = {
     permissions: {
       request: async (p: { origins: string[] }) => {
         requested.push(p.origins);
-        return true;
+        if (answer === 'throw') throw new Error('This function must be called during a user gesture');
+        return answer;
       },
     },
   };
@@ -61,13 +65,31 @@ describe('requestRemoteImagePermissions', () => {
     ]);
   });
 
-  it('无远程来源时不发起申请', async () => {
-    await requestRemoteImagePermissions([], []);
+  it('无远程来源时不发起申请,按「已授权、无 origin」返回', async () => {
+    expect(await requestRemoteImagePermissions([], [])).toEqual({ granted: true, origins: [] });
     expect(requested).toHaveLength(0);
   });
 
   it('非法 URL 被跳过而非抛错', async () => {
-    await expect(requestRemoteImagePermissions([], ['https://'])).resolves.toBeUndefined();
+    await expect(requestRemoteImagePermissions([], ['https://'])).resolves.toEqual({ granted: true, origins: [] });
     expect(requested).toHaveLength(0);
+  });
+
+  // C25:结果如实回传,调用方据此提示「N 张远程图将降级」
+  it('用户授权 → granted=true 并带回申请的 origins', async () => {
+    const res = await requestRemoteImagePermissions(parseMarkdown('![](https://h.example.com/a.png)'));
+    expect(res).toEqual({ granted: true, origins: ['https://h.example.com/*'] });
+  });
+
+  it('用户拒绝 → granted=false(不抛错)', async () => {
+    answer = false;
+    const res = await requestRemoteImagePermissions(parseMarkdown('![](https://h.example.com/a.png)'));
+    expect(res).toEqual({ granted: false, origins: ['https://h.example.com/*'] });
+  });
+
+  it('request() 抛错(脱离手势 / 环境不支持)→ 按未授权处理', async () => {
+    answer = 'throw';
+    const res = await requestRemoteImagePermissions([], ['https://cover.example.com/c.png']);
+    expect(res).toEqual({ granted: false, origins: ['https://cover.example.com/*'] });
   });
 });

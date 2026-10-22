@@ -35,7 +35,34 @@ export interface ProbeResult {
    * 供「已有内容时询问追加/覆盖」使用;hasDraftNode 为 false 时恒为 false。
    */
   hasContent: boolean;
+  /**
+   * 当前页是否为 X **文章**编辑路由(`/compose/articles` 前缀,含列表/新建/编辑页)。
+   * B3:推文 compose 弹窗 / 私信框同样是 Draft.js、尺寸达标即被前三灯判「可写」——
+   * 「已连接」必须同时要求本字段为 true,否则 replace 会清掉用户的推文草稿。
+   * 不能用 articleId 做闸门:新建文章页 articleId 本就为 null。
+   */
+  isArticleEditor: boolean;
+  /**
+   * 探针自身抛异常时的诊断串(B5:X 改版导致 `getCurrentContent` 不是函数等)。
+   * 有此字段时其余三灯按「未就绪」填 false,content 仍能收到应答而非只见超时。
+   */
+  error?: string;
 }
+
+/**
+ * 注入引擎的具名错误码(ImportResult / SetTitleResult 的 error 可取值之一;其余为自由诊断短语)。
+ *  - 'article-switched'    写入期间目标文章被 SPA 切换(B2-1 双钥);
+ *  - 'not-article-editor'  当前页不是 X 文章编辑路由(B3:拒绝对推文 compose / 私信框直写)。
+ */
+export const NOT_ARTICLE_EDITOR_ERROR = 'not-article-editor' as const;
+export const ARTICLE_SWITCHED_ERROR = 'article-switched' as const;
+export type InjectorErrorCode = typeof NOT_ARTICLE_EDITOR_ERROR | typeof ARTICLE_SWITCHED_ERROR;
+
+/**
+ * 通道层错误码(B9):injector 经 postMessage 回传的 result 形状不合规(页面脚本能读到广播的
+ * nonce/id,可伪造 result)时,content 侧守卫(lib/bridge/resultGuards.ts)以此拒收。
+ */
+export const BAD_RESULT_ERROR = 'bad-result' as const;
 
 // ---------------------------------------------------------------------------
 // 写入(Import)数据结构 —— 解析器(lib/markdown/parser)产出、注入引擎消费。
@@ -165,7 +192,10 @@ export interface PreparedImage {
 export const IMAGE_FAIL_REASONS = [
   // prepare 阶段(content 字节准备)
   'remote-fetch-failed',
+  'remote-permission-denied', // 远程图 host 权限未授予(写入时权限申请被拒),抓取被 Chrome 拦截
   'local-not-found',
+  'local-no-folder', // C30:两个作用域都未连接本地文件夹
+  'local-permission-lapsed', // C30:已连接文件夹读权限回落(浏览器重启后 prompt),需重新授权
   'local-too-large',
   'local-bad-type',
   'data-uri-invalid',
@@ -179,6 +209,11 @@ export const IMAGE_FAIL_REASONS = [
   'upload-relocate-failed', // 图已上传成功(MEDIA 已确认)但归位失败——图可能已在 X 媒体库
   'upload-exception',
   'marker-residue', // 图已落地但占位 marker 清扫未果、残留正文(需手动删除;不计入 imageFail)
+  // 正文新增 MEDIA 块数 > imageOk:有上传晚到却无法归属的图(典型:某图超时降级后 X 仍完成上传,
+  // 晚到图未能归位回其原文位置),正文多出一张需手动删除的图;不计入 imageFail。
+  // index 取「最可能的来源图」(最早未被追回的超时图),无候选时取末张图——不用 -2 哨兵:
+  // 存储校验(validateImageFailures 拒 index < -1)与报告卡(index<0 显示为封面)尚未适配。
+  'orphan-media',
 
   // 封面
   'cover-set-failed', // 封面 File 已备好但 setCoverImage 未落地
@@ -231,16 +266,34 @@ export type ImportResult =
       coverSet?: boolean;
       /** 图片失败明细(imageFail=0 时缺省)。可选字段,旧 injector 不回传时 UI 自然不展示。 */
       imageFailures?: ImageFailure[];
+      /**
+       * B1 诊断:哪些阶段在 onChange 后等待 React 提交超时(settle 1.5s 未观察到预期 state)。
+       * 仅诊断用,content / sidepanel 不消费;缺省 = 全部阶段按时落盘。
+       */
+      settleTimeouts?: string[];
+      /**
+       * B2 诊断:超时降级后又「晚到」并被追回归位的图片数(已计入 imageOk、已从失败明细移除)。
+       * 缺省 = 0。仅诊断用,UI 不消费。
+       */
+      imageLateRecovered?: number;
+      /**
+       * B2 诊断:正文新增 MEDIA 块数超出 imageOk 的数量(无法归属的孤儿图,需手动删除)。
+       * 缺省 = 0;>0 时失败明细另有一条 reason='orphan-media'(不计入 imageFail)。仅诊断用,UI 不消费
+       * (UI 经该失败明细呈现)。
+       */
+      orphanMedia?: number;
     }
   | {
       ok: false;
-      error: string;
+      error: InjectorErrorCode | string;
       /**
        * 正文是否已经过主 onChange 提交(B2-2):verify 不达标/图片阶段异常时旧内容已清、
        * 新内容已(部分)落地,与「提交前失败」必须区分——否则用户看到「失败」就重试,
        * append 整篇重复、图片重复上传。UI 据此提示「正文可能已写入,请先检查再重试」。
        */
       committed?: boolean;
+      /** 同成功分支(B1 诊断);提交后失败时可能带有。 */
+      settleTimeouts?: string[];
     };
 
 /**
@@ -255,7 +308,7 @@ export type TitleConflict = 'overwrite' | 'keep';
  */
 export type SetTitleResult =
   | { ok: true; applied: boolean }
-  | { ok: false; error: string };
+  | { ok: false; error: InjectorErrorCode | string };
 
 /** ISOLATED → MAIN 的消息。 */
 export type IsoMessage =
@@ -366,7 +419,7 @@ export type ImportResponse =
     }
   | {
       ok: false;
-      error: 'no-injector' | 'timeout' | string;
+      error: 'no-injector' | 'timeout' | typeof BAD_RESULT_ERROR | InjectorErrorCode | string;
       /** 与 ImportResult 同源透传(B2-2);通道层 timeout 时缺省(content 无从得知是否已提交)。 */
       committed?: boolean;
     };
@@ -374,7 +427,7 @@ export type ImportResponse =
 /** content → sidepanel 的标题设置应答:透传 SetTitleResult,叠加通道层错误。 */
 export type SetTitleResponse =
   | { ok: true; applied: boolean }
-  | { ok: false; error: 'no-injector' | 'timeout' | string };
+  | { ok: false; error: 'no-injector' | 'timeout' | typeof BAD_RESULT_ERROR | InjectorErrorCode | string };
 
 /** 运行时守卫:窄化「探针请求」——只认判别字段 `type` 匹配的对象。 */
 export function isProbeRequest(msg: unknown): msg is { type: typeof PROBE_REQUEST_TYPE } {

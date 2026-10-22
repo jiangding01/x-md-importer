@@ -17,25 +17,33 @@ import {
 } from './protocol';
 import { resolveTargetXTab } from './locateXTab';
 
+/** 超时错误的 name 标记(调用方 / 测试用 `err.name === TIMEOUT_ERROR_NAME` 判定)。 */
+export const TIMEOUT_ERROR_NAME = 'TimeoutError' as const;
+
 /**
- * 超时标记(B4-7/P2-18):用具名 Error 而非裸 reject(原因)或 Symbol,方便调用方 / 测试用
- * `instanceof` 判定,且不会与「被包装的 promise 自身失败」的普通 Error 混淆。
+ * 超时标记(B4-7/P2-18):具名 Error 而非裸 reject(原因)或 Symbol,不会与「被包装的 promise
+ * 自身失败」的普通 Error 混淆。工厂函数而非 class 子类(项目约定不用 class):判定走
+ * `isTimeoutError()`,不依赖 instanceof(跨 realm / 多份 bundle 下 instanceof 本就不可靠)。
  */
-export class TimeoutError extends Error {
-  constructor() {
-    super('operation timed out');
-    this.name = 'TimeoutError';
-  }
+export function createTimeoutError(ms: number): Error {
+  const err = new Error(`operation timed out after ${ms}ms`);
+  err.name = TIMEOUT_ERROR_NAME;
+  return err;
+}
+
+/** 是否为 createTimeoutError 产出的超时错误。 */
+export function isTimeoutError(err: unknown): err is Error {
+  return err instanceof Error && err.name === TIMEOUT_ERROR_NAME;
 }
 
 /**
- * 给一个 Promise 包一层超时:到点先 reject(TimeoutError),不影响被包装的 promise 继续在
+ * 给一个 Promise 包一层超时:到点先 reject(超时 Error),不影响被包装的 promise 继续在
  * 后台跑完(sendMessage 无取消语义,调用方只是不再等待,底层由 content 侧自己的更长兜底收尾)。
  * 导出供单测直接驱动(不依赖 chrome/browser 全局)。
  */
 export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new TimeoutError()), ms);
+    const timer = setTimeout(() => reject(createTimeoutError(ms)), ms);
     p.then(
       (v) => {
         clearTimeout(timer);
@@ -167,7 +175,7 @@ async function sendFolderRequest(request: RuntimeRequest): Promise<FolderRespons
     if (!response) return { ok: false, error: 'disconnected' };
     return response;
   } catch (err) {
-    if (err instanceof TimeoutError) return { ok: false, error: 'timeout' };
+    if (isTimeoutError(err)) return { ok: false, error: 'timeout' };
     return { ok: false, error: 'disconnected' };
   }
 }
@@ -203,8 +211,9 @@ export async function getFolderStatus(scope: VaultScope): Promise<FolderResponse
  * 后在编辑器手打内容不会触发重探,导致 onExisting='ask' 误判「编辑器为空」直接 replace、
  * 覆盖手打内容。写入决策(ask/replace)前调用本函数拿到当下真相,而非依赖陈旧快照。
  *
- * connected 语义与 useConnection 对齐:探针 ready(response.ok)且定位到 Draft 实例
- * (hasDraftNode)才算已连接;hasContent 取探针结果(未连接时恒 false)。
+ * connected 语义与 useConnection 对齐:探针 ready(response.ok)、定位到 Draft 实例
+ * (hasDraftNode)**且**当前页是文章编辑路由(isArticleEditor,B3)才算已连接;
+ * hasContent 取探针结果(未连接时恒 false)。
  */
 export async function probeXTabContent(): Promise<{
   connected: boolean;
@@ -222,8 +231,10 @@ export async function probeXTabContent(): Promise<{
       | ProbeResponse
       | undefined;
     if (!response || !response.ok) return { connected: false, hasContent: false, tabId, articleId: null };
+    // B3:推文 compose 弹窗 / 私信框也是 Draft.js,hasDraftNode 单独为 true 不等于可写文章;
+    // 旧 injector(页面未刷新)不回 isArticleEditor → undefined → 按未连接处理(fail-closed)。
     return {
-      connected: response.result.hasDraftNode,
+      connected: response.result.hasDraftNode && response.result.isArticleEditor === true,
       hasContent: response.result.hasContent,
       tabId,
       articleId: response.result.articleId,

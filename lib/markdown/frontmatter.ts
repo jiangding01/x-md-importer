@@ -7,7 +7,14 @@
  * `title:` / `Title:` / `标题:`,不支持嵌套 YAML、不支持多行值。
  */
 
-import { forEachContentLine, frontmatterBodyStart, isParagraphLine, setextUnderlineLevel } from './parser';
+import {
+  forEachContentLine,
+  frontmatterBodyStart,
+  inlinePlainText,
+  isParagraphLine,
+  normalizeImageSrc,
+  setextUnderlineLevel,
+} from './parser';
 
 /** 抽取结果:命中标题及其来源(供上层决定是否从正文移除 H1)。 */
 export interface ExtractedTitle {
@@ -139,7 +146,9 @@ export function extractCover(md: string): string | null {
   const wikiLink = /^\[\[(.+?)\]\]$/.exec(raw);
   if (wikiLink) return wikiTarget(wikiLink[1] ?? '');
   const md2 = /^!\[[^\]]*\]\((.+)\)$/.exec(raw);
-  if (md2) return (md2[1] ?? '').trim();
+  // destination 规范化复用 parser.normalizeImageSrc(A6):剥 `<>` 与可选 title(`a.png "t"` → `a.png`),
+  // 与正文图片同一套规则,不另写第二套。
+  if (md2) return normalizeImageSrc(md2[1] ?? '');
   return raw;
 }
 
@@ -166,7 +175,8 @@ function findFirstH1(lines: string[]): { index: number; lineCount: number; title
     // 「parser 认成标题、extractTitle 抽不到」的分裂。≥4 空格同样不认(缩进代码领域)。
     const h1 = /^ {0,3}#\s+(.+)$/.exec(line);
     if (h1) {
-      const title = (h1[1] ?? '').trim();
+      // 标题取**纯文本**(A7):剥 ATX 闭合井号与行内标记,与 parser 产出的 header-one 文本同源。
+      const title = inlinePlainText(h1[1] ?? '');
       if (title.length > 0) {
         found = { index, lineCount: 1, title };
         return true;
@@ -179,7 +189,7 @@ function findFirstH1(lines: string[]): { index: number; lineCount: number; title
     if (isParagraphLine(line) && setextUnderlineLevel(lines[index + 1] ?? '') === 1) {
       const prev = index > 0 ? (lines[index - 1] ?? '') : '';
       const standalone = index === 0 || prev.trim() === '' || !isParagraphLine(prev);
-      const title = line.trim();
+      const title = inlinePlainText(line, { atxClosing: false }); // setext 无闭合井号语义
       if (standalone && title.length > 0) {
         found = { index, lineCount: 2, title };
         return true;

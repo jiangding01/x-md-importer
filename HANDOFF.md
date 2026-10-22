@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**：2026-08-19 · 分支 `claude/chrome-extension-review-9vtcy6`（基于 v0.4.0/main）· **上线前全面审查 + 五批修复(全部完成,待真机回归)**——四路并行审查产出 `docs/review/上线前全面审查-2026-08-18.md`(2 P0/12 P1/31 P2,每条带文件:行号),修复方案经对抗性 review 定稿为 `docs/review/修复方案-2026-08-18.md`(v2),随后五批全部落地(每批 tsc/vitest/build 三绿 + code-review 后提交,逐批明细见 CHANGELOG [Unreleased]):**批次一**·上线阻断——存储写失败可见化(常驻错误条+导出草稿自救)、双窗口 onChanged 同步、草稿防抖 250ms+2s max-wait、历史 id 改 UUID(校验器双形状兼容,备份 version bump 2)、unlimitedStorage、恢复屏先导出再重置、autoReport=anomaly 生效、focus-visible 焦点环;**批次二**·写入安全——tabId+articleId 双钥钉死且 injector 在 commit 前/每图前/清扫前/封面前**持续复查**(SPA 同 tab 切文章即停手,错误码 article-switched)、失败结果带 committed(「正文可能已写入」文案族防重试重复)、marker 清扫改「剥离保文本+单事务」、injector 单例守卫、编辑器选择器有序分级;**批次三**·解析正确性 12 项——图片 title 剥离、推文 ?s=20 带参识别(尾缀只认 ASCII,URL 接中文正文不吞)、标题抽取跳 frontmatter、权限申请改块级同源、hr 变体、0-3 空格缩进块(围栏三处同源化)、Preview/frontmatter 判定收敛单一实现、OL 打断段落收紧、firstTitle 统一;**批次四**·信任一致性——importBackup 校验 kind/version+顺序写回+结果报告、恢复前 arm 确认+自动导出、wipe 真清 4 key+失败可见、Toast 分型(error 图标/时长浮动/aria-live)、报告卡数据源冻结 lastRunSnapshot、idbRun 以 tx.oncomplete 为可信成功+文件夹请求超时分型(connect 不设)、**并抓回一处批次二引入的回归**(importToXTab/setTitleOnXTab 的 pinnedTabId 被批量替换误还原);**批次五**·体验打磨 10 项——AudioContext 释放(含 suspended 守卫)、预览态禁用工具栏、拖拽态修复、历史单删 arm 确认(专属文案+aria 同步)、--ink3 四主题对比度 ≥3:1、玻璃主题 --pSolid、表格模板/aria-label 进 dict、checkStep/stageIdx 死代码清理、clipboard 真实结果、compress 联动置灰。单测 **370→488**(+118,新增 store/imagePermissions/preview/importBackup/importArticle 五个测试文件)。**待办**:真机回归清单见 `docs/review/修复方案-2026-08-18.md` 末节(双窗口同步/ask 弹窗期间切文章/marker 字面量正文/连接文件夹>10s 等代码无法自证项);backlog(信息架构流水线化/mdast 重构/MessageChannel/进度流/arm 共享 hook)见审查报告与方案。〔历史 v0.4.0〕**数学块 `$$` → X 原生 LaTeX**——真机 dump 确认 X 有原生 `LATEX` atomic 块（`entityType:'LATEX'`、`data:{}`、公式本体在块 `text`、逐字符挂同一 entity key，与前三种 atomic「数据在 entity、文本恒单空格」相反）。parser 新增块级 `$$…$$` 识别（单行 `$$ x $$` / 多行 / 未闭合回退 / `$$100` 假阳性防线 / 围栏内不误判），injector atomic 分支支持 LATEX 真实文本 + 逐字符挂 entity，能力面板「数学公式」从 warn「未接」改 native「原生 LaTeX 块」+ 新增「未闭合公式」warn 条目。行内 `$…$` 本批不做（X 无行内原生承载）。单测 293→307，tsc/build 全绿。**已真机验证通过**：`$$\nE = mc^2\n$$` 导入后 X 原生渲染出 LaTeX 公式块（带原生 Edit/Close 控件）。〔历史 v0.3.0〕**列表语义补齐 + 能力面板诚实化 + Toast 溢出修复**——嵌套列表接 Draft 原生 `depth`（栈式换算，此前缩进项掉进段落、正文留字面量 `  - 二级`）；任务列表 `- [ ]` 接通被置灰的 `taskList` 设置（☐/☑ 符号，加前缀时整体平移 offset）；能力面板补 7 类此前静默/撒谎的语法告知（任务列表原被标绿「原生列表」）+ 修 `capability()` 不透传解析开关的既存隐患；Toast 长文案不再溢出侧边栏；**setext 标题**（`标题\n===`）从「完全不识别」到解析 + 标题抽取全通。单测 225→293，tsc/build 全绿。**整批已真机验证通过**（setext 标题 / 任务列表 ☐☑ / 全角空格列表项 / emoji 后加粗 offset / 图片上传 / 封面 / 推文嵌入 / 表格 / 代码块逐项确认）。**真机同时确认：X 忽略 Draft `depth`、嵌套列表渲染为扁平**（有序列表还会连续重编号）——能力面板已如实标 warn「已扁平化(内容不丢)」;depth 仍照写(语义正确、零成本,X 日后支持即生效)。即便扁平也远好于改动前:那时缩进项根本不是列表项,而是带字面量 `- x` 的段落。〔历史〕**批次三:导入报告失败明细(v0.2.2)**——失败图给出序号/来源/阶段/原因(生产端强类型码表 `IMAGE_FAIL_REASONS`,封面 index=-1 哨兵,coverKeep=remove 序号 +1 还原);8 角度 code review 修 8 条;真机暴露并修复 **sweepMarkers「假干净」**(一次陈旧的干净读取即终止清扫 → 连续两轮 clean 才收工,残留审计以 `marker-residue` 上报不再静默)。T6 ×6 零残留、偶发超时被如实报「图 2 · 上传超时」。〔历史〕上一轮 · **全量真机回归(14 用例,QA 文档 `docs/qa/真机回归测试-v0.2.0加固批.md`)+ 修 2 处 UI 撒谎**:T2 本地图导入后文件夹状态不刷新(`recalibrateFolders` 就地校准 + 断开提示 toast,补上 B5 的 UX 待办)、T5 导入报告虚报计数(改用引擎回传真实 `blockCount`)。历史载入弹窗 FAIL 证实为误报(内容全等静默载入是设计行为);append 1 图片失败未复现记偶发。修复已真机复测通过(1 成功/0 降级 · 大文档 174 成功 · 文件夹即时未连接)。〔历史〕上一轮 · **发布前全面审计 + 13 项加固**（4 专项审查：注入/UI/安全/解析；P0×2：标题写错文章 pinnedTabId、坏备份砖化 ErrorBoundary）。**并修复跨机器分支分叉**：标题 ask 弹窗（PR #21）内容曾掉出 main，已 rebase 整合回来（见 §11）。tsc/build/zip 全绿，**待真机回归**。〔历史〕上一轮 · 标题冲突 `ask` 询问弹窗（`TitleConflictDialog` + Promise 化 resolver：编辑器已有标题时弹「覆盖/保留」，真冲突才弹、无冲突静默设，待真机验证）。上一轮:**设置 action 接真实实现(A 组)**：快捷键跳转 `chrome://extensions/shortcuts`、诊断快照导出 JSON、备份/恢复(新模块 `lib/storage/backup.ts`,导出 prefs+options+history+draft、恢复宽松写回)。纯前端,静态预览验证(tabs.create URL / 诊断备份 JSON 结构 / 恢复写回 4 key、无效拒绝)。剩:标题 `ask` 弹窗(B 组,需真机)。上一轮:**批次 C:图片压缩（智能保护 PNG）+ 探针「需刷新」文案（真机验证）**——设置面板诚实化(批次 A/B/C)收官。图片压缩**只压 JPEG 照片**、PNG 截图/文字图保持原样清晰（实测截图压完糊掉后的取舍),压缩打 console 日志;探针 `needs-refresh` 态(当前是 X 页但 content 不应答→提示刷新页面)。上一轮:**全面刷新 README + HANDOFF 文档**（此前停在 M2 早期,严重落后）。上一轮:**批次 B2:scrollTop 接真实实现 + 修 stale-closure / 探针刷新重探**(真机验证):`startImport` useCallback 依赖改为整个 `opts`;探针 `onUpdated` 加 `status==='complete'`。上一轮:**批次 B1:Obsidian 图片 / Wikilink 开关接真实实现**：parser 加 `parseMarkdown(md, opts)`(模块级标志);`obsidianImg` 关时 `![[x]]` 不当图片、`wikilink` 开时行内 `[[x]]`→纯文本(默认开)。8 条 node 用例验证。批次 B 剩 scrollTop(B2,需真机)。设置精简 PR #15 已合并。上一轮:**设置面板诚实化(精简 + 置灰,批次 A,PR #15)**：盘点发现设置里近 2/3 开关「改了不生效」。批次 A **删除 14 个无意义/不可行的项**(altCaption/graphql/tableStrategy/h4Plus/inlineCode/tweetUrl/divider/imgFail/strict/pace/htmlBlock/footnote/codeLang/concurrency,config 行+options 字段一并移除)+ **置灰保留**未接的(codeStrategy/taskList/punct/zhConvert/retries,标「规划中」/「当前固定」);`SettingsTab` 加 disabled 渲染。纯 UI,静态预览验证(删除项消失、保留项置灰、批次 B/C 项保持可交互)。批次 B(低成本接:scrollTop/wikilink/obsidianImg)、批次 C(图片压缩)随后。上一轮:自动填图片 ALT 尝试后搁置(三路皆不通,代码已回退)。PR #10~#14 已合并 main。
+**最后更新**:2026-10-22 · 分支 `fix/pre-release-2026-10`(基于 8 月审查分支 `claude/chrome-extension-review-9vtcy6`)· **v0.5.0 定版,待真机回归后打 tag**——8 月审查分支(五批修复,PR #32)合入 + 10 月发版前复审三阶段修复(P0 链接图扫描器 / settle 等待 / 文章页闸门 / 去 tabs 权限 / manifest i18n;P1 解析 flanking / 超时晚到图追回 / 设置多窗口同步 / 本地图索引;P2 回传校验 / SSRF 补漏 / 字体瘦身),单测 646。逐项明细见 CHANGELOG [0.5.0];更早的历史见 §11 与 git log。
 
 ---
 
@@ -26,14 +26,14 @@
   - ✅ **本地图按需授权**（分支 `feat/session-vault-folder`，真机验证）：两级文件夹 `active`（素材板「本篇图片文件夹」）+ `persistent`（设置默认），读取优先级 active > persistent > 降级；素材板就地连接/更换/清除本篇专用文件夹；浏览器重启权限回落后「一键恢复」复用存量 handle（`requestPermission`，免重选文件夹）。
   - ✅ **探针自动重探**（PR #10，真机验证）：监听标签页事件自动更新连接状态,免手动刷新;tab 定位改为跟随当前活动标签。
   - ✅ **设置面板诚实化**（PR #15/#16/#17，批次 A/B）：盘点发现近 2/3 开关「改了不生效」→ 删 14 个无意义/不可行项 + 置灰未接项;`obsidianImg`/`wikilink`/`scrollTop` 接真实实现;修 stale-closure（切开关不改 md 即时生效）+ 探针刷新后自动重探。
-- **本次刚做**：**数学块 `$$` → X 原生 LaTeX**——真机 dump 确认 X 有原生 `LATEX` atomic 块（`data:{}`、公式在块 `text`、逐字符挂同一 entity key）。① parser 新增块级 `$$…$$` 识别（`matchMathOpen`：单行 `$$ x $$` / 多行 `$$\n…\n$$` / 未闭合回退当文本 / `$$100` 行内双美元假阳性防线 / 围栏内不误判 / 空公式回退）；② injector atomic 分支支持 LATEX 真实文本 + 逐字符挂 entity（与 LINK entity 逐字符挂法同理）；③ 能力面板「数学公式」从 warn「未接」改 **native「原生 LaTeX 块」**，新增「未闭合公式」warn 条目（收窄 `RE_MATH_RESIDUE` 只认裸 `$$` 行，消除 `$$100` 假阳性）。行内 `$…$` 本批不做（X 无行内原生承载，与行内代码/图片同策略）。单测 293→307。**已真机验证**：`$$\nE = mc^2\n$$` 导入后 X 原生渲染出 LaTeX 公式块（带原生 Edit/Close 控件）。〔上一轮 v0.3.0〕**列表语义补齐 + 能力面板诚实化 + Toast 溢出修复**——① **嵌套列表**接 Draft 原生 `depth`；② **任务列表** `- [ ]` 接通 `taskList` 设置；③ **能力面板补 7 类语法告知**；④ Toast 溢出修复；⑤ **setext 标题**解析 + 标题抽取全通。
-- **还没做**：无阻塞项。**多行公式已验证无问题**(见 §8);**T3 砖化兜底已由加载校验 + 63 例单测覆盖**(见 §5,真机只剩确认「面板可用 + 数据保全」)。
+- **本次刚做(v0.5.0 定版)**:两轮上线前审查的修复合集。① 8 月审查(`docs/review/上线前全面审查-2026-08-18.md`)五批修复——存储写失败可见、草稿/历史多窗口同步、tabId+articleId 双钥钉死、committed 区分、marker 剥离保文本、解析 12 项、备份恢复安全化、Toast 分型、对比度等;② 10 月发版前复审(`docs/review/发版前审查-2026-10-22.md`)阶段 0～3——pnpm pin 修复、A1 同行多张带链接图片(P0)、B1 图片阶段 settle 谓词等待(P0)、B3 `/compose/articles` 写入闸门、去 `tabs` 权限改 host_permissions、`minimum_chrome_version` 116、manifest `_locales` 国际化、A2 强调符 flanking、B2 超时晚到 MEDIA 追回 + orphan 审计、C2 设置多窗口同步、C9 本地图文件名索引、B9 回传校验、B10 SSRF 补漏、字体只打 latin woff2(1.11MB→约 640KB)。单测 307→646。版本号 0.5.0、CHANGELOG 定版、README / 隐私政策 / NOTICE / QA T16～T21 已同步。〔v0.4.0〕数学块 `$$` → X 原生 LaTeX 块(真机验证)。
+- **还没做(发版前)**:① PR #32(审查分支 → main)与本分支 PR 由用户合并;② 真机回归 `docs/qa/真机回归测试-审查修复五批.md` T1～T15 + T16～T21(B1/B2/B3/权限弹窗/去 tabs 探针/字体是代码无法自证项);③ 把 `docs/privacy-policy.md` 发布到公开地址(仓库私有,审核员打不开),补联系邮箱;④ 打 `v0.5.0` tag → release 工作流出 zip → 商店上传,后台填权限理由与隐私 URL。发版后待办见 `docs/review/backlog-2026-10-22.md`。
 - **明确不做(产品决策)**：**行内数学 `$…$`** 与 **行内图片**——X 的 LaTeX / 媒体都是**块级** Insert 项,无行内原生承载,与「行内代码」同策略:保留原文、能力面板如实告知。不再列为候选,勿再评估。
 - **真机验证(本轮,已通过)**：setext 标题两种下划线均成标题且不多出分割线 · 任务列表 ☐/☑ 正确、加粗精确落在文字上未被符号带偏 · `[x]无空格` 原样保留 · 全角空格列表项正常 · emoji/CJK 后的加粗 offset 精确 · 远程图上传 + 封面设置成功（含带查询参数的 `pbs.twimg.com` URL）· 推文嵌入 / 表格 / 代码块 / 分割线均原生。
   - 期间一次图片上传失败经排查为**该 Wikimedia URL 本身不可达**，非代码问题；降级链路如实把 markdown 原文写回正文、未丢内容，行为符合设计。样例已改用 `pbs.twimg.com`。
 - **真机结论(本轮)**：**X 忽略 Draft `ContentBlock.depth`**——嵌套列表渲染成扁平列表,有序列表还会被连续重编号。能力面板「多级列表」据此从暂定的 `special` 落为 `warn`、文案改为确定的「X 不支持列表层级 · 已扁平化(内容不丢)」。**depth 保留照写**:语义正确、零成本,X 日后支持即自动生效。
 - **已排除（固有限制）**：`postMessage`→MessageChannel「私有通道」（MAIN world 下 File 对页面脚本不可隐藏，见 §8）；**自动填图片 ALT/Description**——实测 ALT 不在 Draft MEDIA entity data（`data` 只有 `mediaItems`）、走 X 后端 `media/edit`,无法「借 Draft 直写」;程序化打开「Edit media」弹窗永久 loading(内部元素不渲染)、Save 只回 Crop tab 不关窗。三路(直写/UI 弹窗/私有接口)皆不通,**自动 alt 已搁置**、代码已回退(分支 `feat/image-alt-text`),`altCaption` 开关为演示占位。详见 §11。
-- **下一步**：远期「文章 → Markdown 反向导出」;或按需迭代。
+- **下一步**:真机回归 → 打 tag 上架;之后按 backlog 迭代,远期「文章 → Markdown 反向导出」。
 - **怎么跑**：`pnpm install && pnpm build` → Chrome 加载 `.output/chrome-mv3`。详见 §7。
 
 ---
@@ -146,7 +146,14 @@ background（开侧栏）                          injector.ts（MAIN world，�
   - 行为转变：坏字段**静默回落默认、面板照常可用、用户数据保全**；坏历史项**只丢该项**、其余历史保留。bootstrap 的 try/catch 与 ErrorBoundary 保留为**最后一道防线**，不再是第一道。
   - 新增 63 例单测（`loadValidation.test.ts`）：13 种损坏形态 × 四个加载器，含**端到端接线测试**（塞脏 JSON 进 localStorage 驱动真实 `loadX()`）——只测校验器而不测接线的话，漏接了照样全绿。已用「拆掉校验 → 测试变红」反证。
 
-`tsc --noEmit` 全绿；`pnpm build` 正常出包。
+- 🟡 **v0.5.0 · 上线前两轮审查修复**(8 月五批 + 10 月阶段 0～3,**代码侧三绿,待真机回归**):
+  - **写入安全**:双钥钉死 + 文章页路由闸门(推文/私信框不再「已连接」);图片阶段每步 `settle` 等 React 提交(非末张失败不再被回滚删掉);超时晚到 MEDIA 循环中按 pendingKey 精确追回、末轮 FIFO + orphan 审计;权限申请统一为两条写入路径的第一个 await;injector 回传白名单校验(B9)。
+  - **解析**:链接图片括号配对扫描器(A1)、强调符 flanking + 转义 + `\p{L}` 词内 `_`(A2/A12/A13)、列表续行 / 列表内缩进围栏(A3/A4)、围栏判定收敛为 `parseLines(onFence)` 单一来源、标题抽取 `inlinePlainText`、frontmatter/cover 边角十余项。
+  - **数据**:存储写失败常驻错误条、草稿/历史/设置/主题多窗口同步、草稿防抖 250ms+2s max-wait、历史 UUID(备份 version 2)、恢复前确认 + 自动导出、wipe 真清、加载路径逐字段校验(PR #31)。
+  - **上架合规**:去 `tabs`、host_permissions 仅 x.com/twitter.com、`unlimitedStorage`、Chrome ≥116、manifest `_locales`(en/zh_CN)、设置页版本读 manifest、生产不打 `console.info`、隐私政策 / NOTICE、字体瘦身(约 640KB,wxt 构建报告 637.58 kB)。
+  - 单测 307(v0.4.0 tag)→ 370(PR #31)→ 488(8 月五批)→ **646**(10 月三阶段)。
+
+`pnpm compile` / `pnpm test`(646)/ `pnpm build` 全绿。
 
 ---
 
@@ -169,6 +176,9 @@ background（开侧栏）                          injector.ts（MAIN world，�
 | **行内图片**（段落中的 `![](x)`） | ⚠️ 保留 markdown 原文（仅独占一行的图片会上传）。需 Draft 行内 atomic,成本较高。**能力面板已如实告知** | 暂缓 |
 | 脚注 `[^1]` / 内嵌 HTML | ⚠️ 保留原文（X 均不支持）。**能力面板已如实告知** | 不计划 |
 | `punct` / `zhConvert` / `retries` / `codeStrategy` 设置项 | 仍置灰「规划中 / 当前固定」（诚实占位,非撒谎） | 未定 |
+| **扩展更新后旧 injector 需刷新 X 页面** | ⚠️ 扩展无法替换已注入页面的旧脚本;v0.5.0 协议新增 `isArticleEditor`,旧脚本不回该字段 → 探针判 `needs-refresh`、提示「请刷新此 X 页面以启用插件」(fail-closed,不会误写)。每次涉及协议的发版都要在更新说明里提醒用户刷新 | 固有限制 |
+| `settleTimeouts` / `imageLateRecovered` / `orphanMedia` 诊断字段 | ⚠️ 仅进 `ImportResult` 供诊断,UI 不消费(orphan 经失败明细 `orphan-media` 呈现) | 按需 |
+| 可选 host 权限撤销入口(D8) | ⚠️ 扩展内无 `permissions.remove` 入口,用户只能去 chrome://extensions 撤销 | backlog |
 
 > 图片上传（远程/dataURI）、封面、原生表格均已完成并真机验证合并（PR #4/#5/#7）。
 >
@@ -223,6 +233,9 @@ pnpm build              # → .output/chrome-mv3
 - **MAIN world 下 File 对页面脚本「不可隐藏」——固有限制，勿再尝试「私有通道」**：injector 在 MAIN world，与 x.com 页面 JS 共享同一个 window 与 JS 堆。图片上传靠**借页面的 `onFilesAdded` 回调**（只存在于 MAIN world），File 必须序列化进 MAIN world 才能喂给它——一旦进入，同 world 的页面脚本就能 hook `onFilesAdded` / `FileReader` 读到，**换任何传输通道都藏不住**。曾试图用 MessageChannel 把 content↔injector 通信私有化（分支 `feat/messagechannel-private`），**已验证不可达成并回退**：`window.postMessage(hello, origin, [port2])` 派发的是**单个**事件，MAIN world 里所有监听器（injector + 页面脚本）拿到的是**同一个** `e.ports[0]`；页面脚本 `addEventListener('message', e => e.ports[0].onmessage = leak)` 即可在握手期抓到 port、读走后续所有 File（已实测确认）。MessageChannel 仅能挡「被动 `window.onmessage` 监听」，挡不住任何主动页面脚本，收益不足以支撑「私有」表述。**结论**：这是「借 `onFilesAdded` 上传」架构的固有代价，除非改上传路径（如 GraphQL 上传 API——技术方案明确避开的脆弱/付费路径）。**教训**：动隔离/安全边界前，先写清威胁模型（对手是谁、能力边界）+ 查证 API 确切语义（文档/实测），确认目标**理论可达**再动手，别凭「感觉更私密」下手。
 - **FS 文件夹 handle 对 x.com 页面脚本可读（固有残留，已缓解）**：`FileSystemDirectoryHandle` 因 FS Access origin 绑定**只能**存 x.com origin 的 IndexedDB（sidepanel 扩展 origin 用不了它，搬不走）。而 content script 与 x.com 页面**共享同源 IndexedDB**——页面脚本 / XSS 可 `indexedDB.open('markflow_local_assets')` 取出 handle、免手势 `getFile()` 遍历读用户**整个已连文件夹**（比「MAIN world File 不可隐藏」严重：那只暴露正在导入的单张图，这暴露整文件夹、持久）。**已缓解**（发布前加固）：涉及本地图的导入结束后 `clearVaultHandle(active+persistent)`，把暴露窗口从「整个会话」压到「单次导入」；代价是每篇导入需重选文件夹。**残留**：「连接后从未导入」的窗口仍暴露（content 侧无自然清理时机），用户可手动「清除」；将 x.com XSS 视为威胁模型内则此为固有面。
 - **`InlineStyleRange.offset` 单位 = UTF-16 码元，禁止直接喂 `convertFromRaw`**：parser 用 `string.length`（码元）计 offset，injector 按 `block.text.length` 逐**码元**构造 characterList 直接 merge 进 Draft ContentBlock——全链路统一码元，emoji/CJK 扩展字符（代理对）后的样式区间精确对齐。**雷区**：Draft 的 raw 格式（`convertFromRaw`/`encodeInlineStyleRanges`）按**码点**计——将来若有人改走 rawToContentState，所有代理对之后的区间会整体错位。保持直写 characterList 路径。
+- **`settle` 谓词等待不可去掉**(B1,injector):图片阶段每次 `onChange` 之后都必须等 X 真正提交(谓词:marker 文本已变 / MEDIA 已出现)再读下一轮 editorState。去掉或换回固定 `delay` 会让下一轮用陈旧 state 读-改-写,把上一步(如失败图写回的原文)回滚,marker 重现后被清扫整块删掉——内容静默丢失。settle 超时只记账(`settleTimeouts`)不中断。
+- **权限申请必须是两条写入路径的第一个 await**:直写与 ask 两条路径都要先同步解析 blocks 并 `permissions.request`,再做探针/其他 await。任何前置 await(包括「先探针取 articleId」)都会消耗 Chrome 的瞬时用户激活,新 profile 下权限弹窗会直接被拒、不弹出。8 月批次二曾在直写路径前插了探针 await,10 月阶段一才改回。
+- **晚到 MEDIA 的 FIFO 追回只能在末轮做**(B2):循环中只按 `pendingKey` 精确追回;若在循环中做 FIFO,会把后一张图「首次即 ready」的 MEDIA 抢给早先超时的图,造成逐张错位——正是要修的 bug。末轮 FIFO 后仍多出的 MEDIA 走 `orphan-media` 审计上报。
 - **pnpm 11 构建脚本**：esbuild 需在 `pnpm-workspace.yaml` `allowBuilds` 放行。
 - **CJK 字体**：只打包拉丁字体，中文用系统栈。
 - **`.output`/`.wxt`/`node_modules` 不提交**（已 gitignore）。
@@ -248,6 +261,10 @@ pnpm build              # → .output/chrome-mv3
 - [x] ~~**数学块 `$$`**~~ ✅ 本轮实现并真机验证：真机 dump 确认 X 原生 `LATEX` atomic 块（`data:{}`、公式在块 `text`、逐字符挂 entity），parser 识别块级 `$$…$$` → injector 直写 → 能力面板标 native。真机导入 `$$\nE = mc^2\n$$` 后 X 原生渲染出 LaTeX 公式块。
 - [ ] 行内数学 `$…$`：X 的 LaTeX 是块级 Insert 项，无行内原生承载，暂只如实告知（与行内代码/行内图片同策略）。
 
+**v0.5.0 发版前**:真机回归(QA 文档 T1～T21)→ 隐私政策发布到公开地址 → 打 tag 上架。见 §0「还没做」。
+
+**发版后待办**:见 [`docs/review/backlog-2026-10-22.md`](./docs/review/backlog-2026-10-22.md)——审查推迟项(A8/A11/A19～A21、B6/B12/B13/B15、C10～C24/C27/C28/C32/C37、D8)与本轮 code review advisory;另有 8 月方案遗留的设计层项(信息架构流水线化、mdast 重构、arm 共享 hook)。
+
 **远期**：文章 → Markdown 反向导出（xposter 有范本，§8.1 导出器）。
 
 **已排除（固有限制 / 搁置，勿再尝试）**：自动填图片 ALT（不在 Draft entity、走后端、UI 弹窗卡死，见 §6/§11）；`postMessage`→MessageChannel 私有化（MAIN world 下 File 对页面脚本不可隐藏，见 §8）。
@@ -266,7 +283,14 @@ pnpm build              # → .output/chrome-mv3
 
 ## 11. 最近一次会话小结
 
-**2026-07-25 · 第十七次会话（本次）· 数学块 `$$` → X 原生 LaTeX**：
+**2026-10-22 · 第十八次会话（本次）· 发版前复审 + 三阶段修复 + v0.5.0 定版**:
+- **起点**:发现 8 月审查分支(9 个提交、五批修复、CI 全绿)**从未合入 main、未真机回归**;v0.4.0 tag 落后 main 5 个提交(PR #31 源码不在 tag 里,同一版本号两份代码)。于是先复审「分支合入后仍开放」的问题,开 PR #32 合分支,再在 `fix/pre-release-2026-10` 上分阶段 0～3 修复并定版 0.5.0。
+- **教训 · pnpm 坏版本**:`packageManager` 钉的 pnpm@11.12.0 被官方标为 broken release,本机 compile/test/build/zip 全失效。只改 pin 到 11.18.0、`--frozen-lockfile` 验证零改动;**不要重生成 lockfile**(本机 registry 是公司源,会写进 lockfile)。CI 注释不再钉具体小版本。
+- **教训 · tag 漂移**:定版提交打 tag 后又合了源码改动却没 bump 版本——同一版本号对应两份代码,CHANGELOG 用例数也对不上。发版收尾(tag/版本/CHANGELOG)统一走 `/check` ship 模式。
+- **教训 · 审查分支未合入**:修复做完但分支挂着没合,两个月后复审时得先逐条甄别哪些已在分支里修过。修复分支完成即开 PR 并跟进合并,HANDOFF「最后更新」要写清分支是否已合入 main。
+- 修复要点与踩坑见 §5「v0.5.0」条目与 §8 新增三条(settle / 权限首个 await / FIFO 末轮);待办见 §0「还没做」与 backlog 文档。
+
+**2026-07-25 · 第十七次会话 · 数学块 `$$` → X 原生 LaTeX**：
 - **先真机 dump 定 entity shape,再动手**：X 的 LaTeX 块 entity 形状是本项目 M0 探针清单里一直没做的一项(DIVIDER/MARKDOWN/TWEET 都有源码/dump 实证,唯独 LATEX 没有)。开发前先写 Console dump 脚本(照 injector 的 fiber 定位路径)交用户真机跑,拿到确切 shape:`entityType="LATEX"` / `mutability=IMMUTABLE` / `data={}`(空) / **公式本体在块 `text`** / **每个字符都挂同一 LATEX entity key**。**教训延续**:entity 形状绝不臆造(捏错 X 直接不渲染),先 dump 实证再写。
 - **LATEX 与前三种 atomic 的形状相反**:DIVIDER/MARKDOWN/TWEET 的数据在 entity `data`、块文本恒单空格(injector 硬编码);LATEX 反过来——`data` 空、公式在 `text`。故 protocol 给 LATEX 变体独有 `text` 字段;injector atomic 分支按 `entityType==='LATEX'` 分流:公式文本逐字符挂同一 entityKey(与既有 LINK entity 逐字符挂法同理),其余三种保持单空格。
 - **parser 块级 `$$` 识别**(`matchMathOpen`):单行 `$$ x $$` 就地成块、多行 `$$\n…\n$$` 找裸 `$$` 闭合行、未闭合回退当文本(与未闭合围栏一致)、空公式回退。**假阳性主防线**:`$$100 涨到` 这类行内双美元其后非空 → 判 null 不进块判定、也不当段落边界(沿用本项目「`$$` 须行首」口径)。放在围栏之后(围栏内 `$$` 已被吃掉)、其余 atomic 之前。

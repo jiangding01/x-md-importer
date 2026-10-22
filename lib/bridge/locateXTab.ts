@@ -10,9 +10,13 @@
 /** X 文章编辑页的 URL 匹配(探针与写入共用同一份)。 */
 export const X_TAB_MATCHES = ['*://x.com/*', '*://twitter.com/*'];
 
-/** 判断某 URL 是否属于 X(x.com / twitter.com)。 */
+/**
+ * 判断某 URL 是否属于 X(x.com / twitter.com)。范围须与 content_scripts / host_permissions
+ * 的 matches(`*://x.com/*`、`*://twitter.com/*`,不含任何子域)严格一致:子域页(help.x.com 等)
+ * 没有 content script,也读不到 tab.url,若在此放行会被误报「需刷新」(B11)。
+ */
 const isXUrl = (url: string | undefined): boolean =>
-  /^https?:\/\/(?:[^/]+\.)?(?:x|twitter)\.com\//.test(url ?? '');
+  /^https?:\/\/(?:x|twitter)\.com\//.test(url ?? '');
 
 /**
  * 解析目标 X 标签页 id——**仅当当前活动标签本身是 X 页**时返回其 id,否则 null。

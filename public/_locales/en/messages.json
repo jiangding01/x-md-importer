@@ -1,0 +1,14 @@
+{
+  "extName": {
+    "message": "MarkFlow — Markdown to X Articles",
+    "description": "Extension name shown in the Chrome Web Store and chrome://extensions."
+  },
+  "extDesc": {
+    "message": "Import Markdown into X articles, formatting preserved. Local-first, no telemetry, nothing sent to developer servers.",
+    "description": "Extension description. Must be 132 characters or fewer."
+  },
+  "actionTitle": {
+    "message": "MarkFlow",
+    "description": "Tooltip of the toolbar action button."
+  }
+}

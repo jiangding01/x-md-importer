@@ -151,19 +151,32 @@ export async function requestReadPermission(handle: FileSystemDirectoryHandle): 
 /**
  * 把相对路径拆成安全的路径段;非法(绝对路径 / 盘符 / `..` 逃逸 / 空)返回 null。
  * 反斜杠归一为 `/`,`%20` 等 URL 编码解码,忽略 `.` 与空段。
+ * decode=false 时跳过 URL 解码(C9:文件名里本就含字面 `%xx` 时,解码后反而读不到,需用原串重试)。
  */
-export function splitLocalPath(raw: string): string[] | null {
+export function splitLocalPath(raw: string, decode = true): string[] | null {
   let p = raw.trim();
-  try {
-    p = decodeURIComponent(p);
-  } catch {
-    /* 非法编码则用原串继续 */
+  if (decode) {
+    try {
+      p = decodeURIComponent(p);
+    } catch {
+      /* 非法编码则用原串继续 */
+    }
   }
   p = p.replace(/\\/g, '/');
   if (p.startsWith('/') || /^[a-zA-Z]:/.test(p)) return null; // 绝对路径 / 盘符
   const segs = p.split('/').filter((s) => s !== '' && s !== '.');
   if (!segs.length || segs.some((s) => s === '..')) return null; // 空 / `..` 逃逸
   return segs;
+}
+
+/**
+ * 剥掉路径尾部的 `?query` / `#hash`(C9):`![](img/a.png?v=2)`、`![](a.png#center)` 这类写法
+ * 在 Markdown 编辑器里能显示,本地文件名里却没有这段。只剥**字面** `?`/`#`(在解码之前),
+ * 编码过的 `%3F`/`%23` 属于文件名本身,不动。
+ */
+export function stripQueryHash(raw: string): string {
+  const i = raw.search(/[?#]/);
+  return i >= 0 ? raw.slice(0, i) : raw;
 }
 
 /** 从根 handle 按段逐级读文件;任一级不存在则返回 null。 */
@@ -183,24 +196,259 @@ async function readBySegments(
   }
 }
 
+// ── 文件名索引(C9)──
+// Obsidian 短链接 `![[x.png]]` 只写文件名(附件实际在 attachments/ 或任意子目录);md 位于
+// vault 子目录时 `./img/a.png` / `../assets/a.png` 是相对 md 自身的路径——两者按「根 + 相对路径」
+// 直读必然 not-found。直读失败时在 vault 内按文件名查找(Obsidian 的解析规则:同名取路径最短)。
+
+/** 索引扫描上限:目录深度(根的直接子项为第 1 层)与条目总数,防巨型文件夹拖死导入。 */
+export const VAULT_INDEX_MAX_DEPTH = 6;
+export const VAULT_INDEX_MAX_ENTRIES = 5000;
+
+/** 文件名 → 该名所有文件的路径段列表(相对根)。 */
+export type VaultNameIndex = Map<string, string[][]>;
+
+/** 目录遍历所需的最小接口(TS DOM lib 的异步迭代声明随版本不一,按需最小声明)。 */
+interface IterableDirHandle {
+  values(): AsyncIterable<{ kind: 'file' | 'directory'; name: string }>;
+}
+
+/** 跳过的目录:隐藏目录(`.obsidian`/`.git`/`.trash` 等)与 node_modules。 */
+function skipDir(name: string): boolean {
+  return name.startsWith('.') || name === 'node_modules';
+}
+
+/**
+ * BFS 建文件名索引。有上限(深度/条目数),超限即停——宁可少收录也不卡死;
+ * 单个目录读取失败(权限/竞态删除)跳过该目录继续。
+ */
+export async function buildVaultNameIndex(root: FileSystemDirectoryHandle): Promise<VaultNameIndex> {
+  const index: VaultNameIndex = new Map();
+  let entries = 0;
+  const queue: { dir: FileSystemDirectoryHandle; path: string[] }[] = [{ dir: root, path: [] }];
+  while (queue.length > 0) {
+    const { dir, path } = queue.shift()!;
+    try {
+      for await (const h of (dir as unknown as IterableDirHandle).values()) {
+        entries += 1;
+        if (entries > VAULT_INDEX_MAX_ENTRIES) return index;
+        if (h.kind === 'file') {
+          const list = index.get(h.name);
+          const segs = [...path, h.name];
+          if (list) list.push(segs);
+          else index.set(h.name, [segs]);
+        } else if (path.length + 1 < VAULT_INDEX_MAX_DEPTH && !skipDir(h.name)) {
+          queue.push({ dir: h as unknown as FileSystemDirectoryHandle, path: [...path, h.name] });
+        }
+      }
+    } catch {
+      /* 该目录不可读:跳过 */
+    }
+  }
+  return index;
+}
+
+/**
+ * 索引缓存:每次导入只建一次(多图并发准备共享同一个 Promise),导入结束由 content 调
+ * clearVaultIndexCache() 清掉。键是调用方给的作用域标识(active/persistent)——handle 每次从
+ * IndexedDB 取出都是新对象,不能按对象身份缓存。
+ */
+const indexCache = new Map<string, Promise<VaultNameIndex>>();
+
+/** 清空文件名索引缓存(导入开始/结束时调用;文件夹内容可能已变)。 */
+export function clearVaultIndexCache(): void {
+  indexCache.clear();
+}
+
+function getIndex(root: FileSystemDirectoryHandle, cacheKey: string | undefined): Promise<VaultNameIndex> {
+  if (cacheKey === undefined) return buildVaultNameIndex(root);
+  let p = indexCache.get(cacheKey);
+  if (!p) {
+    p = buildVaultNameIndex(root);
+    indexCache.set(cacheKey, p);
+  }
+  return p;
+}
+
+/**
+ * 原始路径的「尾部段」(用于索引匹配):归一反斜杠、去空段/`.`/`..`。`..` 在这里只是被丢弃
+ * 而非放行——索引查找只在 vault 内部按文件名匹配,不存在逃逸。
+ */
+function tailSegments(raw: string, decode: boolean): string[] {
+  let p = raw.trim();
+  if (decode) {
+    try {
+      p = decodeURIComponent(p);
+    } catch {
+      /* 原串继续 */
+    }
+  }
+  return p
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter((s) => s !== '' && s !== '.' && s !== '..');
+}
+
+/** 是否该走索引兜底:单段文件名(Obsidian 短链接),或显式相对 md 自身的 `./`、`../` 路径。 */
+function wantsIndexLookup(raw: string): boolean {
+  const p = raw.trim().replace(/\\/g, '/');
+  if (p.startsWith('./') || p.startsWith('../')) return true;
+  return !p.includes('/');
+}
+
+/**
+ * 从索引里按尾部段匹配:候选路径须以 tail 结尾(`./img/a.png` 只认 `…/img/a.png`),
+ * 多个命中取路径段最少者(Obsidian「最短路径」规则),同长取先入索引者(BFS 顺序 = 更浅更先)。
+ */
+export function pickFromIndex(index: VaultNameIndex, tail: string[]): string[] | null {
+  const name = tail[tail.length - 1];
+  if (!name) return null;
+  const candidates = index.get(name);
+  if (!candidates) return null;
+  let best: string[] | null = null;
+  for (const segs of candidates) {
+    if (segs.length < tail.length) continue;
+    const off = segs.length - tail.length;
+    if (!tail.every((t, i) => segs[off + i] === t)) continue;
+    if (!best || segs.length < best.length) best = segs;
+  }
+  return best;
+}
+
+/** 按「解码段 → 未解码原串段」两遍直读(含 Obsidian 首段 == 文件夹名的剥除)。 */
+async function readDirect(
+  root: FileSystemDirectoryHandle,
+  path: string,
+  folderName: string | null,
+): Promise<File | null> {
+  const tried = new Set<string>();
+  for (const decode of [true, false]) {
+    const segs = splitLocalPath(path, decode);
+    if (!segs) continue;
+    const key = segs.join('/');
+    if (tried.has(key)) continue; // 无编码字符时两遍相同,不重复读
+    tried.add(key);
+    const direct = await readBySegments(root, segs);
+    if (direct) return direct;
+    if (folderName && segs.length > 1 && segs[0] === folderName) {
+      const stripped = await readBySegments(root, segs.slice(1));
+      if (stripped) return stripped;
+    }
+  }
+  return null;
+}
+
 /**
  * 从文件夹 handle 解析相对路径读出 File;读不到返回 null(调用方降级为 fallbackText)。
- * 先按原路径读;失败且**首段 == 所选文件夹名**时剥掉首段重试(Obsidian vault:
- * `myvault/img.png` 在选了 myvault 文件夹时应解析为 `img.png`)。
+ * 查找顺序:
+ *  1. 剥 `?query`/`#hash` 后按「根 + 相对路径」直读(解码失败或解码后读不到 → 用未解码原串重试);
+ *     失败且**首段 == 所选文件夹名**时剥掉首段重试(Obsidian vault:`myvault/img.png` 在选了
+ *     myvault 文件夹时应解析为 `img.png`);剥后仍读不到且原串含 `?`/`#` 时再按原串试一次。
+ *  2. 仍失败且路径是单段文件名或以 `./`/`../` 开头 → 文件名索引兜底(见 pickFromIndex)。
+ * 安全:非法路径(绝对路径 / 盘符 / `..` 逃逸)在第 1 步被拒;第 2 步只在 vault 内按名匹配,
+ * 读取的始终是索引里真实存在于 root 之下的路径。
  */
 export async function resolveLocalFile(
   root: FileSystemDirectoryHandle,
   rawPath: string,
   folderName: string | null,
+  indexCacheKey?: string,
 ): Promise<File | null> {
-  const segs = splitLocalPath(rawPath);
-  if (!segs) return null;
-  const direct = await readBySegments(root, segs);
-  if (direct) return direct;
-  if (folderName && segs.length > 1 && segs[0] === folderName) {
-    return readBySegments(root, segs.slice(1));
+  return (
+    (await resolveLocalFileDirect(root, rawPath, folderName)) ??
+    (await resolveLocalFileByIndex(root, rawPath, indexCacheKey))
+  );
+}
+
+/** resolveLocalFile 第 1 步:直读(含 query/hash 剥离回退与首段 == 文件夹名剥除)。 */
+async function resolveLocalFileDirect(
+  root: FileSystemDirectoryHandle,
+  rawPath: string,
+  folderName: string | null,
+): Promise<File | null> {
+  const path = stripQueryHash(rawPath);
+  return (
+    (await readDirect(root, path, folderName)) ??
+    (path !== rawPath ? await readDirect(root, rawPath, folderName) : null)
+  );
+}
+
+/** resolveLocalFile 第 2 步:文件名索引兜底(仅单段文件名或 `./`/`../` 开头的路径)。 */
+async function resolveLocalFileByIndex(
+  root: FileSystemDirectoryHandle,
+  rawPath: string,
+  indexCacheKey?: string,
+): Promise<File | null> {
+  const path = stripQueryHash(rawPath);
+  if (!wantsIndexLookup(path)) return null;
+
+  const index = await getIndex(root, indexCacheKey);
+  const tried = new Set<string>();
+  for (const decode of [true, false]) {
+    const tail = tailSegments(path, decode);
+    const key = tail.join('/');
+    if (!tail.length || tried.has(key)) continue;
+    tried.add(key);
+    const hit = pickFromIndex(index, tail);
+    if (hit) {
+      const file = await readBySegments(root, hit);
+      if (file) return file;
+    }
   }
   return null;
+}
+
+/**
+ * 多根(按优先级排好)两层解析(C9):**先在所有根直读**,全部失败后**再在所有根查文件名索引**——
+ * 避免 active 的索引模糊命中(同名图在别的目录)遮蔽 persistent 的精确路径。导出供单测。
+ */
+export async function resolveAcrossRoots(
+  roots: ReadonlyArray<{ handle: FileSystemDirectoryHandle; cacheKey: string }>,
+  rawPath: string,
+): Promise<File | null> {
+  for (const { handle } of roots) {
+    const file = await resolveLocalFileDirect(handle, rawPath, handle.name);
+    if (file) return file;
+  }
+  for (const { handle, cacheKey } of roots) {
+    const file = await resolveLocalFileByIndex(handle, rawPath, cacheKey);
+    if (file) return file;
+  }
+  return null;
+}
+
+/**
+ * 本地图解析结果(C30):命中给 File;未命中按原因区分,供报告卡给出可操作的提示——
+ *  - 'no-folder'          两个作用域都没连接文件夹(用户需先连接);
+ *  - 'permission-lapsed'  有已连接文件夹但读权限回落(prompt/denied,常见于浏览器重启后),
+ *                         且在仍有效的文件夹里没找到(文件很可能就在失效的那个里,需重新授权);
+ *  - 'not-found'          有效文件夹里确实找不到该文件。
+ */
+export type LocalResolveResult =
+  | { file: File }
+  | { reason: 'no-folder' | 'permission-lapsed' | 'not-found' };
+
+/** 单个作用域的连接状况:handle=null 表示未连接;granted=读权限是否仍有效。 */
+export interface ScopeVault {
+  handle: FileSystemDirectoryHandle | null;
+  granted: boolean;
+  cacheKey: string;
+}
+
+/**
+ * resolveLocalImageAcrossScopes 的纯逻辑部分(导出供单测):按优先级排好的作用域列表 → 解析结果。
+ * 只在 granted 的根里查找(未授权的 handle 读会抛 / 需手势),未命中再按连接状况归因。
+ */
+export async function resolveFromScopes(
+  scopes: ReadonlyArray<ScopeVault>,
+  rawPath: string,
+): Promise<LocalResolveResult> {
+  const connected = scopes.filter((s): s is ScopeVault & { handle: FileSystemDirectoryHandle } => s.handle !== null);
+  if (!connected.length) return { reason: 'no-folder' };
+  const roots = connected.filter((s) => s.granted).map((s) => ({ handle: s.handle, cacheKey: s.cacheKey }));
+  const file = roots.length ? await resolveAcrossRoots(roots, rawPath) : null;
+  if (file) return { file };
+  return { reason: roots.length < connected.length ? 'permission-lapsed' : 'not-found' };
 }
 
 /**
@@ -208,14 +456,14 @@ export async function resolveLocalFile(
  * 依次对每个「已连接且读权限有效」的文件夹尝试 resolveLocalFile,首个命中即返回 File。
  * 与「handle 级优先」的区别:active 里找不到该文件时会继续到 persistent 里找——active 只是
  * 优先来源,不会一旦连上就把 persistent 整体架空(避免「素材卡显示就绪、导入却降级」的落差)。
- * 两级都读不到返回 null(调用方降级 fallbackText)。
+ * 两层拆开(C9):先在所有作用域直读,全部失败后再在所有作用域查文件名索引(见 resolveAcrossRoots)。
+ * 读不到时返回原因码(C30,见 LocalResolveResult),调用方据此降级 fallbackText 并记失败原因。
  */
-export async function resolveLocalImageAcrossScopes(rawPath: string): Promise<File | null> {
+export async function resolveLocalImageAcrossScopes(rawPath: string): Promise<LocalResolveResult> {
+  const scopes: ScopeVault[] = [];
   for (const scope of ['active', 'persistent'] as const) {
     const h = await getVaultHandle(scope);
-    if (!h || !(await hasReadPermission(h))) continue;
-    const file = await resolveLocalFile(h, rawPath, h.name);
-    if (file) return file;
+    scopes.push({ handle: h, granted: h ? await hasReadPermission(h) : false, cacheKey: scope });
   }
-  return null;
+  return resolveFromScopes(scopes, rawPath);
 }

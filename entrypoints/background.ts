@@ -1,4 +1,5 @@
 import { browser } from 'wxt/browser';
+import { isBlockedHost } from '@/lib/bridge/blockedHost';
 import {
   isFetchImageRequest,
   type FetchImageResponse,
@@ -62,52 +63,6 @@ async function readCapped(resp: Response, max: number): Promise<Uint8Array<Array
     offset += c.byteLength;
   }
   return out;
-}
-
-/**
- * SSRF 防护:拒绝指向内网 / 回环 / 链路本地的主机,防止被 Markdown 里的恶意图片 URL
- * 当作探测内网的跳板。仅做主机名层面的最佳努力拦截(扩展上下文无法在 fetch 前解析 DNS,
- * DNS rebinding 无法完全防住;叠加「按来源 origin 运行时申请权限」已收敛面)。
- *
- * 残留风险(诚实标注,扩展层无法根治):这是纯词法(lexical)黑名单,只看主机名字符串。
- * 对于「公网 DNS 名解析到内网 IP」的攻击(A/AAAA 记录指向 169.254.169.254 或私网段,
- * 含 DNS rebinding),扩展在 fetch 前拿不到 resolved IP,词法层面无从判断,故无法根治。
- * 现有纵深缓解为多层叠加:词法黑名单 + credentials:'omit'(不带凭据)+ magic-byte 内容
- * 嗅探(只上传真图片字节、不外泄内网响应文本)+ 按来源 origin 精确申请 host 权限 +
- * 重定向最终落点复查。下方对常见「泛解析到内网」的 wildcard-DNS 服务后缀做了词法拦截,
- * 属尽力而为,并不能覆盖任意自建的内网解析域名。
- */
-function isBlockedHost(host: string): boolean {
-  const raw = host.toLowerCase();
-  const unbracketed = raw.replace(/^\[|\]$/g, ''); // 去掉 IPv6 字面量方括号
-  // 是否为 IPv6 字面量:被方括号包裹,或去括号后仍含冒号。fc/fd 前缀规则仅对它生效。
-  const isIPv6Literal = raw.startsWith('[') || unbracketed.includes(':');
-  // 归一剥「尾点」(FQDN 根标签):`new URL('http://localhost./').hostname` === 'localhost.',
-  // 尾点被保留会让 'localhost.'/'foo.local.'/'x.nip.io.' 绕过下方精确/后缀匹配 → 放行到回环/内网。
-  // 尾点只对命名主机 / IPv4 有意义;IPv6 字面量(`[::1]` 等)不带尾点,剥了反而可能误伤,故跳过。
-  const h = isIPv6Literal ? unbracketed : unbracketed.replace(/\.$/, '');
-  if (h === 'localhost' || h.endsWith('.local') || h.endsWith('.internal') || h.endsWith('.localhost')) return true;
-  if (h === '0.0.0.0' || h === '::1' || h === '::') return true;
-  // 常见「泛解析到内网 / 回环」的 wildcard-DNS 服务:形如 10-0-0-1.nip.io、
-  // 127.0.0.1.sslip.io、xxx.localtest.me 会被公网 DNS 解析到内网/回环地址。
-  // 尽力而为地按后缀拦截(无法穷举所有自建域名,见函数头注释)。
-  const wildcardDnsSuffixes = ['.nip.io', '.sslip.io', '.xip.io', '.localtest.me', '.lvh.me', '.vcap.me'];
-  if (h === 'localtest.me' || h === 'lvh.me' || h === 'vcap.me') return true;
-  if (wildcardDnsSuffixes.some((s) => h.endsWith(s))) return true;
-  // IPv4-mapped IPv6(::ffff:127.0.0.1 / ::ffff:7f00:1)会被 URL 规范化成 ::ffff:… 而绕过
-  // 下面的 IPv4 私网规则,实际却路由到内网 → 一律拒绝。合法图床没有用它的理由。
-  if (h.includes('::ffff:') || h.includes('::ffff.')) return true;
-  // IPv4 回环 / 私有 / 链路本地
-  if (/^127\./.test(h)) return true;
-  if (/^10\./.test(h)) return true;
-  if (/^192\.168\./.test(h)) return true;
-  if (/^169\.254\./.test(h)) return true;
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
-  // IPv6 回环 / 链路本地(fe80::/10) / 唯一本地(fc00::/7)。
-  // fc/fd 前缀是 IPv6 唯一本地地址(fc00::/7)的判据,只能对 IPv6 字面量生效——
-  // 否则会误伤 fc2.com、fdmedia.io 等以 fc/fd 开头的合法域名(P0#3)。
-  if (isIPv6Literal && (h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd'))) return true;
-  return false;
 }
 
 /** 从 URL / MIME 推导文件名(带扩展名),供 new File(...) 使用。 */
@@ -205,22 +160,21 @@ export default defineBackground(() => {
     (message: unknown, sender: MessageSender): Promise<FetchImageResponse> | undefined => {
       // 纵深校验:只处理本扩展自身发来的消息(拒绝其他扩展 / 外部页面伪造)。
       if (sender.id !== browser.runtime.id) return undefined;
-      // 若能拿到发起方标签页 URL,进一步限制其 origin 属 x.com / twitter.com;
-      // 拿不到(如来自扩展页面)则跳过该项、由上面的 id 校验兜底。
-      const tabUrl = sender.tab?.url;
-      if (tabUrl) {
-        let origin: string;
+      // 来自标签页(content script)的消息:进一步限制发起帧属 x.com / twitter.com。
+      // 用 sender.origin / sender.url(content script 发来的消息总带,不依赖 tabs 权限),
+      // 不再读 sender.tab.url(B4 去掉 tabs 后不保证可读)。范围与 content_scripts 一致,不含子域。
+      // 非标签页来源(扩展自身页面)跳过该项、由上面的 id 校验兜底。
+      if (sender.tab) {
+        // origin 为 Chrome 80+ 字段,webextension-polyfill 的类型未收录,故窄化断言。
+        const from = (sender as MessageSender & { origin?: string }).origin ?? sender.url;
+        if (!from) return undefined; // 标签页来源却无 origin/url:保守拒绝
+        let host: string;
         try {
-          origin = new URL(tabUrl).hostname.toLowerCase();
+          host = new URL(from).hostname.toLowerCase();
         } catch {
           return undefined; // URL 解析失败:保守拒绝
         }
-        const allowed =
-          origin === 'x.com' ||
-          origin.endsWith('.x.com') ||
-          origin === 'twitter.com' ||
-          origin.endsWith('.twitter.com');
-        if (!allowed) return undefined;
+        if (host !== 'x.com' && host !== 'twitter.com') return undefined;
       }
       if (isFetchImageRequest(message)) return fetchImage(message.url);
       return undefined; // 非本扩展关心的消息:交给其他监听器

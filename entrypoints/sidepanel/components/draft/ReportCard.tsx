@@ -11,7 +11,10 @@ import type { ImageFailReason } from '@/lib/bridge/protocol';
  */
 const REASON_KEY: Record<ImageFailReason, keyof Dict> = {
   'remote-fetch-failed': 'rsnRemoteFetch',
+  'remote-permission-denied': 'rsnRemotePermDenied',
   'local-not-found': 'rsnLocalNotFound',
+  'local-no-folder': 'rsnLocalNoFolder',
+  'local-permission-lapsed': 'rsnLocalPermLapsed',
   'local-too-large': 'rsnLocalTooLarge',
   'local-bad-type': 'rsnLocalBadType',
   'data-uri-invalid': 'rsnDataUri',
@@ -25,6 +28,7 @@ const REASON_KEY: Record<ImageFailReason, keyof Dict> = {
   'upload-exception': 'rsnUpEx',
   'marker-residue': 'rsnMarkerResidue',
   'cover-set-failed': 'rsnCoverSet',
+  'orphan-media': 'rsnOrphanMedia',
 };
 
 function reasonText(reason: string, t: Dict): string {

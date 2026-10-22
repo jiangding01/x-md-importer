@@ -9,7 +9,7 @@
  */
 
 import { extractTitle } from './frontmatter';
-import { parseMarkdown, type ParseOptions } from './parser';
+import { isDemotedHeading, parseMarkdown, type ParseOptions } from './parser';
 
 export type CapBadge = 'native' | 'special' | 'image' | 'warn';
 
@@ -30,7 +30,7 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions): C
 
   let headers = 0; // header-one(源 H1/H2)
   let subheaders = 0; // header-two(源 H3)
-  let boldParas = 0; // unstyled + 整段 BOLD(源 H4+ 降级 / 整段加粗)
+  let boldParas = 0; // 源 H4+ 降级成的粗体段落(仅认 parser 的降级标记,不含源文本就整段加粗的段落)
   let listItems = 0;
   let blockquotes = 0;
   let links = 0;
@@ -79,12 +79,10 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions): C
     else if (b.type === 'header-two') subheaders += 1;
     else if (b.type === 'unordered-list-item' || b.type === 'ordered-list-item') listItems += 1;
     else if (b.type === 'blockquote') blockquotes += 1;
-    else if (b.type === 'unstyled') {
-      // H4+ → parser 产出 unstyled + 覆盖全文的单个 BOLD range;整段纯加粗段落同形,一并计入。
-      const fullBold = b.text.length > 0 && b.inlineStyleRanges.some(
-        (r) => r.offset === 0 && r.length === b.text.length && r.style === 'BOLD',
-      );
-      if (fullBold) boldParas += 1;
+    else if (isDemotedHeading(b)) {
+      // H4+ → parser 产出 unstyled + 覆盖全文的 BOLD;`**整段加粗**` 的段落同形但不是降级(A15),
+      // 故不按形态判,只认 parser 打的降级标记。
+      boldParas += 1;
     }
     for (const r of b.inlineStyleRanges) {
       if (r.style === 'BOLD' || r.style === 'ITALIC' || r.style === 'STRIKETHROUGH') inlineStyles += 1;

@@ -13,9 +13,17 @@ import { useSettings } from '@/lib/settings/SettingsProvider';
 import { useConnection } from '@/lib/bridge/useConnection';
 import { useProbe } from '@/lib/bridge/useProbe';
 import { getFolderStatus, importToXTab, probeXTabContent, setTitleOnXTab } from '@/lib/bridge/importArticle';
-import { resolveTargetXTab } from '@/lib/bridge/locateXTab';
 import { requestRemoteImagePermissions } from '@/lib/bridge/imagePermissions';
-import { classifyImageSource, type ImageBlock, type ImageFailure, type ImportMode, type SetTitleResponse } from '@/lib/bridge/protocol';
+import {
+  ARTICLE_SWITCHED_ERROR,
+  BAD_RESULT_ERROR,
+  classifyImageSource,
+  NOT_ARTICLE_EDITOR_ERROR,
+  type ImageBlock,
+  type ImageFailure,
+  type ImportMode,
+  type SetTitleResponse,
+} from '@/lib/bridge/protocol';
 import { capability, firstTitle } from '@/lib/markdown/capability';
 import { extractCover, extractTitle, stripFirstH1 } from '@/lib/markdown/frontmatter';
 import { parseMarkdown } from '@/lib/markdown/parser';
@@ -101,6 +109,8 @@ interface WorkspaceValue {
   // 报告 / 庆祝
   reportVisible: boolean;
   closeReport: () => void;
+  /** 手动打开报告卡(C4):autoReport='never'/'anomaly' 未自动弹出时,从底栏入口查看上次报告。 */
+  openReport: () => void;
   lastRunSnapshot: LastRunSnapshot | null;
   celebrating: boolean;
   // 记录
@@ -129,6 +139,8 @@ function importErrorText(error: string, t: Dict): string {
   if (error === 'disconnected') return t.errDisconnected;
   if (error === 'no-injector') return t.errNoInjector;
   if (error === 'timeout') return t.errTimeout;
+  if (error === BAD_RESULT_ERROR) return t.errBadResult; // B9:injector 回传形状不合规
+  if (error === NOT_ARTICLE_EDITOR_ERROR) return t.errNotArticleEditor; // B3:injector 拒写非文章编辑页
   // 其他 injector 层错误:统一「写入失败」并附上原始短语,便于诊断。
   return `${t.errWriteFail}: ${error}`;
 }
@@ -142,6 +154,8 @@ function titleResultText(res: SetTitleResponse, t: Dict): string {
   if (res.error === 'disconnected') return `${t.titleFail}: ${t.errDisconnected}`;
   if (res.error === 'no-injector') return `${t.titleFail}: ${t.errNoInjector}`;
   if (res.error === 'timeout') return `${t.titleFail}: ${t.errTimeout}`;
+  if (res.error === BAD_RESULT_ERROR) return `${t.titleFail}: ${t.errBadResult}`;
+  if (res.error === NOT_ARTICLE_EDITOR_ERROR) return `${t.titleFail}: ${t.errNotArticleEditor}`;
   return `${t.titleFail}: ${res.error}`;
 }
 
@@ -526,6 +540,11 @@ export function WorkspaceProvider({
     const cap = capability(md, en, parseOptsSnapshot);
     const ok = Math.max(0, blockCount - imageFail);
     const deg = cap.filter((c) => c.badge === 'warn').reduce((a, c) => a + c.count, 0);
+    // C26:封面失败(index<0 哨兵,content 在通道层补记)此前只进明细不进 fail——报告「失败 0」
+    // 却列出一条封面失败。fail = 正文图失败数 + 封面失败条目数;marker-residue 按设计不计 fail
+    // (图已落地,只是占位文本残留),即便将来出现在封面哨兵上也排除。
+    const coverFail = (imageFailures ?? []).filter((f) => f.index < 0 && f.reason !== 'marker-residue').length;
+    const fail = imageFail + coverFail;
     const now = new Date();
     const item: HistoryItem = {
       // UUID 而非 Date.now():双窗口同毫秒导入会撞 number id(React key 冲突、删除连删两条)。
@@ -534,8 +553,8 @@ export function WorkspaceProvider({
       date: `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')} ${now.toTimeString().slice(0, 5)}`,
       ok,
       deg,
-      // 图片上传失败计入 fail(记录/报告如实反映),其余降级仍归 deg。
-      fail: imageFail,
+      // 图片上传失败(含封面)计入 fail(记录/报告如实反映),其余降级仍归 deg。
+      fail,
       md,
       // 失败明细(序号/来源/阶段/原因)随记录持久化,供报告卡展示与事后排查。
       imageFailures,
@@ -545,11 +564,12 @@ export function WorkspaceProvider({
 
     setImporting(false);
     // autoReport 三档如实生效(P1-10):此前只区分 never/非 never,「仅异常时」(默认值)形同 always。
-    const hasAnomaly = deg > 0 || imageFail > 0;
+    // 失败明细全部纳入:marker-residue / orphan-media 不计入 deg/fail,但同样需要用户介入。
+    const hasAnomaly = deg > 0 || fail > 0 || (imageFailures?.length ?? 0) > 0;
     setReportVisible(opts.autoReport === 'always' || (opts.autoReport === 'anomaly' && hasAnomaly));
     // B4-6(P2-25):报告卡的数据源在此钉死——与 reportVisible 同一刻写入,后续 md 编辑/opts
     // 切换/history 删改都不会再影响报告卡已展示的内容(ReportCard 只读这份快照)。
-    setLastRunSnapshot({ md, parseOpts: parseOptsSnapshot, ok, deg, fail: imageFail, imageFailures });
+    setLastRunSnapshot({ md, parseOpts: parseOptsSnapshot, ok, deg, fail, imageFailures });
 
     const limit = opts.histLimit === 'inf' ? Infinity : Number(opts.histLimit);
     // 读 historyRef.current(最新值)而非闭包 history:标题 ask 弹窗挂起期间用户可能已在记录页
@@ -590,7 +610,13 @@ export function WorkspaceProvider({
   }, []);
 
   const startImport = useCallback(
-    async (mode: ImportMode, pinnedTarget?: { tabId: number; articleId: string | null }) => {
+    async (
+      mode: ImportMode,
+      pinnedTarget?: { tabId: number; articleId: string | null },
+      // onExisting=ask 的首次点击:权限申请(手势链首个 await)+ 即时探针之后,编辑器有内容
+      // 则钉住目标、弹 OverwriteDialog 并提前返回;为空则按传入 mode(replace)继续写入。
+      askIfContent = false,
+    ) => {
       // 同步闸门优先于一切:极快双击时第二次调用在这里直接短路,
       // 不会重复触发下载阶段(在任何 await 之前完成拦截)。
       if (importingRef.current) return;
@@ -643,21 +669,55 @@ export function WorkspaceProvider({
         // 远程图 / 封面 host 权限:必须在用户手势内、任何其它 await 之前(上面全同步)。
         // 传**已解析的 blocks**(B3-4 / P1-7):权限申请的图片来源与实际上传的来源同一份,
         // 不再走全文正则(`<>` 包裹的远程图曾被判 local → 该 origin 不申请 → 下载必被拒)。
-        await requestRemoteImagePermissions(blocks, coverSource ? [coverSource] : []);
+        const perm = await requestRemoteImagePermissions(blocks, coverSource ? [coverSource] : []);
+        // C25:用户拒绝授权此前静默——远程图随后全部降级,用户只看到「图片 0/N」不知缘由。
+        // 被拒即时提示受影响张数(正文远程图块 + 远程封面),导入照常继续(正文不受影响)。
+        const permDenied = !perm.granted && perm.origins.length > 0;
+        if (permDenied) {
+          const isRemote = (src: string) => /^https?:\/\//i.test(src);
+          const remoteCount =
+            blocks.filter((b) => b.kind === 'image' && isRemote(b.source)).length +
+            (coverSource !== null && isRemote(coverSource) ? 1 : 0);
+          showToast(t.permDeniedToast.replace('{n}', String(remoteCount)), 'error');
+        }
 
-        // review B1 + B2-1:正文写入前解析目标 X 标签**一次**并全程钉死。ask 流程传入
+        // review B1 + B2-1:正文写入前把目标 X 标签**一次**钉死并全程复用。ask 流程传入
         // pinnedTarget(writeX 探测时已钉的 tabId+articleId 双钥)则直接用——目标在弹窗
         // 弹出**之前**就定死,挂起期间切 tab/切文章都写不到别处(articleId 由 injector
-        // 在 commit 前终验)。未传时(非 ask 路径)维持原逻辑:放在权限申请(首个 await)
-        // 之后解析——权限申请必须是手势链首个 await(见 imagePermissions 注释),此处再解析
-        // 不消耗手势;且权限弹窗结束时焦点仍在当前 X 草稿,此刻定位即准。拿不到(切走了/非 X)
-        // → 按 disconnected 提前返回,importing 由 finally 复位。
-        const pinnedTabId = pinnedTarget?.tabId ?? (await resolveTargetXTab());
-        if (pinnedTabId === null) {
-          showToast(importErrorText('disconnected', t), 'error');
-          return;
+        // 在 commit 前终验)。未传时(直写路径与 ask 首次点击)在**权限申请之后**才即时探针钉
+        // 双钥:权限申请必须是手势链首个 await(HANDOFF §8 / imagePermissions 注释),探针放在
+        // 其后,不让任何 tab-API await 排在权限申请之前(它们是否消耗/拖过瞬时激活未经证实,
+        // 一律不赌);且权限弹窗结束时焦点仍在当前 X 草稿,此刻探测即准。
+        // 探不到(切走了/非 X/非文章编辑页)→ 按 disconnected 提前返回,importing 由 finally 复位。
+        let pinnedTabId: number;
+        let expectedArticleId: string | null;
+        if (pinnedTarget) {
+          pinnedTabId = pinnedTarget.tabId;
+          expectedArticleId = pinnedTarget.articleId;
+        } else {
+          const fresh = await probeXTabContent();
+          if (!fresh.connected || fresh.tabId === null) {
+            showToast(importErrorText('disconnected', t), 'error');
+            void refreshProbe(); // 同步状态条,避免「已连接」假象下反复点击
+            return;
+          }
+          pinnedTabId = fresh.tabId;
+          expectedArticleId = fresh.articleId;
+          if (askIfContent) {
+            // review #5:用这次新鲜探针的 hasContent 决定 ask/replace,而非 useConnection 的陈旧
+            // 快照;同步刷新共享状态条,与写入决策使用同一真相。
+            void refreshProbe();
+            if (fresh.hasContent) {
+              // B2-1:弹窗**之前**就钉死 {tabId, articleId},确认后透传给 startImport(取消时清掉),
+              // 挂起期间切到另一篇草稿也写不到别处。importing 由 finally 复位,弹窗确认时是一次
+              // 新手势,startImport 会再走一遍「权限申请为首个 await」(已授权则立即返回)。
+              pendingAskTarget.current = { tabId: pinnedTabId, articleId: expectedArticleId };
+              setAskOverwrite(true);
+              return;
+            }
+            // 编辑器确为空 → 直接按传入 mode(replace)整体写入,沿用刚探测的目标。
+          }
         }
-        const expectedArticleId = pinnedTarget?.articleId ?? null;
 
         // 写入中(等待 content → injector 直写)
         setStageLabel(t.stBody);
@@ -704,9 +764,19 @@ export function WorkspaceProvider({
           }
           // 序号还原:首图被抽走当封面(coverKeep=remove)后,引擎回传的正文图 index 整体 +1
           // 才对应用户文档顺序;封面哨兵(index=-1)不动。
-          const imageFailures = coverRemovedBodyImage
+          let imageFailures = coverRemovedBodyImage
             ? res.imageFailures?.map((f) => (f.index >= 0 ? { ...f, index: f.index + 1 } : f))
             : res.imageFailures;
+          // C25:本次权限申请被拒时,远程抓取的「网络层失败」(无 host 权限的跨源 fetch 表现为
+          // TypeError: Failed to fetch)改标为 remote-permission-denied,报告给出真实原因。
+          // 只改这一类:http 4xx/超时/非图片等明确的其它原因保持原样(可能来自早已授权的 origin)。
+          if (permDenied && imageFailures) {
+            imageFailures = imageFailures.map((f) =>
+              f.reason === 'remote-fetch-failed' && /failed to fetch|permission/i.test(f.detail ?? '')
+                ? { ...f, reason: 'remote-permission-denied' }
+                : f,
+            );
+          }
           finishImport(toastMsg, res.imageFail, res.blockCount, imageFailures);
         } else {
           // 失败:不写成功记录,以可读中文/英文提示错误(复位在 finally 统一处理)。
@@ -717,7 +787,7 @@ export function WorkspaceProvider({
           if (maybeCommitted) {
             showToast(t.errFailedButCommitted, 'error');
             void refreshProbe();
-          } else if (res.error === 'article-switched') {
+          } else if (res.error === ARTICLE_SWITCHED_ERROR) {
             showToast(t.errArticleSwitched, 'error');
           } else {
             showToast(importErrorText(res.error, t), 'error');
@@ -748,42 +818,19 @@ export function WorkspaceProvider({
   const writeX = useCallback(async () => {
     if (!md.trim() || importing || !connected) return;
     if (opts.onExisting === 'ask') {
-      // review #5:陈旧探针快照可能把用户刚在 X 手打的内容误判为空 → 决定 ask/replace 前
-      // 即时探一次拿新鲜 hasContent,而非依赖 useConnection 的 editorHasContent 快照。
-      // 这几个 tab-API await 不消耗手势(仅 permissions.request 消耗),后续 startImport 里
-      // 权限申请仍在手势窗口内(见其内注释)。
-      // B2-1:探测的同时拿到 {tabId, articleId} 双钥并钉死——此前 pinnedTabId 在用户点
-      // 「覆盖」**之后**才解析,确认弹窗挂起期间切到另一篇草稿 B,hasContent 检查的是 A、
-      // blockMap.clear() 砸的却是 B(B1 修过标题通道的同款竞态,正文通道当时没堵)。
-      const fresh = await probeXTabContent();
-      void refreshProbe(); // 同步刷新共享状态条,与写入决策使用同一真相
-      if (!fresh.connected || fresh.tabId === null) {
-        // 新鲜探测发现已断开 → 中止,并明确告知(P2-20:此前静默 return,按钮「点了没反应」)。
-        showToast(importErrorText('disconnected', t), 'error');
-        return;
-      }
-      const pinned = { tabId: fresh.tabId, articleId: fresh.articleId };
-      if (fresh.hasContent) {
-        pendingAskTarget.current = pinned; // 弹窗确认后透传给 startImport,取消时清掉
-        setAskOverwrite(true);
-        return;
-      }
-      // 编辑器确为空 → 直接整体写入(与原空态行为一致:replace),沿用刚探测的目标。
-      void startImport('replace', pinned);
+      // ask 与直写路径同构:**不在此处先探针**——startImport 内的 host 权限申请必须是写入
+      // 手势链上第一个 await(HANDOFF §8)。新鲜 hasContent 探测、双钥钉死(B2-1)与是否弹
+      // OverwriteDialog 的判定,统一由 startImport 在权限申请**之后**完成(askIfContent)。
+      void startImport('replace', undefined, true);
       return;
     }
-    // 非询问模式:按设置直接决定模式(总是追加 / 总是覆盖)。同样先探测钉死双钥
-    // (review 修复):此路径虽无确认弹窗,但 startImport 里的 host 权限申请是**无限期**
-    // 等用户决定的挂起窗口,期间切文章同样会「探 A 写 B」。probe 的 tab-API await 不消耗
-    // 手势,权限申请仍是 startImport 内手势链首个 await,约束不破坏。
+    // 非询问模式:按设置直接决定模式(总是追加 / 总是覆盖)。同样**不在此处先探针**(疑点 1
+    // 修复):多出的 `await probeXTabContent()` 会让权限申请不再是手势链首个 await,远程图权限
+    // 弹窗可能越过 Chrome 的瞬时激活窗口被直接拒绝。双钥由 startImport 在权限申请**之后**
+    // 即时探针钉死(仍在 importToXTab 之前,「探 A 写 B」防线不变)。
     const mode: ImportMode = opts.onExisting === 'append' ? 'append' : 'replace';
-    const freshDirect = await probeXTabContent();
-    if (!freshDirect.connected || freshDirect.tabId === null) {
-      showToast(importErrorText('disconnected', t), 'error');
-      return;
-    }
-    void startImport(mode, { tabId: freshDirect.tabId, articleId: freshDirect.articleId });
-  }, [md, importing, connected, opts.onExisting, startImport, refreshProbe, showToast, t]);
+    void startImport(mode);
+  }, [md, importing, connected, opts.onExisting, startImport]);
 
   const overwriteAppend = useCallback(() => {
     setAskOverwrite(false);
@@ -935,6 +982,10 @@ export function WorkspaceProvider({
       editorHasContent,
       reportVisible,
       closeReport: () => setReportVisible(false),
+      // 无快照时不置位:ReportCard 本就以 lastRunSnapshot 为渲染前提,这里再守一道避免空开。
+      openReport: () => {
+        if (lastRunSnapshot) setReportVisible(true);
+      },
       lastRunSnapshot,
       celebrating,
       history,

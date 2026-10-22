@@ -11,13 +11,6 @@ import { applyThemeVars, resolveDark, skinVars } from '@/lib/theme/themes';
 import { App } from './App';
 import { ErrorBoundary, RecoveryScreen } from './components/ErrorBoundary';
 import './styles/global.css';
-import '@fontsource/space-grotesk/400.css';
-import '@fontsource/space-grotesk/500.css';
-import '@fontsource/space-grotesk/600.css';
-import '@fontsource/space-grotesk/700.css';
-import '@fontsource/jetbrains-mono/400.css';
-import '@fontsource/jetbrains-mono/500.css';
-import '@fontsource/jetbrains-mono/600.css';
 
 async function bootstrap() {
   const container = document.getElementById('root');
