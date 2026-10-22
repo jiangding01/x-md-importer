@@ -186,6 +186,7 @@ export interface PreparedImage {
 export const IMAGE_FAIL_REASONS = [
   // prepare 阶段(content 字节准备)
   'remote-fetch-failed',
+  'remote-permission-denied', // 远程图 host 权限未授予(写入时权限申请被拒),抓取被 Chrome 拦截
   'local-not-found',
   'local-too-large',
   'local-bad-type',
@@ -200,6 +201,11 @@ export const IMAGE_FAIL_REASONS = [
   'upload-relocate-failed', // 图已上传成功(MEDIA 已确认)但归位失败——图可能已在 X 媒体库
   'upload-exception',
   'marker-residue', // 图已落地但占位 marker 清扫未果、残留正文(需手动删除;不计入 imageFail)
+  // 正文新增 MEDIA 块数 > imageOk:有上传晚到却无法归属的图(典型:某图超时降级后 X 仍完成上传,
+  // 晚到图未能归位回其原文位置),正文多出一张需手动删除的图;不计入 imageFail。
+  // index 取「最可能的来源图」(最早未被追回的超时图),无候选时取末张图——不用 -2 哨兵:
+  // 存储校验(validateImageFailures 拒 index < -1)与报告卡(index<0 显示为封面)尚未适配。
+  'orphan-media',
 
   // 封面
   'cover-set-failed', // 封面 File 已备好但 setCoverImage 未落地
@@ -257,6 +263,17 @@ export type ImportResult =
        * 仅诊断用,content / sidepanel 不消费;缺省 = 全部阶段按时落盘。
        */
       settleTimeouts?: string[];
+      /**
+       * B2 诊断:超时降级后又「晚到」并被追回归位的图片数(已计入 imageOk、已从失败明细移除)。
+       * 缺省 = 0。仅诊断用,UI 不消费。
+       */
+      imageLateRecovered?: number;
+      /**
+       * B2 诊断:正文新增 MEDIA 块数超出 imageOk 的数量(无法归属的孤儿图,需手动删除)。
+       * 缺省 = 0;>0 时失败明细另有一条 reason='orphan-media'(不计入 imageFail)。仅诊断用,UI 不消费
+       * (UI 经该失败明细呈现)。
+       */
+      orphanMedia?: number;
     }
   | {
       ok: false;

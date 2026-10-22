@@ -4,7 +4,9 @@ import {
   isImageLine,
   stripFirstImageLine,
   forEachContentLine,
+  inlinePlainText,
 } from './parser';
+import { extractTitle } from './frontmatter';
 import type {
   ImportBlock,
   TextBlock,
@@ -1422,5 +1424,187 @@ describe('批次三 code review 修复回归', () => {
       expect(blocks).toHaveLength(1);
       expect(blocks[0]!.kind).toBe('atomic');
     }
+  });
+});
+
+// ===========================================================================
+// 发版前 P1 修复(解析层 A2/A3/A4/A7)
+// ===========================================================================
+
+describe('A2 强调符的最小 flanking 规则', () => {
+  it('两侧带空格的星号是乘号,原样保留且不设样式', () => {
+    const b = inlineOf('2 * 3 * 4');
+    expect(b.text).toBe('2 * 3 * 4');
+    expect(b.inlineStyleRanges).toEqual([]);
+  });
+
+  it('两侧带空格的下划线 / 双波浪号原样保留', () => {
+    for (const md of ['a _ b _ c', 'x ~~ y ~~ z', 'a ** b ** c', 'a *** b *** c']) {
+      const b = inlineOf(md);
+      expect([md, b.text, b.inlineStyleRanges]).toEqual([md, md, []]);
+    }
+  });
+
+  it('跨行的「空格 * 空格」不被当成斜体', () => {
+    const b = asText(parseMarkdown('价格 * 数量\n总价 * 2')[0]);
+    expect(b.text).toBe('价格 * 数量\n总价 * 2');
+    expect(b.inlineStyleRanges).toEqual([]);
+  });
+
+  it('闭符号前是空白的候选被跳过:`**a ** b**` → 整段加粗 `a ** b`(CommonMark)', () => {
+    const b = inlineOf('**a ** b**');
+    expect(b.text).toBe('a ** b');
+    expect(b.inlineStyleRanges).toEqual([{ offset: 0, length: 6, style: 'BOLD' }]);
+  });
+
+  it('`***a** b*` → 斜体包住「加粗 a + 空格 b」(CommonMark),不丢字符', () => {
+    const b = inlineOf('***a** b*');
+    expect(b.text).toBe('a b');
+    expect(sliceRange(b.text, stylesOf(b, 'BOLD')[0])).toBe('a');
+    expect(sliceRange(b.text, stylesOf(b, 'ITALIC')[0])).toBe('a b');
+  });
+
+  it('`***a* b**` → 加粗包住「斜体 a + 空格 b」(已有行为不回归)', () => {
+    const b = inlineOf('***a* b**');
+    expect(b.text).toBe('a b');
+    expect(sliceRange(b.text, stylesOf(b, 'ITALIC')[0])).toBe('a');
+    expect(sliceRange(b.text, stylesOf(b, 'BOLD')[0])).toBe('a b');
+  });
+
+  it('紧贴内容的强调照常生效(词内 `a*b*c`、CJK)', () => {
+    expect(sliceRange(inlineOf('a*b*c').text, stylesOf(inlineOf('a*b*c'), 'ITALIC')[0])).toBe('b');
+    const b = inlineOf('这是**重点**内容');
+    expect(b.text).toBe('这是重点内容');
+    expect(sliceRange(b.text, stylesOf(b, 'BOLD')[0])).toBe('重点');
+  });
+
+  it('嵌套样式不回归', () => {
+    const t1 = inlineOf('***a***');
+    expect(t1.text).toBe('a');
+    expect(stylesOf(t1, 'BOLD')).toHaveLength(1);
+    expect(stylesOf(t1, 'ITALIC')).toHaveLength(1);
+    const t2 = inlineOf('**a _b_ c**');
+    expect(t2.text).toBe('a b c');
+    expect(sliceRange(t2.text, stylesOf(t2, 'ITALIC')[0])).toBe('b');
+    const t3 = inlineOf('*a **b** c*');
+    expect(t3.text).toBe('a b c');
+    expect(sliceRange(t3.text, stylesOf(t3, 'BOLD')[0])).toBe('b');
+    expect(sliceRange(t3.text, stylesOf(t3, 'ITALIC')[0])).toBe('a b c');
+  });
+});
+
+describe('A3 列表项续行', () => {
+  it('缩进续行并入当前项(以 \\n 连接),不再成独立段落', () => {
+    const blocks = parseMarkdown('- 第一行\n  第二行(续行)\n- 下一项');
+    expect(blocks).toHaveLength(2);
+    const first = asText(blocks[0]);
+    expect(first.type).toBe('unordered-list-item');
+    expect(first.text).toBe('第一行\n第二行(续行)');
+    expect(asText(blocks[1]).text).toBe('下一项');
+  });
+
+  it('lazy 续行(不缩进)同样并入', () => {
+    const blocks = parseMarkdown('- a\ncontinued');
+    expect(blocks).toHaveLength(1);
+    expect(asText(blocks[0]).text).toBe('a\ncontinued');
+  });
+
+  it('续行里的行内样式 offset 以拼接后的文本计算', () => {
+    const b = asText(parseMarkdown('1. 开头\n   **粗**尾')[0]);
+    expect(b.type).toBe('ordered-list-item');
+    expect(b.text).toBe('开头\n粗尾');
+    expect(sliceRange(b.text, stylesOf(b, 'BOLD')[0])).toBe('粗');
+  });
+
+  it('任务项的续行:前缀平移后区间仍精确', () => {
+    const b = asText(parseMarkdown('- [ ] 待办\n  **续**')[0]);
+    expect(b.task).toBe('todo');
+    expect(b.text).toBe('☐ 待办\n续');
+    expect(sliceRange(b.text, stylesOf(b, 'BOLD')[0])).toBe('续');
+  });
+
+  it('子项不被吸收,嵌套 depth 不回归', () => {
+    const blocks = parseMarkdown('- a\n  续\n  - b\n    续b\n- c');
+    expect(blocks.map((x) => [asText(x).text, asText(x).depth ?? 0])).toEqual([
+      ['a\n续', 0],
+      ['b\n续b', 1],
+      ['c', 0],
+    ]);
+  });
+
+  it('块边界(标题/引用/分割线)终止续行', () => {
+    const blocks = parseMarkdown('- a\n# 标题\n- b\n> 引用\n- c\n---');
+    expect(blocks.map((x) => (x.kind === 'text' ? x.type : asAtomic(x).entityType))).toEqual([
+      'unordered-list-item',
+      'header-one',
+      'unordered-list-item',
+      'blockquote',
+      'unordered-list-item',
+      'DIVIDER',
+    ]);
+  });
+
+  it('松散列表下缩进 ≥ 内容列的段落剥掉前导空白(独立段落)', () => {
+    const blocks = parseMarkdown('- a\n\n    para under a\n- b');
+    expect(asText(blocks[1]).type).toBe('unstyled');
+    expect(asText(blocks[1]).text).toBe('para under a');
+  });
+});
+
+describe('A4 列表内缩进围栏', () => {
+  it('列表项下 4 空格缩进的围栏成代码块,并按开栏缩进剥每行', () => {
+    const md = '1. 安装\n\n    ```bash\n    npm i\n      --save\n    ```\n\n2. 运行';
+    const blocks = parseMarkdown(md);
+    expect(blocks).toHaveLength(3);
+    const code = asAtomic(blocks[1]);
+    expect(code.entityType).toBe('MARKDOWN');
+    if (code.entityType === 'MARKDOWN') expect(code.data.markdown).toBe('```bash\nnpm i\n  --save\n```');
+    expect(asText(blocks[2]).text).toBe('运行');
+  });
+
+  it('不足开栏缩进的行剥到尽量多', () => {
+    const b = asAtomic(parseMarkdown('- x\n\n    ```\n  half\nzero\n    ```')[1]);
+    if (b.entityType === 'MARKDOWN') expect(b.data.markdown).toBe('```\nhalf\nzero\n```');
+  });
+
+  it('紧贴列表项(无空行)的缩进围栏同样识别,不被续行吸收', () => {
+    const blocks = parseMarkdown('- 步骤\n    ```\n    code\n    ```');
+    expect(blocks).toHaveLength(2);
+    expect(asText(blocks[0]).text).toBe('步骤');
+    expect(asAtomic(blocks[1]).entityType).toBe('MARKDOWN');
+  });
+
+  it('不在列表语境时 ≥4 空格的围栏仍不认(缩进代码领域,行为不变)', () => {
+    const blocks = parseMarkdown('正文\n\n    ```\n    code\n    ```');
+    expect(blocks.every((b) => b.kind === 'text')).toBe(true);
+  });
+
+  it('forEachContentLine 与解析同步跳过列表内缩进围栏', () => {
+    const lines = '1. 安装\n\n    ```\n    # 注释\n    ```\n# 真标题'.split('\n');
+    const visited: string[] = [];
+    forEachContentLine(lines, (line) => {
+      visited.push(line);
+    });
+    expect(visited).toEqual(['1. 安装', '', '# 真标题']);
+  });
+
+  it('列表语境下顶格围栏按自身缩进判容器:缩进 4 的 ``` 不是闭栏(开/闭同口径)', () => {
+    const md = '- a\n\n```\n# x\n    ```\n# y\n```';
+    const blocks = parseMarkdown(md);
+    const md2 = blocks.filter((b) => b.kind === 'atomic');
+    expect(md2).toHaveLength(1);
+    const code = asAtomic(md2[0]);
+    expect(code.entityType).toBe('MARKDOWN');
+    if (code.entityType === 'MARKDOWN') expect(code.data.markdown).toBe('```\n# x\n    ```\n# y\n```');
+    expect(extractTitle(md)?.title).not.toBe('y');
+  });
+});
+
+describe('A7 inlinePlainText', () => {
+  it('剥行内标记与 ATX 闭合井号', () => {
+    expect(inlinePlainText('**粗** 标题')).toBe('粗 标题');
+    expect(inlinePlainText('[链接](http://a) 标题')).toBe('链接 标题');
+    expect(inlinePlainText('标题 ##')).toBe('标题');
+    expect(inlinePlainText('C#')).toBe('C#');
   });
 });

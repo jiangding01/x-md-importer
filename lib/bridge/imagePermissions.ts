@@ -18,10 +18,17 @@ import type { ImportBlock } from '@/lib/bridge/protocol';
  * 最前面、任何 await 之前。parseMarkdown 是**同步**函数,把解析提到本调用之前不引入新的
  * await,该约束不受影响。
  */
+export interface RemotePermissionResult {
+  /** 全部所需 origin 已授权(含「无远程来源、无需申请」);用户拒绝 / 申请抛错为 false。 */
+  granted: boolean;
+  /** 本次申请的 origin 模式列表(`https://h/*`);无远程来源时为空数组。 */
+  origins: string[];
+}
+
 export async function requestRemoteImagePermissions(
   blocks: ImportBlock[],
   extraUrls: string[] = [],
-): Promise<void> {
+): Promise<RemotePermissionResult> {
   const origins = new Set<string>();
   const addRemote = (src: string) => {
     if (!/^https?:\/\//i.test(src)) return; // 仅远程需要 host 权限
@@ -34,14 +41,18 @@ export async function requestRemoteImagePermissions(
   for (const b of blocks) if (b.kind === 'image') addRemote(b.source);
   // 额外来源(如 frontmatter cover 不在正文图片块里)
   for (const url of extraUrls) addRemote(url);
-  if (origins.size === 0) return;
+  const list = [...origins];
+  if (list.length === 0) return { granted: true, origins: list };
 
   // ⚠️ 不能在 request() 之前再 await（如 permissions.contains）——那会消耗用户手势,
   // 导致 request() 脱离手势上下文被 Chrome 拒绝。request() 本身对已授予的权限会立即
   // resolve 且不弹窗,故预检既多余又有害。request() 必须是本函数链上的第一个 await。
+  // C25:结果如实回传(此前静默吞掉),由调用方在被拒时提示用户「远程图将降级」。
   try {
-    await browser.permissions.request({ origins: [...origins] });
+    const granted = await browser.permissions.request({ origins: list });
+    return { granted: granted === true, origins: list };
   } catch {
-    /* 环境不支持 / 用户拒绝:静默,由上传失败兜底降级 */
+    // 环境不支持 / 脱离手势被拒:同样按未授权处理,由上传失败兜底降级。
+    return { granted: false, origins: list };
   }
 }

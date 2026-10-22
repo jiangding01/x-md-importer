@@ -108,6 +108,8 @@ interface WorkspaceValue {
   // 报告 / 庆祝
   reportVisible: boolean;
   closeReport: () => void;
+  /** 手动打开报告卡(C4):autoReport='never'/'anomaly' 未自动弹出时,从底栏入口查看上次报告。 */
+  openReport: () => void;
   lastRunSnapshot: LastRunSnapshot | null;
   celebrating: boolean;
   // 记录
@@ -535,6 +537,11 @@ export function WorkspaceProvider({
     const cap = capability(md, en, parseOptsSnapshot);
     const ok = Math.max(0, blockCount - imageFail);
     const deg = cap.filter((c) => c.badge === 'warn').reduce((a, c) => a + c.count, 0);
+    // C26:封面失败(index<0 哨兵,content 在通道层补记)此前只进明细不进 fail——报告「失败 0」
+    // 却列出一条封面失败。fail = 正文图失败数 + 封面失败条目数;marker-residue 按设计不计 fail
+    // (图已落地,只是占位文本残留),即便将来出现在封面哨兵上也排除。
+    const coverFail = (imageFailures ?? []).filter((f) => f.index < 0 && f.reason !== 'marker-residue').length;
+    const fail = imageFail + coverFail;
     const now = new Date();
     const item: HistoryItem = {
       // UUID 而非 Date.now():双窗口同毫秒导入会撞 number id(React key 冲突、删除连删两条)。
@@ -543,8 +550,8 @@ export function WorkspaceProvider({
       date: `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')} ${now.toTimeString().slice(0, 5)}`,
       ok,
       deg,
-      // 图片上传失败计入 fail(记录/报告如实反映),其余降级仍归 deg。
-      fail: imageFail,
+      // 图片上传失败(含封面)计入 fail(记录/报告如实反映),其余降级仍归 deg。
+      fail,
       md,
       // 失败明细(序号/来源/阶段/原因)随记录持久化,供报告卡展示与事后排查。
       imageFailures,
@@ -554,11 +561,12 @@ export function WorkspaceProvider({
 
     setImporting(false);
     // autoReport 三档如实生效(P1-10):此前只区分 never/非 never,「仅异常时」(默认值)形同 always。
-    const hasAnomaly = deg > 0 || imageFail > 0;
+    // 失败明细全部纳入:marker-residue / orphan-media 不计入 deg/fail,但同样需要用户介入。
+    const hasAnomaly = deg > 0 || fail > 0 || (imageFailures?.length ?? 0) > 0;
     setReportVisible(opts.autoReport === 'always' || (opts.autoReport === 'anomaly' && hasAnomaly));
     // B4-6(P2-25):报告卡的数据源在此钉死——与 reportVisible 同一刻写入,后续 md 编辑/opts
     // 切换/history 删改都不会再影响报告卡已展示的内容(ReportCard 只读这份快照)。
-    setLastRunSnapshot({ md, parseOpts: parseOptsSnapshot, ok, deg, fail: imageFail, imageFailures });
+    setLastRunSnapshot({ md, parseOpts: parseOptsSnapshot, ok, deg, fail, imageFailures });
 
     const limit = opts.histLimit === 'inf' ? Infinity : Number(opts.histLimit);
     // 读 historyRef.current(最新值)而非闭包 history:标题 ask 弹窗挂起期间用户可能已在记录页
@@ -658,7 +666,17 @@ export function WorkspaceProvider({
         // 远程图 / 封面 host 权限:必须在用户手势内、任何其它 await 之前(上面全同步)。
         // 传**已解析的 blocks**(B3-4 / P1-7):权限申请的图片来源与实际上传的来源同一份,
         // 不再走全文正则(`<>` 包裹的远程图曾被判 local → 该 origin 不申请 → 下载必被拒)。
-        await requestRemoteImagePermissions(blocks, coverSource ? [coverSource] : []);
+        const perm = await requestRemoteImagePermissions(blocks, coverSource ? [coverSource] : []);
+        // C25:用户拒绝授权此前静默——远程图随后全部降级,用户只看到「图片 0/N」不知缘由。
+        // 被拒即时提示受影响张数(正文远程图块 + 远程封面),导入照常继续(正文不受影响)。
+        const permDenied = !perm.granted && perm.origins.length > 0;
+        if (permDenied) {
+          const isRemote = (src: string) => /^https?:\/\//i.test(src);
+          const remoteCount =
+            blocks.filter((b) => b.kind === 'image' && isRemote(b.source)).length +
+            (coverSource !== null && isRemote(coverSource) ? 1 : 0);
+          showToast(t.permDeniedToast.replace('{n}', String(remoteCount)), 'error');
+        }
 
         // review B1 + B2-1:正文写入前把目标 X 标签**一次**钉死并全程复用。ask 流程传入
         // pinnedTarget(writeX 探测时已钉的 tabId+articleId 双钥)则直接用——目标在弹窗
@@ -743,9 +761,19 @@ export function WorkspaceProvider({
           }
           // 序号还原:首图被抽走当封面(coverKeep=remove)后,引擎回传的正文图 index 整体 +1
           // 才对应用户文档顺序;封面哨兵(index=-1)不动。
-          const imageFailures = coverRemovedBodyImage
+          let imageFailures = coverRemovedBodyImage
             ? res.imageFailures?.map((f) => (f.index >= 0 ? { ...f, index: f.index + 1 } : f))
             : res.imageFailures;
+          // C25:本次权限申请被拒时,远程抓取的「网络层失败」(无 host 权限的跨源 fetch 表现为
+          // TypeError: Failed to fetch)改标为 remote-permission-denied,报告给出真实原因。
+          // 只改这一类:http 4xx/超时/非图片等明确的其它原因保持原样(可能来自早已授权的 origin)。
+          if (permDenied && imageFailures) {
+            imageFailures = imageFailures.map((f) =>
+              f.reason === 'remote-fetch-failed' && /failed to fetch|permission/i.test(f.detail ?? '')
+                ? { ...f, reason: 'remote-permission-denied' }
+                : f,
+            );
+          }
           finishImport(toastMsg, res.imageFail, res.blockCount, imageFailures);
         } else {
           // 失败:不写成功记录,以可读中文/英文提示错误(复位在 finally 统一处理)。
@@ -951,6 +979,10 @@ export function WorkspaceProvider({
       editorHasContent,
       reportVisible,
       closeReport: () => setReportVisible(false),
+      // 无快照时不置位:ReportCard 本就以 lastRunSnapshot 为渲染前提,这里再守一道避免空开。
+      openReport: () => {
+        if (lastRunSnapshot) setReportVisible(true);
+      },
       lastRunSnapshot,
       celebrating,
       history,

@@ -2,8 +2,18 @@
 // splitLocalPath 是纯函数;idbRun 触达 indexedDB,用下面的假 IDBDatabase/IDBTransaction
 // 驱动(不依赖真实 indexedDB/fake-indexeddb 包)。saveVaultHandle/getVaultHandle 等其余
 // 导出仍不在本文件测试范围(它们只是 idbRun 的薄封装,行为已被 idbRun 的用例覆盖)。
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { idbRun, splitLocalPath } from './localVault';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  buildVaultNameIndex,
+  clearVaultIndexCache,
+  idbRun,
+  pickFromIndex,
+  resolveLocalFile,
+  resolveAcrossRoots,
+  splitLocalPath,
+  stripQueryHash,
+  VAULT_INDEX_MAX_DEPTH,
+} from './localVault';
 
 describe('splitLocalPath', () => {
   describe('正常路径', () => {
@@ -280,5 +290,239 @@ describe('idbRun(B4-7/P2-18)', () => {
       idbRun('readonly', (s) => (s as unknown as typeof store).get() as unknown as IDBRequest<unknown>),
     ).rejects.toThrow('transaction aborted');
     expect(db.closeCalls).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C9:本地图查找——query/hash 剥离、未解码原串重试、文件名索引兜底(Obsidian 短链接 /
+// md 在子目录时的 `./`、`../` 相对路径)。用手写的假 FileSystemDirectoryHandle 树驱动。
+// ---------------------------------------------------------------------------
+
+interface FakeFileH {
+  kind: 'file';
+  name: string;
+  path: string;
+  getFile(): Promise<File>;
+}
+interface FakeDirH {
+  kind: 'directory';
+  name: string;
+  children: Map<string, FakeDirH | FakeFileH>;
+  getDirectoryHandle(n: string): Promise<FakeDirH>;
+  getFileHandle(n: string): Promise<FakeFileH>;
+  values(): AsyncIterable<FakeDirH | FakeFileH>;
+}
+
+/** 列举计数器:断言索引「每次导入只建一次」。 */
+let listCalls = 0;
+
+function fakeDir(name: string): FakeDirH {
+  const children = new Map<string, FakeDirH | FakeFileH>();
+  const notFound = () => Object.assign(new Error(`NotFoundError: ${name}`), { name: 'NotFoundError' });
+  return {
+    kind: 'directory',
+    name,
+    children,
+    async getDirectoryHandle(n) {
+      const c = children.get(n);
+      if (!c || c.kind !== 'directory') throw notFound();
+      return c;
+    },
+    async getFileHandle(n) {
+      const c = children.get(n);
+      if (!c || c.kind !== 'file') throw notFound();
+      return c;
+    },
+    values() {
+      listCalls += 1;
+      const list = [...children.values()];
+      return (async function* gen() {
+        for (const c of list) yield c;
+      })();
+    },
+  };
+}
+
+/** 按路径列表建一棵假 vault 树;getFile() 返回带 path 标记的假 File,便于断言命中了哪一个。 */
+function makeVault(rootName: string, files: string[]): FileSystemDirectoryHandle {
+  const root = fakeDir(rootName);
+  for (const f of files) {
+    const segs = f.split('/');
+    let dir = root;
+    for (const seg of segs.slice(0, -1)) {
+      let next = dir.children.get(seg);
+      if (!next) {
+        next = fakeDir(seg);
+        dir.children.set(seg, next);
+      }
+      dir = next as FakeDirH;
+    }
+    const name = segs[segs.length - 1]!;
+    dir.children.set(name, {
+      kind: 'file',
+      name,
+      path: f,
+      getFile: async () => ({ name, path: f }) as unknown as File,
+    });
+  }
+  return root as unknown as FileSystemDirectoryHandle;
+}
+
+const hitPath = (f: File | null): string | null => (f ? (f as unknown as { path: string }).path : null);
+
+describe('stripQueryHash', () => {
+  it('剥掉 ?query 与 #hash', () => {
+    expect(stripQueryHash('img/a.png?v=2')).toBe('img/a.png');
+    expect(stripQueryHash('a.png#center')).toBe('a.png');
+    expect(stripQueryHash('a.png?x=1#y')).toBe('a.png');
+  });
+
+  it('编码过的 %3F/%23 属于文件名,不剥', () => {
+    expect(stripQueryHash('a%23b.png')).toBe('a%23b.png');
+  });
+});
+
+describe('splitLocalPath(decode=false)', () => {
+  it('不解码:字面 %xx 原样保留', () => {
+    expect(splitLocalPath('img/100%25.png', false)).toEqual(['img', '100%25.png']);
+  });
+
+  it('不解码时安全闸同样生效', () => {
+    expect(splitLocalPath('../x.png', false)).toBeNull();
+    expect(splitLocalPath('/abs.png', false)).toBeNull();
+  });
+});
+
+describe('pickFromIndex', () => {
+  const index = new Map<string, string[][]>([
+    ['a.png', [['notes', 'deep', 'img', 'a.png'], ['img', 'a.png'], ['x', 'y', 'a.png']]],
+  ]);
+
+  it('同名多个取路径最短者(Obsidian 规则)', () => {
+    expect(pickFromIndex(index, ['a.png'])).toEqual(['img', 'a.png']);
+  });
+
+  it('多段 tail 只认以 tail 结尾的候选', () => {
+    expect(pickFromIndex(index, ['y', 'a.png'])).toEqual(['x', 'y', 'a.png']);
+    expect(pickFromIndex(index, ['zzz', 'a.png'])).toBeNull();
+  });
+
+  it('索引里没有该文件名 → null', () => {
+    expect(pickFromIndex(index, ['b.png'])).toBeNull();
+  });
+});
+
+describe('buildVaultNameIndex', () => {
+  it('跳过隐藏目录与 node_modules', async () => {
+    const root = makeVault('v', ['.obsidian/a.png', 'node_modules/pkg/a.png', '.trash/a.png', 'att/a.png']);
+    const index = await buildVaultNameIndex(root);
+    expect(index.get('a.png')).toEqual([['att', 'a.png']]);
+  });
+
+  it('超过深度上限的目录不收录', async () => {
+    const deep = `${Array.from({ length: VAULT_INDEX_MAX_DEPTH }, (_, i) => `d${i}`).join('/')}/deep.png`;
+    const root = makeVault('v', [deep, 'd0/shallow.png']);
+    const index = await buildVaultNameIndex(root);
+    expect(index.has('shallow.png')).toBe(true);
+    expect(index.has('deep.png')).toBe(false);
+  });
+});
+
+describe('resolveLocalFile(C9)', () => {
+  beforeEach(() => {
+    clearVaultIndexCache();
+    listCalls = 0;
+  });
+
+  it('根 + 相对路径直读命中(不建索引)', async () => {
+    const root = makeVault('v', ['assets/x.png']);
+    expect(hitPath(await resolveLocalFile(root, 'assets/x.png', 'v'))).toBe('assets/x.png');
+    expect(listCalls).toBe(0);
+  });
+
+  it('Obsidian 短链接(仅文件名)→ 在 attachments/ 里找到', async () => {
+    const root = makeVault('v', ['attachments/x.png', 'notes/a.md']);
+    expect(hitPath(await resolveLocalFile(root, 'x.png', 'v'))).toBe('attachments/x.png');
+  });
+
+  it('同名多个取路径最短者', async () => {
+    const root = makeVault('v', ['a/b/c/x.png', 'att/x.png']);
+    expect(hitPath(await resolveLocalFile(root, 'x.png', 'v'))).toBe('att/x.png');
+  });
+
+  it('md 在子目录时的 ./img/a.png → 在 notes/img/a.png 找到', async () => {
+    const root = makeVault('v', ['notes/post.md', 'notes/img/a.png']);
+    expect(hitPath(await resolveLocalFile(root, './img/a.png', 'v'))).toBe('notes/img/a.png');
+  });
+
+  it('../assets/a.png(md 在子目录)按尾部段在 vault 内匹配', async () => {
+    const root = makeVault('v', ['notes/post.md', 'assets/a.png', 'other/a.png']);
+    expect(hitPath(await resolveLocalFile(root, '../assets/a.png', 'v'))).toBe('assets/a.png');
+  });
+
+  it('多段且非 ./ 开头的路径不走索引(避免把错误目录的同名图误认)', async () => {
+    const root = makeVault('v', ['real/a.png']);
+    expect(await resolveLocalFile(root, 'wrong/a.png', 'v')).toBeNull();
+    expect(listCalls).toBe(0);
+  });
+
+  it('剥 ?query / #hash 后再查', async () => {
+    const root = makeVault('v', ['img/a.png']);
+    expect(hitPath(await resolveLocalFile(root, 'img/a.png?v=2', 'v'))).toBe('img/a.png');
+    expect(hitPath(await resolveLocalFile(root, 'img/a.png#center', 'v'))).toBe('img/a.png');
+  });
+
+  it('文件名本身含 # 时,剥离后读不到会回退原串', async () => {
+    const root = makeVault('v', ['img/a#1.png']);
+    expect(hitPath(await resolveLocalFile(root, 'img/a#1.png', 'v'))).toBe('img/a#1.png');
+  });
+
+  it('解码后读不到 → 用未解码原串重试(文件名含字面 %xx)', async () => {
+    const root = makeVault('v', ['img/100%25.png']);
+    expect(hitPath(await resolveLocalFile(root, 'img/100%25.png', 'v'))).toBe('img/100%25.png');
+  });
+
+  it('URL 编码的短链接经解码后命中索引', async () => {
+    const root = makeVault('v', ['att/a b.png']);
+    expect(hitPath(await resolveLocalFile(root, 'a%20b.png', 'v'))).toBe('att/a b.png');
+  });
+
+  it('首段 == 文件夹名时剥首段(原有 Obsidian vault 规则保持)', async () => {
+    const root = makeVault('myvault', ['img.png']);
+    expect(hitPath(await resolveLocalFile(root, 'myvault/img.png', 'myvault'))).toBe('img.png');
+  });
+
+  it('同一 cacheKey 下多次查找只建一次索引;clearVaultIndexCache 后重建', async () => {
+    const root = makeVault('v', ['att/x.png', 'att/y.png']);
+    await Promise.all([
+      resolveLocalFile(root, 'x.png', 'v', 'active'),
+      resolveLocalFile(root, 'y.png', 'v', 'active'),
+    ]);
+    const afterFirst = listCalls;
+    expect(afterFirst).toBe(2); // 根 + att 两个目录各列举一次
+    await resolveLocalFile(root, 'x.png', 'v', 'active');
+    expect(listCalls).toBe(afterFirst);
+    clearVaultIndexCache();
+    await resolveLocalFile(root, 'x.png', 'v', 'active');
+    expect(listCalls).toBe(afterFirst * 2);
+  });
+
+  it('非法路径(绝对路径)仍被拒,且不走索引', async () => {
+    const root = makeVault('v', ['etc/passwd']);
+    expect(await resolveLocalFile(root, '/etc/passwd', 'v')).toBeNull();
+    expect(listCalls).toBe(0);
+  });
+
+  it('跨作用域两层分开:先在所有作用域直读,active 的索引模糊命中不遮蔽 persistent 的精确路径', async () => {
+    const active = makeVault('a', ['att/x.png']);
+    const persistent = makeVault('p', ['x.png']);
+    const roots = [
+      { handle: active, cacheKey: 'active' },
+      { handle: persistent, cacheKey: 'persistent' },
+    ];
+    expect(hitPath(await resolveAcrossRoots(roots, 'x.png'))).toBe('x.png');
+    // 都无精确路径时才回落索引,仍按作用域优先级(active 先)
+    expect(hitPath(await resolveAcrossRoots(roots, 'att/x.png'))).toBe('att/x.png');
+    expect(hitPath(await resolveAcrossRoots([roots[0]!, { handle: makeVault('q', ['z/y.png']), cacheKey: 'persistent' }], 'y.png'))).toBe('z/y.png');
   });
 });

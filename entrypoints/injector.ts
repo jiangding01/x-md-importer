@@ -500,6 +500,188 @@ export default defineUnlistedScript(() => {
   const PENDING_MIN_AGE_MS = 20_000;
   const PENDING_CAP_MS = 32_000;
 
+
+  // -------------------------------------------------------------------------
+  // B2 晚到追回 —— 图 k 超时降级(写回原文)后,X 的上传并未取消;k 的 MEDIA 若在图 k+1 的
+  // 等待期才插入,旧实现会把它当成 k+1 的结果归位到 marker k+1,此后逐张错位、末张成孤儿。
+  // 现在登记每张超时图的「原文写回位置」,轮询发现**来历不明的已确认 MEDIA** 时先按 FIFO
+  // 还给最早超时的图:删掉其原文、MEDIA 归位到该处,再继续等本图自己的 MEDIA。
+  // -------------------------------------------------------------------------
+
+  /**
+   * 一张超时降级、等待晚到 MEDIA 的图。
+   * - fallbackKey:replaceMarkerWithText 写回原文所在块 key(块 merge 保 key)。定位时还要求
+   *   该块文本仍含 fallbackText;不满足(X 重建了块 key)则退回「整块文本 === fallbackText」搜索。
+   * - pendingKey:超时那刻已出现但未确认(无 mediaId)的 MEDIA 块 key。它已在后续图的 before
+   *   快照内、不会被误当新块;只按 key 精确等它拿到 mediaId,不参与 FIFO——除非该块消失
+   *   (X 可能换新 key 落定),此时退回 FIFO。
+   */
+  type LateEntry = {
+    imageIndex: number;
+    fallbackKey: string | null;
+    fallbackText: string;
+    pendingKey: string | null;
+  };
+  /** 待追回队列(按超时先后 = FIFO)。模块级同 settleTimeouts:importInFlight 串行化,runImport 入口清零。 */
+  let pendingLate: LateEntry[] = [];
+  /** 已追回的图片下标(runImport 收尾据此 imageOk++ 并移除对应 upload-timeout 明细)。 */
+  let lateRecovered: number[] = [];
+  /**
+   * 已有归属的 MEDIA 块 key:图片阶段开始时正文已有的 + 每张图 waitForNewMedia 认领的(含未确认)
+   * + 已追回的。末轮追回(无 before 快照可用)以此排除「有主」的块。
+   */
+  let claimedMedia = new Set<string>();
+  /**
+   * 追回会**写正文**(此前 waitForNewMedia 只读),必须服从 runImport 的切文章闸门:
+   * runImport 入口挂上 articleSwitched,finally 复位为「一律禁止」。
+   */
+  let lateWriteBlocked: () => boolean = () => true;
+
+  /** 块是否为 MEDIA atomic 块:'ready'=已带 mediaId;'pending'=entity 在但无 mediaId;null=不是。 */
+  const mediaBlockState = (content: DraftContentState, block: DraftBlock): 'ready' | 'pending' | null => {
+    if (block.getType() !== 'atomic') return null;
+    const ek = block.getEntityAt(0);
+    if (!ek) return null;
+    try {
+      const ent = content.getEntity(ek);
+      if (ent.getType() !== 'MEDIA') return null;
+      return extractMediaId(ent.getData()) !== null ? 'ready' : 'pending';
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * 把晚到 MEDIA 归位到超时图的原文处:原文独占整块 → MEDIA 顶替该块;原文混在其他文字中
+   * (marker 当初非独占) → 抠掉原文子串、MEDIA 插在该块之前(同 xposter §3.3 relocate 口径)。
+   * 单次 blockMap 重排 + 一次 onChange,提交后 settle 等落盘。找不到原文返回 false(不改正文)。
+   */
+  const relocateLateMedia = async (node: FiberStateNode, entry: LateEntry, mediaKey: string): Promise<boolean> => {
+    const es = readEditorState(node);
+    const content = es.getCurrentContent();
+    const blockMap = content.getBlockMap();
+    if (!blockMap.has(mediaKey)) return false;
+    const holds = (key: string | null): key is string => {
+      if (!key || key === mediaKey) return false;
+      const b = blockMap.get(key);
+      return !!b && b.getType() !== 'atomic' && b.getText().includes(entry.fallbackText);
+    };
+    let targetKey: string | null = holds(entry.fallbackKey) ? entry.fallbackKey : null;
+    if (!targetKey) {
+      // 兜底:整块文本恰为原文;排除其他待追回图登记的块,免得抢走别人的位置。
+      const othersKeys = new Set(pendingLate.filter((e) => e !== entry).map((e) => e.fallbackKey));
+      const want = entry.fallbackText.trim();
+      blockMap.forEach((b, k) => {
+        if (targetKey || othersKeys.has(k) || b.getType() === 'atomic') return;
+        if (b.getText().trim() === want) targetKey = k;
+      });
+    }
+    if (!targetKey) return false;
+    const tk: string = targetKey;
+    const target = blockMap.get(tk)!;
+    const text = target.getText();
+    const at = text.indexOf(entry.fallbackText);
+    const remainder = at >= 0 ? text.slice(0, at) + text.slice(at + entry.fallbackText.length) : '';
+    const dropTarget = remainder.trim().length === 0;
+    let rewritten: DraftBlock | null = null;
+    if (!dropTarget) {
+      const sample = findCharacterSample(blockMap);
+      if (!sample) return false;
+      const plain = sample.set('style', sample.getStyle().clear()).set('entity', null);
+      let characterList = target.getCharacterList().clear();
+      for (let i = 0; i < remainder.length; i += 1) characterList = characterList.push(plain);
+      rewritten = target.merge({ type: 'unstyled', text: remainder, characterList });
+    }
+
+    const orderedKeys: string[] = [];
+    blockMap.forEach((_b, key) => {
+      if (key === mediaKey) return;
+      if (key === tk) {
+        orderedKeys.push(mediaKey);
+        if (!dropTarget) orderedKeys.push(key);
+      } else {
+        orderedKeys.push(key);
+      }
+    });
+    let nextMap = blockMap.clear();
+    for (const k of orderedKeys) {
+      const b = k === tk && rewritten ? rewritten : blockMap.get(k);
+      if (b) nextMap = nextMap.set(k, b);
+    }
+    const SelStatic = es.getSelection().constructor as unknown as DraftSelectionStatic;
+    const ESStatic = es.constructor as unknown as DraftEditorStateStatic;
+    const sel = SelStatic.createEmpty(orderedKeys[orderedKeys.length - 1] ?? mediaKey);
+    const nc = content.set('blockMap', nextMap).set('selectionBefore', sel).set('selectionAfter', sel);
+    let ns = ESStatic.push(es, nc, 'move-block');
+    ns = ESStatic.forceSelection(ns, sel);
+    (node.props?.onChange as (s: DraftEditorState) => void)(ns);
+    await settle('late-relocate', node, (c) => {
+      const bm = c.getBlockMap();
+      if (!bm.has(mediaKey)) return false;
+      return dropTarget ? !bm.has(tk) : bm.get(tk)?.getText() === remainder;
+    });
+    return true;
+  };
+
+  /**
+   * 单次追回尝试:读最新 state,至多追回**一张**,返回是否发生了认领(调用方据此重钉光标/再试)。
+   * 1) 精确:登记了 pendingKey 且该块仍在 → 它拿到 mediaId 即还给该图;
+   * 2) FIFO(仅 allowFifo=true,即图片循环结束后的末轮扫描):最早一张「无 pendingKey 或其块已
+   *    消失」的超时图,认领第一个**来历不明**的已确认 MEDIA——排除 exclude、ownPending(本图等待期
+   *    已跟踪过的 pending 块,视为本图自己的占位)、claimedMedia、及任何登记过的 pendingKey。
+   *    取舍:循环进行中**不做 FIFO**——第 k+1 张图的块可能「首次被看到即 ready」(从未以 pending
+   *    形态进入 ownPending),FIFO 会把它抢给超时的第 k 张,造成反向错位。末轮时所有图都已认领
+   *    完自己的块,剩余无归属的 ready MEDIA 才可安全按 FIFO 分给最早超时图,其余交孤儿审计。
+   * 只认 ready(带 mediaId)的块:pending 块无法区分是谁的,交本图自己的稳定性判定。
+   * 认领即出队并记入 exclude/claimedMedia——即使归位失败(原文找不到)也不再让它被本图误认,
+   * 留给收尾的 orphan-media 审计如实上报。
+   */
+  const recoverLateOnce = async (
+    exclude: Set<string>,
+    ownPending: Set<string>,
+    allowFifo: boolean,
+  ): Promise<boolean> => {
+    if (!pendingLate.length || lateWriteBlocked()) return false;
+    const node = findDraftStateNode();
+    if (!node) return false;
+    const content = readEditorState(node).getCurrentContent();
+    const bm = content.getBlockMap();
+    let pick: { entry: LateEntry; mediaKey: string } | null = null;
+    for (const entry of pendingLate) {
+      const pk = entry.pendingKey;
+      if (!pk) continue;
+      const b = bm.get(pk);
+      if (b && mediaBlockState(content, b) === 'ready') {
+        pick = { entry, mediaKey: pk };
+        break;
+      }
+    }
+    if (!pick && allowFifo) {
+      const fifo = pendingLate.find((e) => !e.pendingKey || !bm.has(e.pendingKey));
+      if (fifo) {
+        const registered = new Set(pendingLate.map((e) => e.pendingKey).filter((k): k is string => !!k));
+        let readyKey: string | null = null;
+        bm.forEach((b, k) => {
+          if (readyKey || exclude.has(k) || ownPending.has(k) || claimedMedia.has(k) || registered.has(k)) return;
+          if (mediaBlockState(content, b) === 'ready') readyKey = k;
+        });
+        if (readyKey) pick = { entry: fifo, mediaKey: readyKey };
+      }
+    }
+    if (!pick) return false;
+    const { entry, mediaKey } = pick;
+    pendingLate = pendingLate.filter((e) => e !== entry);
+    exclude.add(mediaKey);
+    claimedMedia.add(mediaKey);
+    if (await relocateLateMedia(node, entry, mediaKey)) {
+      lateRecovered.push(entry.imageIndex);
+      if (import.meta.env.DEV) console.info('[MarkFlow] 晚到图片已追回归位', { imageIndex: entry.imageIndex, mediaKey });
+    } else {
+      console.warn('[MarkFlow] 晚到图片认领但原文位置已找不到,留待孤儿审计', { imageIndex: entry.imageIndex });
+    }
+    return true;
+  };
+
   /**
    * 轮询等待「快照外新增的 MEDIA atomic 块」。
    * - 出现 mediaId → confirmed:true(上传确认完成);
@@ -507,16 +689,27 @@ export default defineUnlistedScript(() => {
    *   或出现满 32s 封顶 → confirmed:true(正文图放行);未达标而 budget 到点 → confirmed:false(未确认);
    * - 全程未出现新 MEDIA 块 → null。
    * 返回 confirmed 交由调用方决定成功/降级——**「有块但未确认」绝不谎报成功**。
+   * B2:每轮先给此前超时图按 pendingKey 精确追回晚到 MEDIA(recoverLateOnce,不做 FIFO——
+   * 防止把本图「首见即 ready」的块抢给前一张超时图);追回会改 selection,
+   * 随后把光标重钉回本图 marker 再继续等本图——budget 不延长(通道超时预算不放大)。
    */
   const waitForNewMedia = async (
     before: Set<string>,
     budgetMs: number,
+    marker: string,
   ): Promise<{ key: string; confirmed: boolean } | null> => {
     const deadline = Date.now() + budgetMs;
     // 当前 pending 块的跟踪:firstSeen=首次出现时刻;signature/signatureSince=最近签名及其保持起始时刻。
     let pending: { key: string; firstSeen: number; signature: string; signatureSince: number } | null = null;
+    // 本图等待期跟踪过的 pending 块:视为本图自己的占位,晚到追回的 FIFO 不得认领它。
+    const ownPending = new Set<string>();
     while (Date.now() < deadline) {
       await delay(350);
+      if (pendingLate.length && (await recoverLateOnce(before, ownPending, false))) {
+        const n = findDraftStateNode();
+        if (n && !lateWriteBlocked()) await placeSelectionAtMarker(n, marker);
+        continue;
+      }
       const node = findDraftStateNode();
       if (!node) continue;
       const content = readEditorState(node).getCurrentContent();
@@ -537,6 +730,7 @@ export default defineUnlistedScript(() => {
           } else if (!pendingKey) {
             pendingKey = key;
             pendingData = data;
+            ownPending.add(key);
           }
         } catch {
           /* ignore */
@@ -621,17 +815,18 @@ export default defineUnlistedScript(() => {
    * 把 marker 块整体替换为一段普通文本(上传失败时写回 fallbackText 原文,不静默丢内容)。
    * 提交后 settle 等「该 marker 已不在任何块中」落盘(B1)——否则下一张图的读-改-写会基于
    * 陈旧 state 把这次写回整体回滚,marker 重现后被 sweepMarkers 整块删掉(原文静默丢失)。
+   * 返回写回所在块的 key(块 merge 保 key)——B2 晚到追回据此定位该段原文;未写回返回 null。
    */
-  const replaceMarkerWithText = async (node: FiberStateNode, marker: string, text: string): Promise<void> => {
+  const replaceMarkerWithText = async (node: FiberStateNode, marker: string, text: string): Promise<string | null> => {
     const es = readEditorState(node);
     const content = es.getCurrentContent();
     const blockMap = content.getBlockMap();
     const loc = findMarkerBlock(content, marker);
-    if (!loc) return;
+    if (!loc) return null;
     const block = blockMap.get(loc.blockKey);
-    if (!block) return;
+    if (!block) return null;
     const sample = findCharacterSample(blockMap);
-    if (!sample) return;
+    if (!sample) return null;
     const nextText = loc.exact ? text : block.getText().split(marker).join(text);
     let characterList = block.getCharacterList().clear();
     const plain = sample.set('style', sample.getStyle().clear()).set('entity', null);
@@ -646,6 +841,7 @@ export default defineUnlistedScript(() => {
     ns = ESStatic.forceSelection(ns, sel);
     (node.props?.onChange as (s: DraftEditorState) => void)(ns);
     await settle('replace-marker', node, (c) => findMarkerBlock(c, marker) === null);
+    return loc.blockKey;
   };
 
   /**
@@ -782,7 +978,10 @@ export default defineUnlistedScript(() => {
   };
 
   /** uploadOneImage 的结果:失败时带原因码(在知道原因的这一层产生,调用方只透传进失败明细)。 */
-  type UploadOutcome = { ok: true } | { ok: false; reason: ImageFailReason; detail?: string };
+  type UploadOutcome =
+    | { ok: true }
+    // pendingKey:仅 upload-timeout 且超时时已有未确认 MEDIA 块时带上(B2 晚到追回按 key 精确等它)。
+    | { ok: false; reason: ImageFailReason; detail?: string; pendingKey?: string };
 
   /**
    * 上传单张图:钉光标到 marker → 找 onFilesAdded → 交 File → 轮询新 MEDIA → 归位 + 清 marker。
@@ -809,9 +1008,11 @@ export default defineUnlistedScript(() => {
       return { ok: false, reason: 'upload-exception', detail: String(err) };
     }
 
-    const media = await waitForNewMedia(before, budgetMs);
+    const media = await waitForNewMedia(before, budgetMs, marker);
+    // 本图认领的块(含未确认)记入有主集合——末轮追回不得把它当来历不明的晚到块。
+    if (media) claimedMedia.add(media.key);
     // 无新 MEDIA 块,或有块但未确认(无 mediaId 且稳定性未达标)→ 未确认成功,交调用方降级。
-    if (!media || !media.confirmed) return { ok: false, reason: 'upload-timeout' };
+    if (!media || !media.confirmed) return { ok: false, reason: 'upload-timeout', pendingKey: media?.key };
 
     await delay(120);
     node = findDraftStateNode();
@@ -959,6 +1160,11 @@ export default defineUnlistedScript(() => {
     // 路由也纳入:SPA 离开文章编辑路由(如切到推文 compose)时无论是否带 articleId 都视为切换。
     const articleSwitched = (): boolean =>
       !isArticleEditorRoute() || (expectedArticleId != null && getArticleId() !== expectedArticleId);
+    // B2 晚到追回的模块级账本按次清零;追回写正文须服从本次的切文章闸门(finally 复位为禁止)。
+    pendingLate = [];
+    lateRecovered = [];
+    claimedMedia = new Set();
+    lateWriteBlocked = articleSwitched;
     // 每次运行独立的 marker 前缀,避免与历史残留 / 并发写入串扰。
     const markerPrefix = `__MARKFLOW_IMG_${Math.random().toString(36).slice(2, 8)}_`;
     // 清扫用**通用**前缀:不仅清本次,也清掉「历史遗留」——同一草稿反复导入时,之前某次
@@ -1219,6 +1425,11 @@ export default defineUnlistedScript(() => {
           detail: detail === undefined ? undefined : truncateForReport(detail, 200),
         });
       };
+      // B2:图片阶段开始时正文已有的 MEDIA(append 模式的旧图)——既是「有主」集合的起点,
+      // 也是收尾 orphan-media 审计的基线(新增 MEDIA 数 = 终态 MEDIA − 基线)。
+      const mediaBaseNode = imageMarkers.length ? findDraftStateNode() : null;
+      const initialMedia = mediaBaseNode ? snapshotMediaKeys(mediaBaseNode) : null;
+      if (initialMedia) for (const k of initialMedia) claimedMedia.add(k);
       for (const { marker, imageIndex, fallbackText, source } of imageMarkers) {
         // 每张图前复查:中途切文章立即停手(marker 留在原文章,由错误文案引导用户回去检查),
         // 绝不对切换后的文章做 replace/sweep/封面等任何改写。
@@ -1251,7 +1462,26 @@ export default defineUnlistedScript(() => {
         } else {
           pushFailure(imageIndex, source, 'upload', outcome.reason, outcome.detail);
           const node = findDraftStateNode();
-          if (node) await replaceMarkerWithText(node, marker, fallbackText);
+          const fallbackKey = node ? await replaceMarkerWithText(node, marker, fallbackText) : null;
+          // B2:超时 ≠ X 放弃上传——登记待追回,后续图的等待期若出现晚到 MEDIA 先还给它。
+          if (outcome.reason === 'upload-timeout') {
+            pendingLate.push({ imageIndex, fallbackKey, fallbackText, pendingKey: outcome.pendingKey ?? null });
+          }
+        }
+      }
+      // B2 末轮追回:所有图已认领完自己的块,此处先精确(pendingKey)、再 FIFO 把剩余无归属的
+      // ready MEDIA 分给最早超时图(FIFO 只在这里做,见 recoverLateOnce)。只扫当前 state、
+      // 不额外等待——通道超时(基础 45s + 每图 45s)不随此放大;此后才到的计入 orphan-media 审计。
+      while (pendingLate.length && (await recoverLateOnce(new Set(claimedMedia), new Set(), true))) {
+        /* 每轮至多追回一张,直至无可认领 */
+      }
+      // 追回的图:计成功、移除其 upload-timeout 明细(同一事实只记一份账,imageFail 仍由明细派生)。
+      const recoveredSet = new Set(lateRecovered);
+      if (recoveredSet.size) {
+        imageOk += recoveredSet.size;
+        for (let i = imageFailures.length - 1; i >= 0; i -= 1) {
+          const f = imageFailures[i]!;
+          if (f.reason === 'upload-timeout' && recoveredSet.has(f.index)) imageFailures.splice(i, 1);
         }
       }
       // 同一事实只记一份账:失败数从明细派生,天然不会与明细条数漂移。
@@ -1321,6 +1551,26 @@ export default defineUnlistedScript(() => {
         }
       }
 
+      // --- B2 孤儿图审计:正文新增 MEDIA 块数 > imageOk → 有晚到却无法归属的图,如实上报 ---
+      // 放在封面之后,给末张超时图的晚到上传多留时间被「看见」(此时不再归位,只上报)。
+      // 不计 imageFail(同 marker-residue,在 imageFail 取值之后才推入明细)。
+      let orphanMedia = 0;
+      if (initialMedia) {
+        const node = findDraftStateNode();
+        if (node) {
+          let added = 0;
+          for (const k of snapshotMediaKeys(node)) if (!initialMedia.has(k)) added += 1;
+          orphanMedia = Math.max(0, added - imageOk);
+          if (orphanMedia > 0) {
+            // 归属取「最可能的来源」:最早仍未追回的超时图;无则首个 upload 失败图;再无取末张图。
+            const firstUploadFail = imageFailures.find((f) => f.stage === 'upload' && f.index >= 0);
+            const idx = pendingLate[0]?.imageIndex ?? firstUploadFail?.index ?? imageMarkers.length - 1;
+            pushFailure(idx, imageMarkers[idx]?.source ?? '', 'upload', 'orphan-media', `${orphanMedia} unmatched MEDIA block(s)`);
+            console.warn('[MarkFlow] 正文多出无法归属的图片,请手动检查删除', { orphanMedia, added, imageOk });
+          }
+        }
+      }
+
       if (import.meta.env.DEV) console.info('[MarkFlow] 写入成功', { blockCount: blocks.length, effectiveMode, imageOk, imageFail, coverSet });
       if (imageFailures.length) console.warn('[MarkFlow] 图片失败明细', imageFailures);
       if (settleTimeouts.length) console.warn('[MarkFlow] settle 超时阶段', settleTimeouts);
@@ -1333,6 +1583,8 @@ export default defineUnlistedScript(() => {
         coverSet,
         imageFailures: imageFailures.length ? imageFailures : undefined,
         settleTimeouts: settleTimeouts.length ? [...settleTimeouts] : undefined,
+        imageLateRecovered: recoveredSet.size || undefined,
+        orphanMedia: orphanMedia || undefined,
       };
     } catch (err) {
       // 打完整 err 对象(含堆栈),便于定位崩在 Draft 内部的哪一步
@@ -1350,6 +1602,8 @@ export default defineUnlistedScript(() => {
         settleTimeouts: settleTimeouts.length ? [...settleTimeouts] : undefined,
       };
     } finally {
+      lateWriteBlocked = () => true;
+      pendingLate = [];
       importInFlight = false;
     }
   };
@@ -1439,8 +1693,13 @@ export default defineUnlistedScript(() => {
     if (!field) return { ok: false, error: 'title field not found' };
 
     try {
-      // keep 策略:已有非空标题则跳过,不视为错误。
       const existing = readTitleValue(field);
+      // C33:现有标题与目标相同 → 视同已设好,不构成冲突(ask 模式以 keep 探测,此前会
+      // 返回 applied:false 触发「覆盖/保留」弹窗,同标题也问一遍)。不写入,免得无谓派发事件。
+      if (existing.trim().length > 0 && existing.trim() === title.trim()) {
+        return { ok: true, applied: true };
+      }
+      // keep 策略:已有非空标题则跳过,不视为错误。
       if (existing.trim().length > 0 && conflict === 'keep') {
         return { ok: true, applied: false };
       }

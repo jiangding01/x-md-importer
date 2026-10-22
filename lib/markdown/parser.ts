@@ -24,6 +24,10 @@ interface InlineResult {
 interface Fence {
   char: string;
   len: number;
+  /** 开栏行的前导缩进列宽:生成 MARKDOWN 块时按它剥每行前导空白(CommonMark,A4)。 */
+  indent: number;
+  /** 本围栏允许的最大缩进(开/闭栏同口径):顶层 3;列表语境且开栏缩进 ≥ 内容列时为「列表内容列 + 3」(A4)。 */
+  maxIndent: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -107,11 +111,31 @@ const RE_SETEXT_EQ = /^=+[ \t]*$/;
 const RE_SETEXT_DASH = /^-+[ \t]*$/;
 
 /**
- * 围栏行(开栏 / info 规范化共用):0-3 空格缩进 + 3 个以上 ` 或 ~,组1=围栏标记、组2=info。
+ * 围栏行(开栏 / info 规范化共用):缩进 + 3 个以上 ` 或 ~,组1=缩进、组2=围栏标记、组3=info。
  * **单一来源**是有意的:围栏判定散落三处(matchFenceOpen / matchFenceClose / 主循环的 info
  * 规范化),此前各写一份正则,漏改任一处就会吞掉语言标记或让闭栏失效(B3-6 的主要风险)。
  */
-const RE_FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+// 组1 = 前导缩进(`[ \t]*`,具体上限由 matchFenceOpen 按语境判定:顶层 0-3,列表内放宽,A4)、
+// 组2 = 围栏标记、组3 = info。
+const RE_FENCE_LINE = /^([ \t]*)(`{3,}|~{3,})(.*)$/;
+/** 闭栏行:缩进 + 围栏标记 + 仅空白。缩进上限同开栏(Fence.maxIndent)。 */
+const RE_FENCE_CLOSE = /^([ \t]*)(`{3,}|~{3,})\s*$/;
+/** 顶层(不在列表语境)围栏的最大缩进:CommonMark 0-3 空格,≥4 属缩进代码领域。 */
+const TOP_FENCE_MAX_INDENT = 3;
+
+/**
+ * 围栏的缩进上限(A4),按**围栏自身缩进**判定所属容器:**列表语境**(上一产出块是列表项,中间只隔
+ * 空行)且围栏缩进 ≥ 列表内容列 ⇒ 属列表项内,放宽到「列表内容列 + 3」——`1. 安装\n\n    \`\`\`bash`
+ * 这种列表项下的 4 空格围栏极常见,此前按段落处理,代码整段散成正文;否则(非列表语境,或围栏缩进
+ * 不足内容列 ⇒ 已跳出列表)维持顶层 0-3。开/闭栏同口径(闭栏沿用开栏算出的 Fence.maxIndent),
+ * 免得列表后的顶格围栏被缩进 4 的 ``` 误闭合。parseLines 主循环与续行吸收共用;
+ * forEachContentLine 直接复用 parseLines 的围栏结果,三处同口径。
+ */
+function fenceMaxIndent(indent: number, listContentCol: number | null): number {
+  return listContentCol !== null && indent >= listContentCol
+    ? listContentCol + TOP_FENCE_MAX_INDENT
+    : TOP_FENCE_MAX_INDENT;
+}
 
 /** ASCII 标点集合:反斜杠转义仅在其后紧跟 ASCII 标点时生效(字母/CJK 前的反斜杠保留原样)。 */
 const RE_PUNCT = /[!-/:-@[-`{-~]/;
@@ -212,27 +236,19 @@ export function forEachContentLine(
   visitor: (line: string, index: number) => boolean | void,
   opts: { skipFrontmatter?: boolean } = {},
 ): void {
+  // 围栏区间**直接取自解析主循环**(A4):列表内缩进围栏的判定依赖列表语境(内容列),
+  // 在这里另写一套追踪必然漂移;让 parseLines 把它认定的每个已闭合围栏报上来,两边按构造同步。
+  // 未闭合围栏 parseLines 不上报 → 开栏行照常交给 visitor(与主循环「按普通文本处理」一致)。
+  const fenceClose = new Map<number, number>();
+  parseLines(lines, (open, close) => fenceClose.set(open, close));
   let i = opts.skipFrontmatter ? frontmatterBodyStart(lines) : 0;
   while (i < lines.length) {
-    const line = lines[i] ?? '';
-    const fence = matchFenceOpen(line);
-    if (fence) {
-      let j = i + 1;
-      let closed = false;
-      while (j < lines.length) {
-        if (matchFenceClose(lines[j] ?? '', fence)) {
-          closed = true;
-          break;
-        }
-        j += 1;
-      }
-      if (closed) {
-        i = j + 1; // 跳过整个围栏块(含开/闭栏行)
-        continue;
-      }
-      // 未闭合:开栏行按普通内容处理(与主循环一致),落到下面 visitor
+    const close = fenceClose.get(i);
+    if (close !== undefined) {
+      i = close + 1; // 跳过整个围栏块(含开/闭栏行)
+      continue;
     }
-    if (visitor(line, i)) return;
+    if (visitor(lines[i] ?? '', i)) return;
     i += 1;
   }
 }
@@ -279,12 +295,48 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
   optObsidianImg = opts.obsidianImg ?? true;
   optWikilink = opts.wikilink ?? true;
   optTaskList = opts.taskList ?? 'symbol';
-  const lines = md.split(/\r?\n/);
+  return parseLines(md.split(/\r?\n/));
+}
+
+/**
+ * 块级主循环。`onFence(open, close)`:每产出一个已闭合围栏块即上报其开/闭栏行下标——
+ * forEachContentLine 借此与解析**同一套**围栏判定(含列表语境的缩进放宽,A4),不另写追踪。
+ * 围栏判定不受解析开关影响(围栏行恒为段落边界),故 forEachContentLine 直接调用无需设开关。
+ */
+function parseLines(lines: string[], onFence?: (open: number, close: number) => void): ImportBlock[] {
   const blocks: ImportBlock[] = [];
   // 跳过文首 YAML frontmatter(判定见 frontmatterBodyStart)。
   let i = frontmatterBodyStart(lines);
   // 当前列表 run 的缩进栈(每层的缩进宽度),由 listDepth 就地维护、离开列表时清空。
   const listIndents: number[] = [];
+  // 最近一个列表项的内容列(标记 + 分隔空白之后的列宽);离开列表时与缩进栈一起清空。
+  // 用于列表语境下的缩进围栏(A4)与松散列表下缩进段落的剥离(A3)。
+  let listContentCol: number | null = null;
+
+  /**
+   * 列表项命中后向下吸收续行(A3):非空、非块边界、非新列表项(含更深的子项)、非围栏、非表格起始
+   * 的行都属于当前项——缩进续行与 lazy 续行(不缩进)同样并入,剥前导空白后以 `\n` 连接,
+   * 再整体交 walkInline(offset 自然以拼接后的文本计算)。返回拼接内容与下一个待处理行下标。
+   * 首行内容为空(`- ` 空项)时不吸收:CommonMark 下空项后的不缩进行不属于该项。
+   */
+  const absorbListContinuation = (first: string, contentCol: number): { content: string; next: number } => {
+    const parts = [first];
+    let k = i + 1;
+    if (first.trim() !== '') {
+      while (k < lines.length) {
+        const next = lines[k] ?? '';
+        if (isBlockBoundary(next, true)) break;
+        if (RE_UL.test(next) || RE_OL.test(next)) break; // 新列表项 / 任意缩进的子项交主循环
+        if (matchFenceOpen(next, contentCol)) break; // 列表内缩进围栏(A4)
+        // setext 下划线(`===`)不吸收:维持既有口径(块首列表项下的 `===` 独立成段),与 extractTitle 不分裂。
+        if (setextUnderlineLevel(next) !== null) break;
+        if (next.includes('|') && isTableSeparator(lines[k + 1] ?? '')) break;
+        parts.push(next.replace(/^[ \t]+/, ''));
+        k += 1;
+      }
+    }
+    return { content: parts.join('\n'), next: k };
+  };
 
   while (i < lines.length) {
     const line = lines[i] ?? '';
@@ -299,10 +351,12 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
       (prevBlock.type !== 'unordered-list-item' && prevBlock.type !== 'ordered-list-item')
     ) {
       listIndents.length = 0;
+      listContentCol = null;
     }
 
-    // 1. 围栏代码块:优先保护,内部所有内容(含 --- / > / 行内标记)一律不解析
-    const fence = matchFenceOpen(line);
+    // 1. 围栏代码块:优先保护,内部所有内容(含 --- / > / 行内标记)一律不解析。
+    //    列表语境下允许更深的缩进(A4,见 fenceMaxIndent)。
+    const fence = matchFenceOpen(line, listContentCol);
     if (fence) {
       let j = i + 1;
       let closed = false;
@@ -321,10 +375,15 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
         // 与 matchFenceOpen 同一条正则(B3-6):缩进围栏在此若认不出,marker/lang 双双回退默认值,
         // 语言标记被静默吞掉。规范化后的开栏行不带前导缩进(块内容原样保留)。
         const fm = RE_FENCE_LINE.exec(openLine);
-        const marker = fm?.[1] ?? '```';
-        const lang = normalizeCodeInfo(fm?.[2] ?? '');
-        const markdown = [marker + lang, ...lines.slice(i + 1, j + 1)].join('\n');
+        const marker = fm?.[2] ?? '```';
+        const lang = normalizeCodeInfo(fm?.[3] ?? '');
+        // 内容行按开栏缩进量剥前导空白(CommonMark;不足的剥到尽量多,A4)——否则列表项下的
+        // 缩进代码块每行都背着列表缩进进 X。闭栏行与开栏行一样规范化为不带缩进。
+        const body = lines.slice(i + 1, j).map((l) => stripIndentCols(l, fence.indent));
+        const closeLine = (lines[j] ?? '').replace(/^[ \t]+/, '');
+        const markdown = [marker + lang, ...body, closeLine].join('\n');
         blocks.push({ kind: 'atomic', entityType: 'MARKDOWN', data: { markdown } });
+        onFence?.(i, j);
         i = j + 1;
         continue;
       }
@@ -448,7 +507,7 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
     const heading = line.match(RE_HEADING);
     if (heading) {
       const level = (heading[1] ?? '').length;
-      const content = (heading[2] ?? '').replace(/\s+#+\s*$/, '').trim(); // 去掉可选的 ATX 闭合 ###
+      const content = stripAtxClosing(heading[2] ?? ''); // 去掉可选的 ATX 闭合 ###
       const inline = walkInline(content);
       let type: TextBlockType;
       if (level <= 2) {
@@ -478,8 +537,11 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
     const ul = line.match(RE_UL);
     if (ul && canBeListItem(listIndents, ul[1] ?? '')) {
       const depth = listDepth(listIndents, indentWidth(ul[1] ?? ''));
-      blocks.push(taskAwareListBlock('unordered-list-item', ul[2] ?? '', depth));
-      i += 1;
+      const col = listItemContentCol(line, ul[2] ?? '');
+      const item = absorbListContinuation(ul[2] ?? '', col);
+      blocks.push(taskAwareListBlock('unordered-list-item', item.content, depth));
+      listContentCol = col;
+      i = item.next;
       continue;
     }
 
@@ -487,8 +549,11 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
     const ol = line.match(RE_OL);
     if (ol && canBeListItem(listIndents, ol[1] ?? '')) {
       const depth = listDepth(listIndents, indentWidth(ol[1] ?? ''));
-      blocks.push(taskAwareListBlock('ordered-list-item', ol[2] ?? '', depth));
-      i += 1;
+      const col = listItemContentCol(line, ol[2] ?? '');
+      const item = absorbListContinuation(ol[2] ?? '', col);
+      blocks.push(taskAwareListBlock('ordered-list-item', item.content, depth));
+      listContentCol = col;
+      i = item.next;
       continue;
     }
 
@@ -511,7 +576,13 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
 
     // 前导空白剥离(B3-6)**逐行**做、且在 walkInline **之前**——整体 trim 会漏掉中间各行,
     // 剥完再解析行内,offset 才是相对最终文本算的。
-    const paraText = para.map(stripParagraphIndent).join('\n');
+    // 松散列表下的缩进段落(`- a\n\n    para`,A3):首行缩进 ≥ 列表内容列 ⇒ 属于该列表项,
+    // 每行先剥掉至多「内容列」宽的缩进,再走常规的 0-3 列剥离;否则 ≥4 空格会被当缩进代码原样保留。
+    const listCol = listContentCol;
+    const underList = listCol !== null && leadingCols(line) >= listCol;
+    const paraText = para
+      .map((l) => stripParagraphIndent(underList ? stripIndentCols(l, listCol) : l))
+      .join('\n');
 
     // setext 标题:段落正下方紧跟 `===` / `---` → 整段升格为标题,并吃掉下划线行。
     // 放在段落收集**之后**判定,天然支持多行 setext 正文;也天然让 `---` 在此处
@@ -528,6 +599,32 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
   }
 
   return blocks;
+}
+
+/** 去掉 ATX 标题可选的闭合井号序列(`# 标题 ##` → `标题`;`# C#` 不动,闭合序列前须有空白)。 */
+function stripAtxClosing(content: string): string {
+  return content.replace(/\s+#+\s*$/, '').trim();
+}
+
+/**
+ * 一段标题内容的**纯文本**(A7):先剥 ATX 闭合井号(`atxClosing`,setext 标题传 false),
+ * 再经 walkInline 去掉行内标记——`**粗** 标题` → `粗 标题`、`[链接](u) 标题` → `链接 标题`。
+ * 与 parser 产出 header-one 块的 text **同一条路径**,frontmatter.findFirstH1(→ extractTitle /
+ * capability.firstTitle)共用它,文章标题与正文标题不再分裂。
+ * 行内开关(wikilink 等)固定按默认值解析并在返回前还原——标题抽取不带解析开关,
+ * 不能继承上一次 parseMarkdown 残留的模块级状态。
+ */
+export function inlinePlainText(s: string, opts: { atxClosing?: boolean } = {}): string {
+  const content = (opts.atxClosing ?? true) ? stripAtxClosing(s) : s.trim();
+  const saved = [optObsidianImg, optWikilink, optTaskList] as const;
+  optObsidianImg = true;
+  optWikilink = true;
+  optTaskList = 'symbol';
+  try {
+    return walkInline(content).text.trim();
+  } finally {
+    [optObsidianImg, optWikilink, optTaskList] = saved;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -635,6 +732,33 @@ function stripParagraphIndent(line: string): string {
   return m ? line.slice(m[0].length) : line;
 }
 
+/** 行首空格/Tab 的列宽。 */
+function leadingCols(line: string): number {
+  return indentWidth(/^[ \t]*/.exec(line)?.[0] ?? '');
+}
+
+/**
+ * 剥掉至多 `cols` 列的前导空格/Tab;前导空白不足 `cols` 时剥到尽量多(CommonMark 对围栏内容行的规则)。
+ * Tab 按 4 列计,跨越边界的 Tab 整个剥掉(不拆半个 Tab)。
+ */
+function stripIndentCols(line: string, cols: number): string {
+  let w = 0;
+  let k = 0;
+  while (k < line.length && w < cols) {
+    const ch = line[k];
+    if (ch === ' ') w += 1;
+    else if (ch === '\t') w += 4;
+    else break;
+    k += 1;
+  }
+  return line.slice(k);
+}
+
+/** 列表项的内容列:标记 + 分隔空白之后的列宽(`- a` → 2,`10. a` → 4)。content 为正则捕获的项内容。 */
+function listItemContentCol(line: string, content: string): number {
+  return indentWidth(line.slice(0, line.length - content.length));
+}
+
 /** 缩进宽度(列):Tab 记 4 列,空格记 1 列——与主流编辑器/CommonMark 的 Tab 展开一致。 */
 function indentWidth(ws: string): number {
   let w = 0;
@@ -690,8 +814,9 @@ function isBlockBoundary(line: string, interrupting = false): boolean {
  * title 剥离**保守只认 `"…"` / `'…'` 两种**:`url (标题)` 形态与 `photo (1).png` 这类真实
  * 文件名无法区分,误剥会把好路径切坏,故不碰。剥离统一落在本函数(裸图片行与「带链接图片」
  * 两条分支都经它),避免第二套实现漂移;`<>` 分支提前 return,其 `>` 之后的 title 本就被忽略。
+ * 导出供 frontmatter.extractCover 的 `cover: ![x](a.png "t")` 复用(A6),不另写第二套剥离。
  */
-function normalizeImageSrc(raw: string): string {
+export function normalizeImageSrc(raw: string): string {
   const s = raw.trim();
   if (s.startsWith('<')) {
     const end = s.indexOf('>');
@@ -782,25 +907,30 @@ function scanParenClose(line: string, start: number): number | null {
 
 /**
  * 识别开栏:3+ 个 ` 或 ~;反引号围栏的信息串不得含反引号(否则非合法开栏)。
- * 允许 0-3 空格缩进(B3-6):**必须与 matchFenceClose、以及主循环里 info 规范化的正则
- * 三处同改**——漏任一处就会「语言标记丢失」或「闭栏认不出、整段吞进正文」。
+ * 缩进上限按 fenceMaxIndent(自身缩进, listContentCol):顶层 0-3(B3-6),列表语境且缩进 ≥ 内容列时放宽(A4)。
+ * 开栏正则 RE_FENCE_LINE 与主循环 info 规范化共用;闭栏缩进上限随 Fence.maxIndent 走——
+ * 漏改任一处就会「语言标记丢失」或「闭栏认不出、整段吞进正文」。
  */
-function matchFenceOpen(line: string): Fence | null {
+function matchFenceOpen(line: string, listContentCol: number | null = null): Fence | null {
   const m = line.match(RE_FENCE_LINE);
   if (!m) return null;
-  const marker = m[1] ?? '';
-  const info = m[2] ?? '';
+  const indent = indentWidth(m[1] ?? '');
+  const maxIndent = fenceMaxIndent(indent, listContentCol);
+  if (indent > maxIndent) return null;
+  const marker = m[2] ?? '';
+  const info = m[3] ?? '';
   const char = marker[0] ?? '`';
   if (char === '`' && info.includes('`')) return null;
-  return { char, len: marker.length };
+  return { char, len: marker.length, indent, maxIndent };
 }
 
 /** 识别闭栏:同字符、数量 ≥ 开栏、其后仅允许空白(`\s`:含全角空格 U+3000,CJK 输入法
  * 易在行尾带出——收窄成 `[ \t]` 会让这类闭栏失效、整段代码块散架,review 修复);缩进规则与开栏同(B3-6)。 */
 function matchFenceClose(line: string, fence: Fence): boolean {
-  const m = line.match(/^ {0,3}(`{3,}|~{3,})\s*$/);
+  const m = line.match(RE_FENCE_CLOSE);
   if (!m) return false;
-  const marker = m[1] ?? '';
+  if (indentWidth(m[1] ?? '') > fence.maxIndent) return false; // 缩进上限与开栏同口径(A4)
+  const marker = m[2] ?? '';
   return (marker[0] ?? '') === fence.char && marker.length >= fence.len;
 }
 
@@ -864,6 +994,10 @@ function walkInline(src: string, depth = 0): InlineResult {
 
   let i = 0;
   const n = src.length;
+  // A2 性能:按定界符缓存「从位置 p 起找不到合规闭符」(CommonMark openers_bottom 思路),本次调用内
+  // 有效——之后 start ≥ p 直接返回 -1,病理输入(`'**a '.repeat(5000)`)由 O(n²) 降为线性。
+  const noCloseFrom = new Map<string, number>();
+  const findClose = (start: number, delim: string): number => findClosing(src, start, delim, noCloseFrom);
 
   /**
    * 递归包裹一段强调:未超深度上限则解析内层 [innerStart,innerEnd) 并挂样式;
@@ -943,41 +1077,53 @@ function walkInline(src: string, depth = 0): InlineResult {
       }
     }
 
+    // 强调符的最小 flanking(A2):开符号后一字符不得是空白(canOpen),闭符号前一字符不得是空白
+    // (findClosing 内 canClose 跳过不满足的候选)。否则 `2 * 3 * 4` 会把 ` 3 ` 设成斜体、吞掉两个
+    // 乘号;`a _ b _ c`、`x ~~ y ~~ z` 同类。不满足的符号落到末尾按普通字符原样输出。
+
     // ***x*** 粗+斜
-    if (src.startsWith('***', i)) {
-      const close = findClosing(src, i + 3, '***');
+    if (src.startsWith('***', i) && canOpen(src, i)) {
+      const close = findClose(i + 3, '***');
       if (close > i + 3) {
         wrap(i + 3, close, close + 3, ['BOLD', 'ITALIC']);
         continue;
       }
+      // 无 `***` 闭合:拆成 `*` + `**`,**先闭合者在内层**(CommonMark)。`***a** b*` 的 `**` 先闭合
+      // → 外层斜体包住「加粗 a + b」;`***a* b**` 的 `*` 先闭合 → 交下方 `**` 分支(外层加粗)。
+      const c1 = findClose(i + 1, '*');
+      const c2 = findClose(i + 3, '**');
+      if (c1 > i + 1 && c2 > i + 3 && c2 < c1) {
+        wrap(i + 1, c1, c1 + 1, ['ITALIC']);
+        continue;
+      }
     }
     // **x** 粗
-    if (src.startsWith('**', i)) {
-      const close = findClosing(src, i + 2, '**');
+    if (src.startsWith('**', i) && canOpen(src, i)) {
+      const close = findClose(i + 2, '**');
       if (close > i + 2) {
         wrap(i + 2, close, close + 2, ['BOLD']);
         continue;
       }
     }
     // ~~x~~ 删除线
-    if (src.startsWith('~~', i)) {
-      const close = findClosing(src, i + 2, '~~');
+    if (src.startsWith('~~', i) && canOpen(src, i)) {
+      const close = findClose(i + 2, '~~');
       if (close > i + 2) {
         wrap(i + 2, close, close + 2, ['STRIKETHROUGH']);
         continue;
       }
     }
     // *x* 斜体
-    if (ch === '*') {
-      const close = findClosing(src, i + 1, '*');
+    if (ch === '*' && canOpen(src, i)) {
+      const close = findClose(i + 1, '*');
       if (close > i + 1) {
         wrap(i + 1, close, close + 1, ['ITALIC']);
         continue;
       }
     }
     // _x_ 斜体:规避 snake_case 词内下划线(左右侧不得紧贴字母数字)
-    if (ch === '_' && !isWordChar(src[i - 1])) {
-      const close = findClosing(src, i + 1, '_');
+    if (ch === '_' && !isWordChar(src[i - 1]) && canOpen(src, i)) {
+      const close = findClose(i + 1, '_');
       if (close > i + 1 && !isWordChar(src[close + 1])) {
         wrap(i + 1, close, close + 1, ['ITALIC']);
         continue;
@@ -1067,15 +1213,25 @@ function matchLink(src: string, start: number): { textRaw: string; url: string; 
 /**
  * 从 start 处向后寻找闭合定界符 delim,返回其起始下标(找不到 -1)。
  * 扫描时跳过行内代码(代码优先);对单字符定界符(* / _)跳过更长的同字符连续段
- * (避免把 ** 中的星号误判为 * 的闭合)。
+ * (避免把 ** 中的星号误判为 * 的闭合)。前一字符是空白的候选不能闭合(canClose,A2),
+ * 跳过继续找:`**a ** b**` 的中间 `**` 不闭合,整段 `a ** b` 加粗(CommonMark)。
+ *
+ * `noCloseFrom`(可选,A2 性能):记录每个定界符「从该位置起已确认无闭符」的最小起点;start ≥ 它直接
+ * 返回 -1。仅在扫描**未跨过行内代码**时写入——代码段的切分依赖扫描起点(从中途起扫可能对齐到不同的
+ * 反引号),跨过代码段的结论不保证对更靠后的起点成立,宁可不缓存。单字符定界符从同字符连续段中途起扫
+ * 的唯一差异是「start 恰为段末」时可返回 start 本身,调用方均要求 close > start,结论等价。
  */
-function findClosing(src: string, start: number, delim: string): number {
+function findClosing(src: string, start: number, delim: string, noCloseFrom?: Map<string, number>): number {
+  const cachedFrom = noCloseFrom?.get(delim);
+  if (cachedFrom !== undefined && start >= cachedFrom) return -1;
   const single = delim.length === 1;
   const dch = delim[0] ?? '';
+  let crossedCode = false;
   let i = start;
   while (i < src.length) {
     const ch = src[i];
     if (ch === '`') {
+      crossedCode = true;
       const cs = matchCodeSpan(src, i);
       i = cs ? cs.end : i + 1;
       continue;
@@ -1084,16 +1240,17 @@ function findClosing(src: string, start: number, delim: string): number {
       if (ch === dch) {
         let run = 1;
         while (src[i + run] === dch) run += 1;
-        if (run === 1) return i;
+        if (run === 1 && canClose(src, i)) return i;
         i += run;
         continue;
       }
       i += 1;
       continue;
     }
-    if (src.startsWith(delim, i)) return i;
+    if (src.startsWith(delim, i) && canClose(src, i)) return i;
     i += 1;
   }
+  if (noCloseFrom && !crossedCode && (cachedFrom === undefined || start < cachedFrom)) noCloseFrom.set(delim, start);
   return -1;
 }
 
@@ -1127,6 +1284,28 @@ function isSafeUrl(u: string): boolean {
   if (!m) return true; // 无 scheme → 相对 URL / 锚点 / `//host`,放行
   const scheme = (m[1] ?? '').toLowerCase();
   return scheme === 'http' || scheme === 'https' || scheme === 'mailto';
+}
+
+/**
+ * 强调开符号(最小 left-flanking,A2):从 i 起的**整段同字符连续串**之后紧跟的字符存在且不是空白。
+ * 看整段而非仅 `len` 个字符(CommonMark 按 delimiter run 判定):否则 `a *** b` 的 `***` 判不过后,
+ * 落到 `**` 分支时「后一字符」是第三个 `*`,会被误判为可开。
+ */
+function canOpen(src: string, i: number): boolean {
+  const ch = src[i];
+  let e = i;
+  while (src[e] === ch) e += 1;
+  const next = src[e];
+  return next !== undefined && !/\s/.test(next);
+}
+
+/** 强调闭符号(最小 right-flanking,A2):i 所在同字符连续串**之前**紧邻的字符存在且不是空白。 */
+function canClose(src: string, i: number): boolean {
+  const ch = src[i];
+  let b = i;
+  while (b > 0 && src[b - 1] === ch) b -= 1;
+  const prev = src[b - 1];
+  return prev !== undefined && !/\s/.test(prev);
 }
 
 /** 是否为 ASCII 字母或数字(用于下划线斜体的词内规避)。 */

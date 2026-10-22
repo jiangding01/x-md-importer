@@ -340,3 +340,27 @@ describe('批次三 code review 修复回归 · 引号内转义', () => {
     expect(r?.title).toContain('c');
   });
 });
+
+describe('A6/A7 发版前修复', () => {
+  it('cover `![x](a.png "t")` 剥掉 title(复用 parser.normalizeImageSrc)', () => {
+    expect(extractCover('---\ncover: ![x](a.png "t")\n---')).toBe('a.png');
+    expect(extractCover("---\ncover: ![x](<a b.png> 't')\n---")).toBe('a b.png');
+  });
+
+  it('H1 抽标题剥掉行内 markdown 标记与 ATX 闭合井号', () => {
+    expect(extractTitle('# **粗** 标题')?.title).toBe('粗 标题');
+    expect(extractTitle('# [链接](http://a) 标题')?.title).toBe('链接 标题');
+    expect(extractTitle('# 标题 ##')?.title).toBe('标题');
+    expect(extractTitle('# C#')?.title).toBe('C#');
+  });
+
+  it('setext 标题同样剥行内标记', () => {
+    expect(extractTitle('*斜* 标题\n===\n\n正文')?.title).toBe('斜 标题');
+  });
+
+  it('标题文本与 parser 产出的 header-one 文本一致', () => {
+    const md = '# **粗** [链](http://a) 标题 ##';
+    const h = parseMarkdown(md)[0];
+    expect(h?.kind === 'text' ? h.text : null).toBe(extractTitle(md)?.title);
+  });
+});

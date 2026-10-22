@@ -6,7 +6,8 @@ import { validatePrefs, type Prefs } from './schema';
 // 才能导出当前数据)。此处 re-export 保持既有导入点(PrefsProvider / backup 等)不变。
 export { defaultPrefs, type Prefs } from './schema';
 
-const KEY = 'markflow:prefs';
+/** chrome.storage key(单一来源:Provider 的 onChanged 监听同样引用它)。 */
+export const PREFS_KEY = 'markflow:prefs';
 
 /**
  * 读取界面偏好。**读出即校验**——storage 里可能躺着脏数据(扩展早期版本写入 / 版本迁移
@@ -15,14 +16,14 @@ const KEY = 'markflow:prefs';
  * 校验后坏字段静默回落默认值,面板照常可用、用户数据保全。
  */
 export async function loadPrefs(): Promise<Prefs> {
-  return validatePrefs(await getItem<unknown>(KEY, {}));
+  return validatePrefs(await getItem<unknown>(PREFS_KEY, {}));
 }
 
 export function savePrefs(prefs: Prefs): Promise<void> {
-  return setItem(KEY, prefs);
+  return setItem(PREFS_KEY, prefs);
 }
 
 /** 删除界面偏好(B4-4/P2-19,供 wipeAll 用)。见 draftStore.removeDraft 同款注释。 */
 export function removePrefs(): Promise<void> {
-  return removeItem(KEY);
+  return removeItem(PREFS_KEY);
 }

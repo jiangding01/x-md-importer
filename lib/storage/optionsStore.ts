@@ -2,7 +2,8 @@ import { type Options } from '@/lib/settings/options';
 import { getItem, removeItem, setItem } from './store';
 import { validateOptions } from './schema';
 
-const KEY = 'markflow:opts';
+/** chrome.storage key(单一来源:Provider 的 onChanged 监听同样引用它)。 */
+export const OPTIONS_KEY = 'markflow:opts';
 
 /**
  * 读取导入设置。**读出即校验**:非法枚举此前会被原样合并进 opts —— 例如坏掉的
@@ -10,14 +11,14 @@ const KEY = 'markflow:opts';
  * 校验后非法值回落默认,行为可预期。
  */
 export async function loadOptions(): Promise<Options> {
-  return validateOptions(await getItem<unknown>(KEY, {}));
+  return validateOptions(await getItem<unknown>(OPTIONS_KEY, {}));
 }
 
 export function saveOptions(opts: Options): Promise<void> {
-  return setItem(KEY, opts);
+  return setItem(OPTIONS_KEY, opts);
 }
 
 /** 删除导入设置(B4-4/P2-19,供 wipeAll 用)。见 draftStore.removeDraft 同款注释。 */
 export function removeOptions(): Promise<void> {
-  return removeItem(KEY);
+  return removeItem(OPTIONS_KEY);
 }

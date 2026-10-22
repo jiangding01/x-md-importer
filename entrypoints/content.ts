@@ -30,6 +30,7 @@ import {
 } from '@/lib/bridge/protocol';
 import {
   clearVaultHandle,
+  clearVaultIndexCache,
   getVaultHandle,
   hasReadPermission,
   requestReadPermission,
@@ -115,7 +116,12 @@ async function prepareOneImage(block: ImageBlock): Promise<PreparedImage> {
       if (resp?.ok) {
         return { file: new File([base64ToBytes(resp.base64)], resp.fileName, { type: resp.mime }) };
       }
-      return { file: null, failReason: 'remote-fetch-failed', failDetail: resp && !resp.ok ? resp.error : undefined };
+      const error = resp && !resp.ok ? resp.error : undefined;
+      // C25:background 明确报告权限类错误时给专用原因码。注意无 host 权限的跨源 fetch 通常只表现为
+      // 「TypeError: Failed to fetch」,content 无法单凭它区分权限与网络故障——那种情况由 sidepanel
+      // 结合「本次权限申请被拒」再改标(见 WorkspaceProvider.startImport)。
+      const reason = error && /permission/i.test(error) ? 'remote-permission-denied' : 'remote-fetch-failed';
+      return { file: null, failReason: reason, failDetail: error };
     }
     // local(本地相对路径):从已连接的文件夹读取,逐文件兜底优先级 active(素材板「本篇」)>
     // persistent(设置默认)——active 里没有该文件时继续到 persistent 找;两级都读不到 → file:null,
@@ -345,6 +351,8 @@ export default defineContentScript({
         (coverSource !== null && classifyImageSource(coverSource) === 'local');
       // 先在 ISOLATED 侧准备图片字节(dataURI 就地解析 / 远程走 background 代理),再压缩(如启用),
       // 然后随 import 消息把 File 交给 injector——File 经结构化克隆跨 world 传递。
+      // C9:文件名索引按「单次导入」缓存——开始前清一次(文件夹内容可能已变),结束后再清(见下)。
+      clearVaultIndexCache();
       const images = await prepareImages(blocks, compress);
       // 封面同样在 content 准备好 File 再交给 injector(injector 在 MAIN world 设到封面 fileInput,
       // File 同世界赋值更稳);封面也走同一压缩。保留整个 PreparedImage——准备失败的原因码
@@ -354,6 +362,7 @@ export default defineContentScript({
         : null;
       let cover = coverPrep?.file ?? null;
       if (cover) cover = await compressAndLog(cover, compress, '封面');
+      clearVaultIndexCache(); // 本地图字节已全部备好(正文 + 封面),索引不再需要,释放内存
       // 通道超时必须显著大于「图片数 × injector 单图 30s 预算」,否则慢图/多图会先在通道超时,
       // 报失败并丢弃 injector 事后回来的成功结果(而 injector 仍在后台改写编辑器)。基础 45s +
       // 每图 45s(单图 30s 预算 + 归位/清理冗余 + settle 等待余量——settle 最坏每图 +3s,

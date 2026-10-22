@@ -394,4 +394,8 @@ describe('firstTitle()', () => {
     const md = '---\ntitle: FM\n---\n\n# 正文 H1\n';
     expect(firstTitle(md, false)).toBe('FM');
   });
+
+  it('A7:历史标题剥掉行内 markdown 标记', () => {
+    expect(firstTitle('# **粗** 标题 ##\n\n正文', false)).toBe('粗 标题');
+  });
 });
