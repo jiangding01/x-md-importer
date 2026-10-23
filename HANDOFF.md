@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**:2026-10-22 · 分支 `fix/pre-release-2026-10`(基于 8 月审查分支 `claude/chrome-extension-review-9vtcy6`)· **v0.5.0 定版,待真机回归后打 tag**——8 月审查分支(五批修复,PR #32)合入 + 10 月发版前复审三阶段修复(P0 链接图扫描器 / settle 等待 / 文章页闸门 / 去 tabs 权限 / manifest i18n;P1 解析 flanking / 超时晚到图追回 / 设置多窗口同步 / 本地图索引;P2 回传校验 / SSRF 补漏 / 字体瘦身),单测 646。逐项明细见 CHANGELOG [0.5.0];更早的历史见 §11 与 git log。
+**最后更新**:2026-10-23 · 分支 `fix/pre-tag-review-2026-10-23`(基于 main `0ec9b15`)· **PR #32(8 月审查分支)与 #33(10 月三阶段修复 + v0.5.0 定版)均已合入 main;v0.5.0 尚未打 tag**,本分支在打 tag 前修复对 PR #33 复审发现的问题(方案见 `docs/review/修复方案-2026-10-23.md`):本地图同名歧义不再静默挑图(B1)、晚到图片不再按 FIFO 猜归属(B2)、权限被拒提示与 ask 重复弹窗(B4/B5/B6)、SSRF 补漏(F6)、标题抽取与正文解析单一来源(P3/P7)、解析性能与列表续行 / cover 边角(P1/P2/P5/P6)。单测 738。逐项明细见 CHANGELOG [0.5.0];更早的历史见 §11 与 git log。
 
 ---
 
@@ -26,8 +26,8 @@
   - ✅ **本地图按需授权**（分支 `feat/session-vault-folder`，真机验证）：两级文件夹 `active`（素材板「本篇图片文件夹」）+ `persistent`（设置默认），读取优先级 active > persistent > 降级；素材板就地连接/更换/清除本篇专用文件夹；浏览器重启权限回落后「一键恢复」复用存量 handle（`requestPermission`，免重选文件夹）。
   - ✅ **探针自动重探**（PR #10，真机验证）：监听标签页事件自动更新连接状态,免手动刷新;tab 定位改为跟随当前活动标签。
   - ✅ **设置面板诚实化**（PR #15/#16/#17，批次 A/B）：盘点发现近 2/3 开关「改了不生效」→ 删 14 个无意义/不可行项 + 置灰未接项;`obsidianImg`/`wikilink`/`scrollTop` 接真实实现;修 stale-closure（切开关不改 md 即时生效）+ 探针刷新后自动重探。
-- **本次刚做(v0.5.0 定版)**:两轮上线前审查的修复合集。① 8 月审查(`docs/review/上线前全面审查-2026-08-18.md`)五批修复——存储写失败可见、草稿/历史多窗口同步、tabId+articleId 双钥钉死、committed 区分、marker 剥离保文本、解析 12 项、备份恢复安全化、Toast 分型、对比度等;② 10 月发版前复审(`docs/review/发版前审查-2026-10-22.md`)阶段 0～3——pnpm pin 修复、A1 同行多张带链接图片(P0)、B1 图片阶段 settle 谓词等待(P0)、B3 `/compose/articles` 写入闸门、去 `tabs` 权限改 host_permissions、`minimum_chrome_version` 116、manifest `_locales` 国际化、A2 强调符 flanking、B2 超时晚到 MEDIA 追回 + orphan 审计、C2 设置多窗口同步、C9 本地图文件名索引、B9 回传校验、B10 SSRF 补漏、字体只打 latin woff2(1.11MB→约 640KB)。单测 307→646。版本号 0.5.0、CHANGELOG 定版、README / 隐私政策 / NOTICE / QA T16～T21 已同步。〔v0.4.0〕数学块 `$$` → X 原生 LaTeX 块(真机验证)。
-- **还没做(发版前)**:① PR #32(审查分支 → main)与本分支 PR 由用户合并;② 真机回归 `docs/qa/真机回归测试-审查修复五批.md` T1～T15 + T16～T21(B1/B2/B3/权限弹窗/去 tabs 探针/字体是代码无法自证项);③ 把 `docs/privacy-policy.md` 发布到公开地址(仓库私有,审核员打不开),补联系邮箱;④ 打 `v0.5.0` tag → release 工作流出 zip → 商店上传,后台填权限理由与隐私 URL。发版后待办见 `docs/review/backlog-2026-10-22.md`。
+- **本次刚做(v0.5.0 定版)**:两轮上线前审查的修复合集。① 8 月审查(`docs/review/上线前全面审查-2026-08-18.md`)五批修复——存储写失败可见、草稿/历史多窗口同步、tabId+articleId 双钥钉死、committed 区分、marker 剥离保文本、解析 12 项、备份恢复安全化、Toast 分型、对比度等;② 10 月发版前复审(`docs/review/发版前审查-2026-10-22.md`)阶段 0～3——pnpm pin 修复、A1 同行多张带链接图片(P0)、B1 图片阶段 settle 谓词等待(P0)、B3 `/compose/articles` 写入闸门、去 `tabs` 权限改 host_permissions、`minimum_chrome_version` 116、manifest `_locales` 国际化、A2 强调符 flanking、B2 超时晚到 MEDIA 追回 + orphan 审计、C2 设置多窗口同步、C9 本地图文件名索引、B9 回传校验、B10 SSRF 补漏、字体只打 latin woff2(1.11MB→约 640KB)。单测 307→646。版本号 0.5.0、CHANGELOG 定版、README / 隐私政策 / NOTICE / QA T16～T21 已同步。〔v0.4.0〕数学块 `$$` → X 原生 LaTeX 块(真机验证)。 〔打 tag 前复审修复(2026-10-23,本分支)〕对 PR #33 的五路审查 → 对抗性核实 → 方案评审后,修复核实属实的 #33 引入回归与旧问题:本地图同名多处报 `local-ambiguous`(不再静默选错图)、删除末轮 FIFO(无法归属的晚到图如实上报 `orphan-media` / `media-order-uncertain`)、权限被拒 toast 只计确实未授权的域名并剔除被拦主机、ask 拒绝权限后确认覆盖不二次弹窗、`isBlockedHost` 补漏、标题抽取改取解析主循环上报的标题(P3)并隔离解析开关(P7)、`findClosing` 记忆化(P1/P2)、列表续行 `2024.`(P5)、frontmatter `cover` 整行判定(P6)。P4(列表下 4 空格缩进的围栏 / 引用 / 标题、Tab 制表位)推迟 0.5.1,见 backlog。
+- **还没做(发版前)**:① 本分支 `/check` 审查 → 修复 → 复审通过后提交、开 PR,由用户合并(PR #32 / #33 已合入 main);② 真机回归 `docs/qa/真机回归测试-审查修复五批.md` T1～T15 + T16～T22(B1/B2/B3/权限弹窗/去 tabs 探针/字体是代码无法自证项;其中 T17 已按「无静默错位」改写,T19 补 ask 拒绝后确认不二次弹窗与已授权 / 被拒混合,T22 为本地图同名歧义);③ 把 `docs/privacy-policy.md` 发布到公开地址(仓库私有,审核员打不开),补联系邮箱;④ 打 `v0.5.0` tag → release 工作流出 zip → 商店上传,后台填权限理由与隐私 URL。发版后待办见 `docs/review/backlog-2026-10-22.md`。
 - **明确不做(产品决策)**：**行内数学 `$…$`** 与 **行内图片**——X 的 LaTeX / 媒体都是**块级** Insert 项,无行内原生承载,与「行内代码」同策略:保留原文、能力面板如实告知。不再列为候选,勿再评估。
 - **真机验证(本轮,已通过)**：setext 标题两种下划线均成标题且不多出分割线 · 任务列表 ☐/☑ 正确、加粗精确落在文字上未被符号带偏 · `[x]无空格` 原样保留 · 全角空格列表项正常 · emoji/CJK 后的加粗 offset 精确 · 远程图上传 + 封面设置成功（含带查询参数的 `pbs.twimg.com` URL）· 推文嵌入 / 表格 / 代码块 / 分割线均原生。
   - 期间一次图片上传失败经排查为**该 Wikimedia URL 本身不可达**，非代码问题；降级链路如实把 markdown 原文写回正文、未丢内容，行为符合设计。样例已改用 `pbs.twimg.com`。
@@ -147,13 +147,13 @@ background（开侧栏）                          injector.ts（MAIN world，�
   - 新增 63 例单测（`loadValidation.test.ts`）：13 种损坏形态 × 四个加载器，含**端到端接线测试**（塞脏 JSON 进 localStorage 驱动真实 `loadX()`）——只测校验器而不测接线的话，漏接了照样全绿。已用「拆掉校验 → 测试变红」反证。
 
 - 🟡 **v0.5.0 · 上线前两轮审查修复**(8 月五批 + 10 月阶段 0～3,**代码侧三绿,待真机回归**):
-  - **写入安全**:双钥钉死 + 文章页路由闸门(推文/私信框不再「已连接」);图片阶段每步 `settle` 等 React 提交(非末张失败不再被回滚删掉);超时晚到 MEDIA 循环中按 pendingKey 精确追回、末轮 FIFO + orphan 审计;权限申请统一为两条写入路径的第一个 await;injector 回传白名单校验(B9)。
+  - **写入安全**:双钥钉死 + 文章页路由闸门(推文/私信框不再「已连接」);图片阶段每步 `settle` 等 React 提交(非末张失败不再被回滚删掉);超时晚到 MEDIA 只按 pendingKey 精确追回(无归属证据的不猜,如实上报 `orphan-media` / `media-order-uncertain`;末轮 FIFO 已在 2026-10-23 删除);权限申请统一为两条写入路径的第一个 await;injector 回传白名单校验(B9)。
   - **解析**:链接图片括号配对扫描器(A1)、强调符 flanking + 转义 + `\p{L}` 词内 `_`(A2/A12/A13)、列表续行 / 列表内缩进围栏(A3/A4)、围栏判定收敛为 `parseLines(onFence)` 单一来源、标题抽取 `inlinePlainText`、frontmatter/cover 边角十余项。
   - **数据**:存储写失败常驻错误条、草稿/历史/设置/主题多窗口同步、草稿防抖 250ms+2s max-wait、历史 UUID(备份 version 2)、恢复前确认 + 自动导出、wipe 真清、加载路径逐字段校验(PR #31)。
   - **上架合规**:去 `tabs`、host_permissions 仅 x.com/twitter.com、`unlimitedStorage`、Chrome ≥116、manifest `_locales`(en/zh_CN)、设置页版本读 manifest、生产不打 `console.info`、隐私政策 / NOTICE、字体瘦身(约 640KB,wxt 构建报告 637.58 kB)。
-  - 单测 307(v0.4.0 tag)→ 370(PR #31)→ 488(8 月五批)→ **646**(10 月三阶段)。
+  - 单测 307(v0.4.0 tag)→ 370(PR #31)→ 488(8 月五批)→ 646(10 月三阶段)→ **738**(打 tag 前复审修复)。
 
-`pnpm compile` / `pnpm test`(646)/ `pnpm build` 全绿。
+`pnpm compile` / `pnpm test`(738)/ `pnpm build` 全绿(2026-10-23 复审修复批:`pnpm test` 738 通过;compile / build 以提交前 `/check` 为准)。
 
 ---
 
@@ -177,7 +177,7 @@ background（开侧栏）                          injector.ts（MAIN world，�
 | 脚注 `[^1]` / 内嵌 HTML | ⚠️ 保留原文（X 均不支持）。**能力面板已如实告知** | 不计划 |
 | `punct` / `zhConvert` / `retries` / `codeStrategy` 设置项 | 仍置灰「规划中 / 当前固定」（诚实占位,非撒谎） | 未定 |
 | **扩展更新后旧 injector 需刷新 X 页面** | ⚠️ 扩展无法替换已注入页面的旧脚本;v0.5.0 协议新增 `isArticleEditor`,旧脚本不回该字段 → 探针判 `needs-refresh`、提示「请刷新此 X 页面以启用插件」(fail-closed,不会误写)。每次涉及协议的发版都要在更新说明里提醒用户刷新 | 固有限制 |
-| `settleTimeouts` / `imageLateRecovered` / `orphanMedia` 诊断字段 | ⚠️ 仅进 `ImportResult` 供诊断,UI 不消费(orphan 经失败明细 `orphan-media` 呈现) | 按需 |
+| `settleTimeouts` / `imageLateRecovered` / `orphanMedia` 诊断字段 | ⚠️ **仅 X 页面 console 可见**:sidepanel 侧经 `resultGuards` 归一化时有意丢弃(不入存储、UI 不消费,测试明确断言丢弃),排查看 X 页面 console 的 `[MarkFlow]` 日志;orphan / 错位经失败明细 `orphan-media` / `media-order-uncertain` 呈现 | 按需 |
 | 可选 host 权限撤销入口(D8) | ⚠️ 扩展内无 `permissions.remove` 入口,用户只能去 chrome://extensions 撤销 | backlog |
 
 > 图片上传（远程/dataURI）、封面、原生表格均已完成并真机验证合并（PR #4/#5/#7）。
@@ -234,8 +234,10 @@ pnpm build              # → .output/chrome-mv3
 - **FS 文件夹 handle 对 x.com 页面脚本可读（固有残留，已缓解）**：`FileSystemDirectoryHandle` 因 FS Access origin 绑定**只能**存 x.com origin 的 IndexedDB（sidepanel 扩展 origin 用不了它，搬不走）。而 content script 与 x.com 页面**共享同源 IndexedDB**——页面脚本 / XSS 可 `indexedDB.open('markflow_local_assets')` 取出 handle、免手势 `getFile()` 遍历读用户**整个已连文件夹**（比「MAIN world File 不可隐藏」严重：那只暴露正在导入的单张图，这暴露整文件夹、持久）。**已缓解**（发布前加固）：涉及本地图的导入结束后 `clearVaultHandle(active+persistent)`，把暴露窗口从「整个会话」压到「单次导入」；代价是每篇导入需重选文件夹。**残留**：「连接后从未导入」的窗口仍暴露（content 侧无自然清理时机），用户可手动「清除」；将 x.com XSS 视为威胁模型内则此为固有面。
 - **`InlineStyleRange.offset` 单位 = UTF-16 码元，禁止直接喂 `convertFromRaw`**：parser 用 `string.length`（码元）计 offset，injector 按 `block.text.length` 逐**码元**构造 characterList 直接 merge 进 Draft ContentBlock——全链路统一码元，emoji/CJK 扩展字符（代理对）后的样式区间精确对齐。**雷区**：Draft 的 raw 格式（`convertFromRaw`/`encodeInlineStyleRanges`）按**码点**计——将来若有人改走 rawToContentState，所有代理对之后的区间会整体错位。保持直写 characterList 路径。
 - **`settle` 谓词等待不可去掉**(B1,injector):图片阶段每次 `onChange` 之后都必须等 X 真正提交(谓词:marker 文本已变 / MEDIA 已出现)再读下一轮 editorState。去掉或换回固定 `delay` 会让下一轮用陈旧 state 读-改-写,把上一步(如失败图写回的原文)回滚,marker 重现后被清扫整块删掉——内容静默丢失。settle 超时只记账(`settleTimeouts`)不中断。
-- **权限申请必须是两条写入路径的第一个 await**:直写与 ask 两条路径都要先同步解析 blocks 并 `permissions.request`,再做探针/其他 await。任何前置 await(包括「先探针取 articleId」)都会消耗 Chrome 的瞬时用户激活,新 profile 下权限弹窗会直接被拒、不弹出。8 月批次二曾在直写路径前插了探针 await,10 月阶段一才改回。
-- **晚到 MEDIA 的 FIFO 追回只能在末轮做**(B2):循环中只按 `pendingKey` 精确追回;若在循环中做 FIFO,会把后一张图「首次即 ready」的 MEDIA 抢给早先超时的图,造成逐张错位——正是要修的 bug。末轮 FIFO 后仍多出的 MEDIA 走 `orphan-media` 审计上报。
+- **权限申请:首次点击时 `request` 必须是第一个 await;ask 确认路径不再申请**:直写与 ask 两条路径的**首次点击**都要先同步解析 blocks 并 `permissions.request`,再做探针/其他 await。任何前置 await(包括「先探针取 articleId」)都会消耗 Chrome 的瞬时用户激活,新 profile 下权限弹窗会直接被拒、不弹出。8 月批次二曾在直写路径前插了探针 await,10 月阶段一才改回。ask 弹窗确认(覆盖 / 追加)时手势已用过,`startImport` 带 `permAlreadyRequested`:跳过 `request` 与 toast,只用 `queryRemoteImagePermissions`(`permissions.contains`,无需手势、不弹窗)对当前 origins 重算未授权集合供失败改标——别在确认路径再调 `requestRemoteImagePermissions`,否则拒绝后会二次弹窗 + 二次 toast(B6)。`permissions.request` 全有或全无,拒绝不影响已授权 origin,故 toast 计数与改标只认 `deniedOrigins`,不能把「被拒」当成「全部未授权」(B4);origin 计算只有 `originPatternOf` 一处。
+- **晚到 MEDIA 只做 `pendingKey` 精确追回,不按顺序猜归属**(B2):循环中与循环结束后各扫一遍当前 state,只把已拿到 mediaId 的、超时那刻登记过 key 的 pending 块还给对应的超时图。**末轮 FIFO 已删除**(曾把任意无主 ready 块按顺序分给最早超时图,无归属证据、猜错即两图对调且全报成功)。无法归属的如实上报:多出的图走 `orphan-media`;存在不可追踪的超时图(无 pendingKey,或其块已消失)、其后有图成功归位、且孤儿数在扣除「仍可追踪(pendingKey 仍在)的超时图自身的块」后仍 > 0 时另推一条 `media-order-uncertain`(detail 为英文诊断串;不计 imageFail;以孤儿数为门槛压误报,代价是错位链末块在审计后才到时漏报,见 backlog)。**别再加「按顺序分配」类兜底**,除非先拿到 MEDIA entity 数据层面的归属证据。
+- **标题抽取只认解析主循环上报的标题**(P3/P7):`findFirstH1` 取 `forEachContentLine` 的 `onHeading` 回调,不要在 `frontmatter.ts` 再写 setext / 段落行的自有判定("第二套实现漂移" 已栽过多次);`extractTitle` / `stripFirstH1` / `firstTitle` 的解析开关必须由调用方透传(`WorkspaceProvider` 与 `capability` 已透传),模块级开关只在 `withParseOptions` 内临时设置并还原。
+- **本地图按文件名兜底遇同名多处不得静默挑一个**(B1):导入时只有 md 的 `File`、拿不到它在文件夹里的路径;`./`、`../` 开头多候选即 `ambiguous`,单段文件名取最浅者、并列也 `ambiguous`;解码遍优先(解码遍唯一即用、歧义即报歧义,不被原串遍覆盖,解码遍无候选才看原串遍);索引层按作用域顺序,第一个有候选的文件夹决定结果(歧义 / 唯一候选读失败都不再落到下一作用域);歧义与权限回落按作用域顺序归因(排在歧义作用域之前的作用域权限已回落 → 报 `local-permission-lapsed`,否则报歧义)。报告原因 `local-ambiguous`。
 - **pnpm 11 构建脚本**：esbuild 需在 `pnpm-workspace.yaml` `allowBuilds` 放行。
 - **CJK 字体**：只打包拉丁字体，中文用系统栈。
 - **`.output`/`.wxt`/`node_modules` 不提交**（已 gitignore）。
@@ -283,12 +285,18 @@ pnpm build              # → .output/chrome-mv3
 
 ## 11. 最近一次会话小结
 
-**2026-10-22 · 第十八次会话（本次）· 发版前复审 + 三阶段修复 + v0.5.0 定版**:
+**2026-10-23 · 第十九次会话 · 打 tag 前对 PR #33 的复审修复**:
+- **起点**:PR #32 / #33 合入 main 后、打 tag 前,对 `b3dac9a..0ec9b15` 做五路审查 → 两路对抗性核实 → 两路方案评审,只收核实属实的问题(方案 `docs/review/修复方案-2026-10-23.md`,证伪项与推迟项见其第 3 节)。分支 `fix/pre-tag-review-2026-10-23`,版本号仍 0.5.0,改动并入 CHANGELOG `[0.5.0]`。
+- **修复**:B1 本地图同名歧义、B2 删末轮 FIFO + 不确定提示、B4/B5/B6 权限计数 / 被拦主机 / ask 确认路径、F6 SSRF 补漏、P3/P7 标题单一来源与开关隔离、P1/P2 findClosing 记忆化、P5 列表续行、P6 cover 整行判定。P4 推迟 0.5.1。实现中的定案:B1 唯一候选读取失败时不再落到下一作用域;B2 不确定提示 detail 为英文诊断串、仅 `orphanMedia > 0` 时出现;B6 确认路径用 `queryRemoteImagePermissions` 只查不申请;F6 `198.18/15` 只对点分 IPv4 字面量生效;P3 补充:标题抽取跳过「未闭合围栏开栏行 / `$$` 后跟 `===`」形成的 setext 标题(正文解析不变),这类不会被设为文章标题、会继续找下一个一级标题;P5 只有字面 `1.` 能打断。
+- **教训**:同一事实的「第二套判定」是反复出现的缺陷源(标题抽取 vs 正文解析、origin 计算申请 vs toast)——这次都收敛为单一来源(`onHeading`、`originPatternOf`);猜归属的兜底(FIFO)在没有归属证据时比如实上报更危险,「报成功的错位」比「报失败」伤用户更深。
+- **文档**:CHANGELOG / HANDOFF / QA(T17 改写、T19 补充、新增 T22)/ backlog(P4 + 实施要点、B2 残留、本地图与协议相对地址等旧问题)已同步。
+
+**2026-10-22 · 第十八次会话· 发版前复审 + 三阶段修复 + v0.5.0 定版**:
 - **起点**:发现 8 月审查分支(9 个提交、五批修复、CI 全绿)**从未合入 main、未真机回归**;v0.4.0 tag 落后 main 5 个提交(PR #31 源码不在 tag 里,同一版本号两份代码)。于是先复审「分支合入后仍开放」的问题,开 PR #32 合分支,再在 `fix/pre-release-2026-10` 上分阶段 0～3 修复并定版 0.5.0。
 - **教训 · pnpm 坏版本**:`packageManager` 钉的 pnpm@11.12.0 被官方标为 broken release,本机 compile/test/build/zip 全失效。只改 pin 到 11.18.0、`--frozen-lockfile` 验证零改动;**不要重生成 lockfile**(本机 registry 是公司源,会写进 lockfile)。CI 注释不再钉具体小版本。
 - **教训 · tag 漂移**:定版提交打 tag 后又合了源码改动却没 bump 版本——同一版本号对应两份代码,CHANGELOG 用例数也对不上。发版收尾(tag/版本/CHANGELOG)统一走 `/check` ship 模式。
 - **教训 · 审查分支未合入**:修复做完但分支挂着没合,两个月后复审时得先逐条甄别哪些已在分支里修过。修复分支完成即开 PR 并跟进合并,HANDOFF「最后更新」要写清分支是否已合入 main。
-- 修复要点与踩坑见 §5「v0.5.0」条目与 §8 新增三条(settle / 权限首个 await / FIFO 末轮);待办见 §0「还没做」与 backlog 文档。
+- 修复要点与踩坑见 §5「v0.5.0」条目与 §8 新增条目(settle / 权限首个 await / 晚到 MEDIA 只精确追回 / 标题单一来源 / 本地图同名歧义);待办见 §0「还没做」与 backlog 文档。
 
 **2026-07-25 · 第十七次会话 · 数学块 `$$` → X 原生 LaTeX**：
 - **先真机 dump 定 entity shape,再动手**：X 的 LaTeX 块 entity 形状是本项目 M0 探针清单里一直没做的一项(DIVIDER/MARKDOWN/TWEET 都有源码/dump 实证,唯独 LATEX 没有)。开发前先写 Console dump 脚本(照 injector 的 fiber 定位路径)交用户真机跑,拿到确切 shape:`entityType="LATEX"` / `mutability=IMMUTABLE` / `data={}`(空) / **公式本体在块 `text`** / **每个字符都挂同一 LATEX entity key**。**教训延续**:entity 形状绝不臆造(捏错 X 直接不渲染),先 dump 实证再写。
