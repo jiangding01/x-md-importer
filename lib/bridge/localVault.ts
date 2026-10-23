@@ -199,7 +199,8 @@ async function readBySegments(
 // ── 文件名索引(C9)──
 // Obsidian 短链接 `![[x.png]]` 只写文件名(附件实际在 attachments/ 或任意子目录);md 位于
 // vault 子目录时 `./img/a.png` / `../assets/a.png` 是相对 md 自身的路径——两者按「根 + 相对路径」
-// 直读必然 not-found。直读失败时在 vault 内按文件名查找(Obsidian 的解析规则:同名取路径最短)。
+// 直读必然 not-found。直读失败时在 vault 内按文件名查找;同名多处无法确定时报歧义(B1),
+// 不静默挑一个(见 pickFromIndex)。
 
 /** 索引扫描上限:目录深度(根的直接子项为第 1 层)与条目总数,防巨型文件夹拖死导入。 */
 export const VAULT_INDEX_MAX_DEPTH = 6;
@@ -289,30 +290,46 @@ function tailSegments(raw: string, decode: boolean): string[] {
     .filter((s) => s !== '' && s !== '.' && s !== '..');
 }
 
+/** 路径是否显式相对 md 自身(`./`、`../` 开头)。 */
+function isMdRelative(raw: string): boolean {
+  const p = raw.trim().replace(/\\/g, '/');
+  return p.startsWith('./') || p.startsWith('../');
+}
+
 /** 是否该走索引兜底:单段文件名(Obsidian 短链接),或显式相对 md 自身的 `./`、`../` 路径。 */
 function wantsIndexLookup(raw: string): boolean {
-  const p = raw.trim().replace(/\\/g, '/');
-  if (p.startsWith('./') || p.startsWith('../')) return true;
-  return !p.includes('/');
+  return isMdRelative(raw) || !raw.trim().replace(/\\/g, '/').includes('/');
 }
 
 /**
- * 从索引里按尾部段匹配:候选路径须以 tail 结尾(`./img/a.png` 只认 `…/img/a.png`),
- * 多个命中取路径段最少者(Obsidian「最短路径」规则),同长取先入索引者(BFS 顺序 = 更浅更先)。
+ * 从索引里按尾部段匹配:候选路径须以 tail 结尾(`./img/a.png` 只认 `…/img/a.png`)。
+ * B1:导入时只有 md 的 File、没有它在 vault 里的路径,无法按 md 所在目录解析——多候选时不能
+ * 静默挑一个(readdir 顺序不定,挑错即「报成功的错图」),按路径形态区分:
+ *  - mdRelative(原始路径以 `./` / `../` 开头):相对的是 md 所在目录,候选 > 1 → 'ambiguous'
+ *    (如 Hugo bundle 各篇都有 `./cover.png`);
+ *  - 单段文件名(Obsidian 短链接语义——Obsidian 仅在文件名唯一时写短链):取段数最少者;
+ *    最少段数并列 > 1 → 'ambiguous'。
+ * 无匹配候选 → null。
  */
-export function pickFromIndex(index: VaultNameIndex, tail: string[]): string[] | null {
+export function pickFromIndex(
+  index: VaultNameIndex,
+  tail: string[],
+  mdRelative: boolean,
+): { segs: string[] } | 'ambiguous' | null {
   const name = tail[tail.length - 1];
   if (!name) return null;
   const candidates = index.get(name);
   if (!candidates) return null;
-  let best: string[] | null = null;
-  for (const segs of candidates) {
-    if (segs.length < tail.length) continue;
+  const matched = candidates.filter((segs) => {
+    if (segs.length < tail.length) return false;
     const off = segs.length - tail.length;
-    if (!tail.every((t, i) => segs[off + i] === t)) continue;
-    if (!best || segs.length < best.length) best = segs;
-  }
-  return best;
+    return tail.every((t, i) => segs[off + i] === t);
+  });
+  if (!matched.length) return null;
+  if (mdRelative) return matched.length === 1 ? { segs: matched[0]! } : 'ambiguous';
+  const minLen = Math.min(...matched.map((segs) => segs.length));
+  const shallowest = matched.filter((segs) => segs.length === minLen);
+  return shallowest.length === 1 ? { segs: shallowest[0]! } : 'ambiguous';
 }
 
 /** 按「解码段 → 未解码原串段」两遍直读(含 Obsidian 首段 == 文件夹名的剥除)。 */
@@ -344,7 +361,8 @@ async function readDirect(
  *  1. 剥 `?query`/`#hash` 后按「根 + 相对路径」直读(解码失败或解码后读不到 → 用未解码原串重试);
  *     失败且**首段 == 所选文件夹名**时剥掉首段重试(Obsidian vault:`myvault/img.png` 在选了
  *     myvault 文件夹时应解析为 `img.png`);剥后仍读不到且原串含 `?`/`#` 时再按原串试一次。
- *  2. 仍失败且路径是单段文件名或以 `./`/`../` 开头 → 文件名索引兜底(见 pickFromIndex)。
+ *  2. 仍失败且路径是单段文件名或以 `./`/`../` 开头 → 文件名索引兜底(见 pickFromIndex);
+ *     同名多处无法确定 → 返回 'ambiguous'(B1,不静默挑一个)。
  * 安全:非法路径(绝对路径 / 盘符 / `..` 逃逸)在第 1 步被拒;第 2 步只在 vault 内按名匹配,
  * 读取的始终是索引里真实存在于 root 之下的路径。
  */
@@ -353,11 +371,11 @@ export async function resolveLocalFile(
   rawPath: string,
   folderName: string | null,
   indexCacheKey?: string,
-): Promise<File | null> {
-  return (
-    (await resolveLocalFileDirect(root, rawPath, folderName)) ??
-    (await resolveLocalFileByIndex(root, rawPath, indexCacheKey))
-  );
+): Promise<File | 'ambiguous' | null> {
+  const direct = await resolveLocalFileDirect(root, rawPath, folderName);
+  if (direct) return direct;
+  const byIndex = await resolveLocalFileByIndex(root, rawPath, indexCacheKey);
+  return byIndex === 'unreadable' ? null : byIndex;
 }
 
 /** resolveLocalFile 第 1 步:直读(含 query/hash 剥离回退与首段 == 文件夹名剥除)。 */
@@ -373,14 +391,23 @@ async function resolveLocalFileDirect(
   );
 }
 
-/** resolveLocalFile 第 2 步:文件名索引兜底(仅单段文件名或 `./`/`../` 开头的路径)。 */
+/**
+ * resolveLocalFile 第 2 步:文件名索引兜底(仅单段文件名或 `./`/`../` 开头的路径)。
+ * 两遍(decoded / raw)**解码遍优先**:CommonMark 语义下 `a%20b.png` 指的就是 `a b.png`,
+ * 解码遍有候选即由它定论(唯一 → 读取;歧义 → 'ambiguous',不被原串遍的唯一命中覆盖);
+ * 解码遍无候选才看原串遍(文件名本身含字面 `%xx` 的兜底),同样唯一 → 读取、歧义 → 'ambiguous'。
+ * 返回值区分「本根无候选」(null,调用方可继续下一个作用域)与「本根有候选却没给出结果」
+ * ('ambiguous' / 'unreadable':唯一候选读取失败,如建索引后被删)——后两者由调用方就此收口,
+ * 不再往后找(B1 作用域优先级,见 resolveAcrossRoots)。
+ */
 async function resolveLocalFileByIndex(
   root: FileSystemDirectoryHandle,
   rawPath: string,
   indexCacheKey?: string,
-): Promise<File | null> {
+): Promise<File | 'ambiguous' | 'unreadable' | null> {
   const path = stripQueryHash(rawPath);
   if (!wantsIndexLookup(path)) return null;
+  const mdRelative = isMdRelative(path);
 
   const index = await getIndex(root, indexCacheKey);
   const tried = new Set<string>();
@@ -389,11 +416,10 @@ async function resolveLocalFileByIndex(
     const key = tail.join('/');
     if (!tail.length || tried.has(key)) continue;
     tried.add(key);
-    const hit = pickFromIndex(index, tail);
-    if (hit) {
-      const file = await readBySegments(root, hit);
-      if (file) return file;
-    }
+    const hit = pickFromIndex(index, tail, mdRelative);
+    if (hit === null) continue; // 本遍无候选 → 看下一遍
+    if (hit === 'ambiguous') return 'ambiguous';
+    return (await readBySegments(root, hit.segs)) ?? 'unreadable';
   }
   return null;
 }
@@ -401,18 +427,34 @@ async function resolveLocalFileByIndex(
 /**
  * 多根(按优先级排好)两层解析(C9):**先在所有根直读**,全部失败后**再在所有根查文件名索引**——
  * 避免 active 的索引模糊命中(同名图在别的目录)遮蔽 persistent 的精确路径。导出供单测。
+ * B1 索引层的作用域优先级:按 roots 顺序逐个查,**第一个有候选的根决定结果**——唯一 → 命中;
+ * 歧义 → 'ambiguous';唯一候选读不到 → null。三者都不再往后找(避免跳到默认文件夹拿到别的
+ * 同名图);只有本根毫无候选才继续下一个根。
  */
 export async function resolveAcrossRoots(
   roots: ReadonlyArray<{ handle: FileSystemDirectoryHandle; cacheKey: string }>,
   rawPath: string,
-): Promise<File | null> {
+): Promise<File | 'ambiguous' | null> {
+  const r = await resolveAcrossRootsAt(roots, rawPath);
+  if (r === null) return null;
+  return 'file' in r ? r.file : 'ambiguous';
+}
+
+/** resolveAcrossRoots 的内部形态:歧义时带回是第几个根(resolveFromScopes 据此按作用域顺序归因)。 */
+async function resolveAcrossRootsAt(
+  roots: ReadonlyArray<{ handle: FileSystemDirectoryHandle; cacheKey: string }>,
+  rawPath: string,
+): Promise<{ file: File } | { ambiguousAt: number } | null> {
   for (const { handle } of roots) {
     const file = await resolveLocalFileDirect(handle, rawPath, handle.name);
-    if (file) return file;
+    if (file) return { file };
   }
-  for (const { handle, cacheKey } of roots) {
-    const file = await resolveLocalFileByIndex(handle, rawPath, cacheKey);
-    if (file) return file;
+  for (let i = 0; i < roots.length; i += 1) {
+    const { handle, cacheKey } = roots[i]!;
+    const r = await resolveLocalFileByIndex(handle, rawPath, cacheKey);
+    if (r === null) continue;
+    if (r === 'unreadable') return null;
+    return r === 'ambiguous' ? { ambiguousAt: i } : { file: r };
   }
   return null;
 }
@@ -422,11 +464,14 @@ export async function resolveAcrossRoots(
  *  - 'no-folder'          两个作用域都没连接文件夹(用户需先连接);
  *  - 'permission-lapsed'  有已连接文件夹但读权限回落(prompt/denied,常见于浏览器重启后),
  *                         且在仍有效的文件夹里没找到(文件很可能就在失效的那个里,需重新授权);
- *  - 'not-found'          有效文件夹里确实找不到该文件。
+ *  - 'not-found'          有效文件夹里确实找不到该文件;
+ *  - 'ambiguous'          B1:按文件名兜底时首个有候选的文件夹里同名多处,无法确定是哪一张
+ *                         (用户需改用相对文件夹根的完整路径,或把本篇所在文件夹设为图片文件夹);
+ *                         但若排在它之前的作用域权限已回落(图可能唯一地在那里),报 permission-lapsed。
  */
 export type LocalResolveResult =
   | { file: File }
-  | { reason: 'no-folder' | 'permission-lapsed' | 'not-found' };
+  | { reason: 'no-folder' | 'permission-lapsed' | 'not-found' | 'ambiguous' };
 
 /** 单个作用域的连接状况:handle=null 表示未连接;granted=读权限是否仍有效。 */
 export interface ScopeVault {
@@ -445,9 +490,17 @@ export async function resolveFromScopes(
 ): Promise<LocalResolveResult> {
   const connected = scopes.filter((s): s is ScopeVault & { handle: FileSystemDirectoryHandle } => s.handle !== null);
   if (!connected.length) return { reason: 'no-folder' };
-  const roots = connected.filter((s) => s.granted).map((s) => ({ handle: s.handle, cacheKey: s.cacheKey }));
-  const file = roots.length ? await resolveAcrossRoots(roots, rawPath) : null;
-  if (file) return { file };
+  const granted = connected.filter((s) => s.granted);
+  const roots = granted.map((s) => ({ handle: s.handle, cacheKey: s.cacheKey }));
+  const r = roots.length ? await resolveAcrossRootsAt(roots, rawPath) : null;
+  if (r && 'file' in r) return { file: r.file };
+  if (r) {
+    // 歧义 vs 权限回落按作用域顺序归因:排在歧义作用域**之前**的作用域权限已回落 → 图可能唯一地
+    // 在那里(优先级更高,本该先查它),提示重新授权;否则同名多处是确定的,提示消歧。
+    const at = scopes.indexOf(granted[r.ambiguousAt]!);
+    const lapsedBefore = scopes.slice(0, at).some((s) => s.handle !== null && !s.granted);
+    return { reason: lapsedBefore ? 'permission-lapsed' : 'ambiguous' };
+  }
   return { reason: roots.length < connected.length ? 'permission-lapsed' : 'not-found' };
 }
 
@@ -456,7 +509,8 @@ export async function resolveFromScopes(
  * 依次对每个「已连接且读权限有效」的文件夹尝试 resolveLocalFile,首个命中即返回 File。
  * 与「handle 级优先」的区别:active 里找不到该文件时会继续到 persistent 里找——active 只是
  * 优先来源,不会一旦连上就把 persistent 整体架空(避免「素材卡显示就绪、导入却降级」的落差)。
- * 两层拆开(C9):先在所有作用域直读,全部失败后再在所有作用域查文件名索引(见 resolveAcrossRoots)。
+ * 两层拆开(C9):先在所有作用域直读,全部失败后再在所有作用域查文件名索引(见 resolveAcrossRoots);
+ * 索引层由第一个有候选的作用域决定结果,同名歧义不再往后找(B1)。
  * 读不到时返回原因码(C30,见 LocalResolveResult),调用方据此降级 fallbackText 并记失败原因。
  */
 export async function resolveLocalImageAcrossScopes(rawPath: string): Promise<LocalResolveResult> {

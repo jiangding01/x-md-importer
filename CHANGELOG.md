@@ -9,7 +9,7 @@
 
 ## [0.5.0] - 2026-10-22
 
-> 上线前两轮审查的修复合集:2026-08 全面审查(2 P0 / 12 P1 / 31 P2,见 `docs/review/上线前全面审查-2026-08-18.md`)的五批修复,加 2026-10 发版前复审(见 `docs/review/发版前审查-2026-10-22.md`)的阶段 0～3 修复;另含 v0.4.0 tag 之后才合入 main 的 PR #31(存储加载路径校验)。主线是**写入安全**(钉死目标文章、等 React 提交、超时晚到图片追回)、**解析正确性**(CommonMark 边角三十余项)、**数据不丢**(写失败可见、多窗口同步、恢复安全化)与**上架合规**(权限最小化、manifest 国际化、隐私政策)。单测 307(v0.4.0 tag)→ **646**。
+> 上线前两轮审查的修复合集:2026-08 全面审查(2 P0 / 12 P1 / 31 P2,见 `docs/review/上线前全面审查-2026-08-18.md`)的五批修复,加 2026-10 发版前复审(见 `docs/review/发版前审查-2026-10-22.md`)的阶段 0～3 修复,以及打 tag 前对 PR #33 的复审修复(见 `docs/review/修复方案-2026-10-23.md`:本地图同名歧义、晚到图片不再猜归属、权限提示与 ask 重复弹窗、解析标题单一来源与性能、SSRF 补漏);另含 v0.4.0 tag 之后才合入 main 的 PR #31(存储加载路径校验)。主线是**写入安全**(钉死目标文章、等 React 提交、超时晚到图片追回)、**解析正确性**(CommonMark 边角三十余项)、**数据不丢**(写失败可见、多窗口同步、恢复安全化)与**上架合规**(权限最小化、manifest 国际化、隐私政策)。单测 307(v0.4.0 tag)→ **738**。
 >
 > 编号约定:`P0-x`/`P1-x`/`P2-x` 对应 2026-08 审查报告;`A`(解析)/`B`(注入)/`C`(工作区与 UI)/`D`(发版合规)编号对应 2026-10 发版前审查。同一问题 8 月修了一半、10 月补完的,下面合并为一条。
 
@@ -23,7 +23,7 @@
 - **备份格式 version 2**:历史记录 id 改 UUID,备份 `version` 随之升到 2;旧版(version 1)备份仍可恢复。
 - **包体积 1.11MB → 约 640KB**:字体只打包 latin woff2 子集(字体文件 51 → 7)。
 - 设置页底部版本号改读 manifest(此前硬编码 `v3.0`)。
-- 单测 307(v0.4.0 tag)/ 370(main,PR #31 后)→ **646**。
+- 单测 307(v0.4.0 tag)/ 370(main,PR #31 后)→ **738**。
 
 ### 新增
 
@@ -31,19 +31,22 @@
 - **存储写失败可见化(P0-1)**:`setItem` 不再吞错;草稿/历史写失败按来源记账并在草稿页亮**常驻错误条**(附「导出当前草稿」自救按钮);手动「保存」await 成功才提示、失败如实报错;设置/偏好写失败落 console。
 - **崩溃恢复屏自救出口(P1-9)**:新增「导出数据备份」(导出为可被「设置 → 恢复」直接吃下的 BackupData 形状 + 全量 raw dump);「重置」改为先自动导出、等下载发起再清,导出失败有内联反馈且需二次点击才强制重置。
 - **「查看报告」入口(C4)**:Footer 常驻入口,`autoReport=never` 时也能打开上次导入的失败明细;「是否异常」判定纳入全部失败明细(此前只看计数)。
-- **超时晚到图片追回(B2)**:某图上传超时后 X 晚到的 MEDIA 此前会被算到下一张、后续逐张错位。现在循环中只按 `pendingKey` 精确追回;末轮再按 FIFO 分配给最早超时的图并做孤儿审计——仍无法归属的多余图片以原因码 `orphan-media` 进失败明细(「存在无法归位的图片,请在编辑器中手动删除」),诊断字段 `imageLateRecovered`/`orphanMedia`。
-- **本地图按文件名索引查找(C9)**:直读(解码 / 原串两遍,剥 `?query#hash`)失败后,按文件名 BFS 建一次索引(深度 ≤6、条目 ≤5000,跳隐藏目录与 `node_modules`,同名取最短路径,按 scope 缓存、每次导入重建);先全根直读再全根索引。Obsidian 短链接 `![[x.png]]`、md 在子目录时的 `./img/a.png` 不再全报 not-found。
-- **失败原因码细分**:`article-switched`(导入中切了文章)、`not-article-editor`(非文章编辑页)、`remote-permission-denied`(图片域名授权被拒)、本地图 `no-folder` / `permission-lapsed` / `not-found` 三分(C30)、`orphan-media`、`bad-result`(injector 回传形状不合规),各有专属文案。
+- **超时晚到图片追回(B2)**:某图上传超时后 X 晚到的 MEDIA 此前会被算到下一张、后续逐张错位。现在只按超时那刻记下的 `pendingKey`(pending 块 key)**精确**追回归位——循环中与循环结束后各扫一遍当前状态;无归属证据(超时时尚无 pending 块,或该块后来消失)的晚到块**不再猜**(曾有的末轮 FIFO 按顺序分给最早超时图,猜错即两图对调且全报成功,已删除),如实上报:仍多出的图片以 `orphan-media` 进失败明细(「存在无法归位的图片,请在编辑器中手动删除」);若存在不可追踪的超时图、其后有图成功归位、且孤儿数在扣除「仍可追踪(pendingKey 对应块还在)的超时图自身的块」后仍 > 0,另有一条 `media-order-uncertain`「此前有图片上传超时且其结果晚到,这张及之后的图片位置可能错位,请在 X 编辑器中核对」(不计入失败数)。诊断字段 `imageLateRecovered`/`orphanMedia` 仅 X 页面 console 可见。
+- **本地图按文件名索引查找(C9)**:直读(解码 / 原串两遍,剥 `?query#hash`)失败后,按文件名 BFS 建一次索引(深度 ≤6、条目 ≤5000,跳隐藏目录与 `node_modules`,按 scope 缓存、每次导入重建);先全根直读再全根索引。Obsidian 短链接 `![[x.png]]`、md 在子目录时的 `./img/a.png` 不再全报 not-found。**同名歧义不静默挑图**:`./`、`../` 开头的路径多处同名即歧义(导入时拿不到 md 所在目录,如 Hugo bundle 各篇都有 `./cover.png`);单段文件名取路径最浅者(Obsidian 短链接语义),并列最浅也算歧义;解码遍优先(`a%20b.png` 按 `a b.png` 找,解码遍唯一即用、歧义即报歧义,不被原串遍的唯一命中覆盖,解码遍无候选才看原串遍)。歧义时降级为原文并报 `local-ambiguous`(「文件夹内有多张同名图片,无法确定是哪一张。请改用相对文件夹根目录的完整路径,或把本篇所在文件夹设为本篇图片文件夹」);按作用域顺序(素材板「本篇」先于设置默认)查,第一个有候选的文件夹决定结果(歧义、唯一候选读不到都不再落到下一个作用域,不会越过它去默认文件夹拿别的同名图);歧义与权限回落同样按作用域顺序归因——排在歧义作用域之前的作用域权限已回落(图可能唯一地在那里)时报「需重新授权」,否则报歧义。
+- **失败原因码细分**:`article-switched`(导入中切了文章)、`not-article-editor`(非文章编辑页)、`remote-permission-denied`(图片域名授权被拒)、本地图 `no-folder` / `permission-lapsed` / `not-found` 三分(C30)、`orphan-media`、`media-order-uncertain`(晚到图片可能错位)、`local-ambiguous`(本地图同名歧义)、`bad-result`(injector 回传形状不合规),各有专属文案。
 - **报告数据源钉死(P2-25)**:导入成功时冻结 `lastRunSnapshot`(md + parseOpts + 真实写入结果),报告卡明细与汇总统一读它——导入期间改稿、切设置、删历史都不再让报告漂移;HistoryItem 存 `parseOpts` 快照供日后历史回看。
-- **文档**:隐私政策 `docs/privacy-policy.md`(中英双语)、第三方署名 `NOTICE.md`、审查与修复方案 `docs/review/*-2026-10-22.md`、发版后待办 `docs/review/backlog-2026-10-22.md`;真机回归用例 `docs/qa/真机回归测试-审查修复五批.md`(15 组 + 2026-10 新增 T16～T21)。
+- **文档**:隐私政策 `docs/privacy-policy.md`(中英双语)、第三方署名 `NOTICE.md`、审查与修复方案 `docs/review/*-2026-10-22.md`、`docs/review/修复方案-2026-10-23.md`、发版后待办 `docs/review/backlog-2026-10-22.md`;真机回归用例 `docs/qa/真机回归测试-审查修复五批.md`(15 组 + 2026-10 新增 T16～T22)。
 
 ### 修复 · 写入链路(注入)
 
+- **权限被拒提示按实际未授权计数(B4)**:`permissions.request` 全有或全无,拒绝不影响此前已授权的域名。被拒(或抛错)后逐域名 `permissions.contains` 求出**确实未授权**的集合:toast「{n} 张远程图未获授权,可能无法下载」只计这些域名的远程图(按块计,含远程封面,与「图片 x/y」口径一致;文案不再说「将降级」——对方图床允许跨域时无权限也可能下载成功);失败改标为 `remote-permission-denied` 也仅限未授权域名,已授权域名的真网络故障、以及 4xx / 超时 / 非图片等明确原因保持原样。
+- **权限申请剔除被拦主机(B5)**:内网 IP、`localhost`、单标签主机名不再进入申请弹窗与 toast 计数(后台必拒,申请了也用不上);origin 计算收敛为 `originPatternOf` 单一来源。
+- **ask 模式拒绝权限后确认覆盖不再二次弹窗(B6)**:首次点击照旧发起申请(手势链第一个 await);覆盖确认弹窗里选「覆盖 / 追加」时跳过申请与 toast,只用 `permissions.contains`(只查不申请,无需手势)重算未授权域名供改标使用。取消覆盖弹窗不再收起上次的导入报告(报告卡收起时机挪到确定要写入之后)。
 - **钉死写入目标:tabId + articleId 双钥 + 文章页闸门(P1-1、B3)**:`writeX` 两条路径(ask 与直写)都在进入任何挂起窗口(确认弹窗 / host 权限申请)之前探测并钉死目标;`import` 消息带 `expectedArticleId`,injector 在入口、主提交前、每张图前、清扫前、封面前**持续复查**,SPA 同 tab 切文章立即停手(`article-switched`)。另以 `location.pathname` 以 `/compose/articles` 开头作写入闸门(新建文章页 articleId 为 null 也能写,但推文/私信框会被拒为 `not-article-editor`),探针回传 `isArticleEditor`、`connected` 要求其为真,`articleSwitched` 同时纳入路由判断。批次四 code review 还抓回了一处批次二批量替换误还原的 `pinnedTabId` 钉死逻辑(`importToXTab`/`setTitleOnXTab`)。
 - **图片阶段等待 React 提交(B1,P0)**:新增 `settle(stage, node, expect)` 谓词等待——`replaceMarkerWithText`/`relocateMediaToMarker`/`placeSelectionAtMarker`/首次 commit/`sweepMarkers` 每轮之后都等 X 真正提交再继续。此前连续「读-改-写」用的是陈旧 editorState:≥2 图且非末张失败时,失败图写回的原文会被下一轮回滚、marker 重现后被清扫整块删掉(内容丢失);append 首次 commit 只 `delay(150)` 无复核。超时只记账(`ImportResult.settleTimeouts`)不中断;content 每图通道预算 40s → 45s 为其留余量。
 - **提交后失败可区分(P1-3)**:`ImportResult` 失败分支新增 `committed`;verify 不达标 / 图片阶段异常 / 通道 timeout 时正文可能已落地,UI 改用「正文可能已写入,请先检查再重试」文案族,阻止「按失败直觉重试」造成整篇重复。
 - **marker 清扫保文本(P2-2)**:清扫只认完整 marker 形状并单事务**剥离**而非整块删除——用户在占位行内打的字、正文恰含 `__MARKFLOW_IMG_` 字面量的内容都不再被误删;残留审计始终执行,新增「残片」检测。
-- **权限申请是手势链第一个 await**:直写与 ask 两条路径统一为先同步解析 blocks 并 `permissions.request`,再探针取 articleId(8 月批次二在直写路径的申请前加了探针 await,会吃掉 Chrome 的瞬时用户激活,新 profile 下权限弹窗可能弹不出来);探测失败同步刷新状态条。权限申请改按**块级**同源计算(P1-7,`<>` 包裹的远程图不再漏申请),被拒时 toast「未授权图片域名,N 张远程图将降级为原文」并标 `remote-permission-denied`(C25)。
+- **权限申请是手势链第一个 await**:直写与 ask 两条路径统一为先同步解析 blocks 并 `permissions.request`,再探针取 articleId(8 月批次二在直写路径的申请前加了探针 await,会吃掉 Chrome 的瞬时用户激活,新 profile 下权限弹窗可能弹不出来);探测失败同步刷新状态条。权限申请改按**块级**同源计算(P1-7,`<>` 包裹的远程图不再漏申请)。被拒时 toast「{n} 张远程图未获授权,可能无法下载」并将**来源 origin 确实未授权**的网络类失败标为 `remote-permission-denied`(C25 / B4,见上)。ask 确认路径不再申请(B6,见上)。
 - **探针与消息健壮性(B5)**:`runProbe` / 监听器三分支 / `setTitle` 加 try/catch,异常回明确结果而非静默 timeout;injector 单例守卫(`Symbol.for` 标记,P2-5)防双注入并发直写同一 blockMap。
 - **编辑器定位分级(P1-2)**:逗号并集选择器(实为 DOM 顺序)改有序层级逐级尝试(`data-testid="composer"` → `.public-DraftEditor-content` → `role=textbox` → 裸 contenteditable),级内取面积最大者。
 - **标题**:`ask` 模式下编辑器已是同一标题时直接视为已设置,不再弹冲突窗(C33)。
@@ -53,11 +56,15 @@
 
 ### 修复 · 解析正确性
 
+- **标题抽取与正文解析同一来源(P3 + P7)**:标题抽取(`extractTitle` / `stripFirstH1` / 历史标题 `firstTitle`)不再自带 setext 判定,改取解析主循环上报的标题(`forEachContentLine` 的 `onHeading`),消除「正文认标题、抽取不认」或相反的分裂。同时订正 CommonMark §4.3:setext 下划线(`===`)不能作为列表项的 lazy 续行——`- item\n标题\n===` 是列表项,不再产出标题。标题抽取另外跳过「未闭合围栏开栏行 / 未闭合 `$$` 起行后跟 `===`」形成的 setext 标题(正文解析不变):这类写法不会被设为文章标题,抽取会继续找下一个一级标题。顺带修复:`$$\n# 不是标题\n$$` 里的 `#` 行被抽成标题、`stripFirstH1` 删坏公式。`extractTitle` / `stripFirstH1` / `firstTitle` 新增解析开关参数并由导入流程透传,抽取结果只取决于调用方自己的开关(`obsidianImg` / `wikilink` / `taskList`),不再继承上一次解析残留的模块级开关。
+- **列表续行里的 `2024. 冬天`(P5)**:缩进到当前列表项内容列之上的非 `1.` 有序行不能打断段落,作为续行吸收(`- 去年\n  2024. 冬天很冷` 为单项);仍缩进不足或为 `1.` / 无序标记时按列表项处理,未缩进的 `- 去年\n2024. 冬天很冷` 保持原状。
+- **frontmatter `cover` 整行判定(P6)**:复用正文的「整行恰为一张图」判定(含带链接图与 `![[a.png]]` / `[[a.png]]`,`|` 之后的 alt / 尺寸剥掉);同行两张图 `![a](x.png) ![b](y.png)`、`![[a.png]] ![[b.png]]` 与畸形写法不再被贪婪正则吞成一个错乱的路径,判为无封面;纯路径写法不变。
+- **性能(P1 + P2)**:行内强调符 `findClosing` 改为按起点记忆化(取代 `noCloseFrom` 缓存),同字符定界符长串整串处理——跨行内代码的病态段落(原约 1.4s)、`'a' + '~'.repeat(50000)`、`'*'.repeat(20000) + 'a'` 等输入降到线性(< 50ms);与旧实现差分模糊对比零差异。
 - **同行多张带链接图片(A1,P0)**:贪婪正则 `RE_LINKED_IMAGE_LINE` 改为与 `matchImageLine` 共用 `scanParenClose` 的括号配对扫描器——`[![a](1.jpg)](l1) [![b](2.jpg)](l2)` 不再被吞成一张(source 错乱),`[![a](i)](l) ![b](y)` 第二张不再静默丢失;多图同行 / 尾随文字交段落处理。
 - **图片 title 剥离(P1-4 + A6)**:`![](url "标题")`(Typora/Pandoc 默认输出)不再把 title 吞进 src 导致上传必败;只剥 `"…"`/`'…'`,统一在 `normalizeImageSrc`,frontmatter `cover:` 也复用它。
 - **推文链接(P1-5)**:X「复制链接」的 `?s=20` 带参形态、`mobile.` 子域、行尾空格均识别为推文嵌入;尾缀只认可打印 ASCII,URL 直接接中文正文时整行回落文本、正文不丢。
 - **标题抽取(P1-6 + P2-14 + A7)**:跳过 frontmatter(YAML `# 注释` 不再被当标题或被 `h1Handle=remove` 误删);`firstTitle`(历史标题)复用 `extractTitle`;新增导出 `inlinePlainText`/`stripAtxClosing`,`# **粗** 标题` 抽出「粗 标题」、`# 标题 ##` 抽出「标题」。
-- **强调符 flanking(A2)**:`canOpen`/`canClose` 看整段同字符连续串两侧——`2 * 3 * 4`、`a _ b _ c`、`x ~~ y ~~ z` 不再被吞成斜体/删除线;`***` 无闭合时按 CommonMark 拆 `*`+`**`;`findClosing` 跳过 `\`+ASCII 标点转义(A12,`*a\*b*` 不再错切);`_` 词内规避改 `\p{L}\p{N}`(A13,`报告_终版_修订` 中的下划线不再被吞)。`findClosing` 加 `noCloseFrom` 缓存,病态输入 3.4s → 3.6ms,20 万条随机输入与旧实现差分零差异。
+- **强调符 flanking(A2)**:`canOpen`/`canClose` 看整段同字符连续串两侧——`2 * 3 * 4`、`a _ b _ c`、`x ~~ y ~~ z` 不再被吞成斜体/删除线;`***` 无闭合时按 CommonMark 拆 `*`+`**`;`findClosing` 跳过 `\`+ASCII 标点转义(A12,`*a\*b*` 不再错切);`_` 词内规避改 `\p{L}\p{N}`(A13,`报告_终版_修订` 中的下划线不再被吞)。`findClosing` 加未闭合缓存,病态输入 3.4s → 3.6ms,20 万条随机输入与旧实现差分零差异(后由 P1 / P2 的记忆化取代并覆盖更多病态形态,见上)。
 - **列表(A3、A4、P2-13)**:lazy / 缩进续行并入当前列表项(此前成为独立段落);列表语境内允许「内容列 + 3」缩进的开/闭栏,围栏内容按开栏缩进剥离;软折行段落中的 `2024. ` 不再被硬切成列表(仅 `1.` 可打断段落)。
 - **CommonMark 缩进块(P2-8)**:标题/引用/围栏接受 0-3 空格缩进;段落前导空白逐行剥(≤3 列);闭栏行尾随全角空格 U+3000 仍闭合。围栏判定收敛为单一来源——主循环抽成 `parseLines(onFence)`,`forEachContentLine` 直接复用其围栏区间,预览与 `frontmatter.ts` 的 frontmatter 判定也委托 parser(P2-9),三套平行实现收敛为一。
 - **分割线变体(P2-7)**:`- - -`/`* * *`/`___`(含 Tab 分隔、尾随空白)识别为分割线,不再产出垃圾列表项;段落 + `---` = setext 的规则不变。
@@ -97,6 +104,7 @@
 
 ### 安全
 
+- **SSRF 黑名单再补漏(F6,只加不减)**:剥全部尾点(`localhost..` 此前仍留一个尾点绕过);IPv6 补 `fe80::/10` 全段(此前只覆盖 `fe80:` 一个 /16)、`fec0::/10`、`ff00::/8` 组播;主机名后缀补 `.localdomain`、`.lan`;IPv4 补 `198.18.0.0/15`(仅对点分 IPv4 字面量生效)。
 - **SSRF 黑名单补漏(B10)**:`isBlockedHost` 抽到 `lib/bridge/blockedHost.ts`,补无点主机名、`0.0.0.0/8`、`100.64.0.0/10`、≥224 组播/保留段、`.home.arpa`、`64:ff9b::/96` 与 `::` 开头的 IPv6;29 条拦截 / 9 条放行用例。
 - **injector 回传校验(B9)**:x.com 页面脚本可伪造 `postMessage`,content 对 injector 回传经 `resultGuards` 白名单校验与截断;不合规回 `bad-result`(若形状为 ok:true 则带 `committed:true` 走「先检查再重试」提示)。
 - **权限最小化**:见「升级须知」——去 `tabs`,host 权限仅限 x.com / twitter.com。

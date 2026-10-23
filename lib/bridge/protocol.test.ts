@@ -103,6 +103,8 @@ describe('IMAGE_FAIL_REASONS', () => {
       'upload-no-callback',
       'upload-relocate-failed',
       'upload-exception',
+      'local-ambiguous',
+      'media-order-uncertain',
     ];
     for (const code of expectedSubset) {
       expect(IMAGE_FAIL_REASONS).toContain(code);

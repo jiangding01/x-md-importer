@@ -123,7 +123,8 @@ async function prepareOneImage(block: ImageBlock): Promise<PreparedImage> {
     }
     // local(本地相对路径):从已连接的文件夹读取,逐文件兜底优先级 active(素材板「本篇」)>
     // persistent(设置默认)——active 里没有该文件时继续到 persistent 找;两级都读不到 → file:null,
-    // injector 降级为 fallbackText 写回原文。C30:未命中按「未连接 / 授权回落 / 真未找到」区分原因码。
+    // injector 降级为 fallbackText 写回原文。C30:未命中按「未连接 / 授权回落 / 真未找到」区分原因码;
+    // B1:按文件名兜底遇同名多处 → local-ambiguous(不静默挑一个)。
     const resolved = await resolveLocalImageAcrossScopes(block.source);
     if (!('file' in resolved)) {
       const failReason =
@@ -131,7 +132,9 @@ async function prepareOneImage(block: ImageBlock): Promise<PreparedImage> {
           ? 'local-no-folder'
           : resolved.reason === 'permission-lapsed'
             ? 'local-permission-lapsed'
-            : 'local-not-found';
+            : resolved.reason === 'ambiguous'
+              ? 'local-ambiguous'
+              : 'local-not-found';
       return { file: null, failReason };
     }
     const { file } = resolved;

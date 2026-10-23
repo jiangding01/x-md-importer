@@ -369,7 +369,8 @@ function makeVault(rootName: string, files: string[]): FileSystemDirectoryHandle
   return root as unknown as FileSystemDirectoryHandle;
 }
 
-const hitPath = (f: File | null): string | null => (f ? (f as unknown as { path: string }).path : null);
+const hitPath = (f: File | 'ambiguous' | null): string | null =>
+  f === 'ambiguous' ? 'ambiguous' : f ? (f as unknown as { path: string }).path : null;
 
 describe('stripQueryHash', () => {
   it('剥掉 ?query 与 #hash', () => {
@@ -399,17 +400,28 @@ describe('pickFromIndex', () => {
     ['a.png', [['notes', 'deep', 'img', 'a.png'], ['img', 'a.png'], ['x', 'y', 'a.png']]],
   ]);
 
-  it('同名多个取路径最短者(Obsidian 规则)', () => {
-    expect(pickFromIndex(index, ['a.png'])).toEqual(['img', 'a.png']);
+  it('单段文件名:同名多个取路径最短者(Obsidian 规则)', () => {
+    expect(pickFromIndex(index, ['a.png'], false)).toEqual({ segs: ['img', 'a.png'] });
   });
 
   it('多段 tail 只认以 tail 结尾的候选', () => {
-    expect(pickFromIndex(index, ['y', 'a.png'])).toEqual(['x', 'y', 'a.png']);
-    expect(pickFromIndex(index, ['zzz', 'a.png'])).toBeNull();
+    expect(pickFromIndex(index, ['y', 'a.png'], true)).toEqual({ segs: ['x', 'y', 'a.png'] });
+    expect(pickFromIndex(index, ['zzz', 'a.png'], true)).toBeNull();
   });
 
   it('索引里没有该文件名 → null', () => {
-    expect(pickFromIndex(index, ['b.png'])).toBeNull();
+    expect(pickFromIndex(index, ['b.png'], false)).toBeNull();
+  });
+
+  // B1:同名多处时不再静默挑一个
+  it('单段文件名:最少段数并列 > 1 → ambiguous', () => {
+    const tie = new Map<string, string[][]>([['a.png', [['p', 'a.png'], ['q', 'a.png'], ['x', 'y', 'a.png']]]]);
+    expect(pickFromIndex(tie, ['a.png'], false)).toBe('ambiguous');
+  });
+
+  it('`./` / `../` 相对路径:匹配候选 > 1 即 ambiguous(不按深度取舍)', () => {
+    expect(pickFromIndex(index, ['a.png'], true)).toBe('ambiguous');
+    expect(pickFromIndex(index, ['img', 'a.png'], true)).toBe('ambiguous');
   });
 });
 
@@ -449,6 +461,51 @@ describe('resolveLocalFile(C9)', () => {
   it('同名多个取路径最短者', async () => {
     const root = makeVault('v', ['a/b/c/x.png', 'att/x.png']);
     expect(hitPath(await resolveLocalFile(root, 'x.png', 'v'))).toBe('att/x.png');
+  });
+
+  // ── B1 同名歧义 ──
+  it('Hugo bundle:posts/a/cover.png + posts/b/cover.png 导入 ./cover.png → ambiguous', async () => {
+    const root = makeVault('v', ['posts/a/index.md', 'posts/a/cover.png', 'posts/b/index.md', 'posts/b/cover.png']);
+    expect(await resolveLocalFile(root, './cover.png', 'v')).toBe('ambiguous');
+  });
+
+  it('img.png 两处同深度 → ambiguous', async () => {
+    const root = makeVault('v', ['a/img.png', 'b/img.png']);
+    expect(await resolveLocalFile(root, 'img.png', 'v')).toBe('ambiguous');
+  });
+
+  it('img.png 两处不同深度 → 取浅者', async () => {
+    const root = makeVault('v', ['a/img.png', 'b/c/img.png']);
+    expect(hitPath(await resolveLocalFile(root, 'img.png', 'v'))).toBe('a/img.png');
+  });
+
+  it('唯一 → 命中', async () => {
+    const root = makeVault('v', ['a/img.png', 'b/other.png']);
+    expect(hitPath(await resolveLocalFile(root, 'img.png', 'v'))).toBe('a/img.png');
+  });
+
+  it('../assets/a.png 两处 …/assets/a.png → ambiguous', async () => {
+    const root = makeVault('v', ['p1/assets/a.png', 'p2/assets/a.png']);
+    expect(await resolveLocalFile(root, '../assets/a.png', 'v')).toBe('ambiguous');
+  });
+
+  // 解码遍优先(CommonMark 语义下 `a%20b.png` 指 `a b.png`):解码遍有结论即定,无候选才看原串遍
+  it('解码遍歧义 + 原串遍唯一 → ambiguous(原串遍不覆盖解码遍)', async () => {
+    const root = makeVault('v', ['x/a b.png', 'y/a b.png', 'z/a%20b.png']);
+    expect(await resolveLocalFile(root, 'a%20b.png', 'v')).toBe('ambiguous');
+  });
+
+  it('解码遍唯一 → 用解码遍(原串遍歧义不影响)', async () => {
+    const root = makeVault('v', ['x/a b.png', 'y/a%20b.png', 'z/a%20b.png']);
+    expect(hitPath(await resolveLocalFile(root, 'a%20b.png', 'v'))).toBe('x/a b.png');
+  });
+
+  it('解码遍无候选 → 原串遍唯一则用、歧义则 ambiguous', async () => {
+    const one = makeVault('v', ['z/a%20b.png']);
+    expect(hitPath(await resolveLocalFile(one, 'a%20b.png', 'v'))).toBe('z/a%20b.png');
+    clearVaultIndexCache();
+    const two = makeVault('v', ['y/a%20b.png', 'z/a%20b.png']);
+    expect(await resolveLocalFile(two, 'a%20b.png', 'v')).toBe('ambiguous');
   });
 
   it('md 在子目录时的 ./img/a.png → 在 notes/img/a.png 找到', async () => {
@@ -531,6 +588,71 @@ describe('resolveLocalFile(C9)', () => {
 describe('resolveFromScopes(C30 失败归因)', () => {
   beforeEach(() => {
     clearVaultIndexCache();
+  });
+
+  // ── B1 作用域优先级:第一个有候选的作用域决定结果 ──
+  it('active 歧义 + persistent 唯一 → ambiguous(不落到 persistent)', async () => {
+    const r = await resolveFromScopes(
+      [
+        { handle: makeVault('a', ['p/x.png', 'q/x.png']), granted: true, cacheKey: 'active' },
+        { handle: makeVault('p', ['att/x.png']), granted: true, cacheKey: 'persistent' },
+      ],
+      'x.png',
+    );
+    expect(r).toEqual({ reason: 'ambiguous' });
+  });
+
+  // B1 歧义 vs 权限回落:按作用域顺序——歧义作用域之前有权限回落的作用域(图可能唯一地在里面)→ permission-lapsed
+  it('active 权限回落 + persistent 歧义 → permission-lapsed', async () => {
+    const r = await resolveFromScopes(
+      [
+        { handle: makeVault('a', ['x.png']), granted: false, cacheKey: 'active' },
+        { handle: makeVault('p', ['m/x.png', 'n/x.png']), granted: true, cacheKey: 'persistent' },
+      ],
+      'x.png',
+    );
+    expect(r).toEqual({ reason: 'permission-lapsed' });
+  });
+
+  it('active 歧义 + persistent 权限回落 → ambiguous', async () => {
+    const r = await resolveFromScopes(
+      [
+        { handle: makeVault('a', ['m/x.png', 'n/x.png']), granted: true, cacheKey: 'active' },
+        { handle: makeVault('p', ['x.png']), granted: false, cacheKey: 'persistent' },
+      ],
+      'x.png',
+    );
+    expect(r).toEqual({ reason: 'ambiguous' });
+  });
+
+  it('active 无候选 + persistent 唯一 → 命中', async () => {
+    const r = await resolveFromScopes(
+      [
+        { handle: makeVault('a', ['p/y.png']), granted: true, cacheKey: 'active' },
+        { handle: makeVault('p', ['att/x.png']), granted: true, cacheKey: 'persistent' },
+      ],
+      'x.png',
+    );
+    expect('file' in r && hitPath(r.file)).toBe('att/x.png');
+  });
+
+  it('active 唯一候选但读取失败 → 不落到 persistent 拿同名别图(按 not-found)', async () => {
+    // 索引里有候选、getFile 时读不到(模拟建索引后文件被删的竞态)
+    const active = makeVault('a', ['p/x.png']);
+    const r1 = resolveFromScopes(
+      [
+        { handle: active, granted: true, cacheKey: 'active' },
+        { handle: makeVault('p', ['att/x.png']), granted: true, cacheKey: 'persistent' },
+      ],
+      'x.png',
+    );
+    // 在 getFile 前把文件句柄改成抛错
+    const pDir = (active as unknown as FakeDirH).children.get('p') as FakeDirH;
+    const fh = pDir.children.get('x.png') as FakeFileH;
+    fh.getFile = async () => {
+      throw new Error('NotFoundError');
+    };
+    expect(await r1).toEqual({ reason: 'not-found' });
   });
 
   it('两个作用域都未连接 → no-folder', async () => {

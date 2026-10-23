@@ -37,6 +37,19 @@ describe('isBlockedHost', () => {
     'http://[64:ff9b::7f00:1]/',
     'http://[64:ff9b:1::a00:1]/',
     'http://[::127.0.0.1]/',
+    // F6 加固(只加不减)
+    'http://localhost../', // 多个尾点
+    'http://foo.local../',
+    'http://[fe90::1]/', // fe80::/10 全段(fe80–febf),此前只认 fe80:
+    'http://[febf::1]/',
+    'http://[fec0::1]/', // fec0::/10(已废弃的站点本地)
+    'http://[feff::1]/',
+    'http://[ff02::1]/', // ff00::/8 组播
+    'http://[ff00::1]/',
+    'http://x.localdomain/',
+    'http://nas.lan/',
+    'http://198.18.0.1/', // 198.18.0.0/15 基准测试网段
+    'http://198.19.255.255/',
   ])('拦截 %s', (u) => {
     expect(isBlockedHost(host(u))).toBe(true);
   });
@@ -51,6 +64,15 @@ describe('isBlockedHost', () => {
     'https://100.128.0.1/',
     'https://0.example.com/',
     'https://[2606:4700::1111]/',
+    // F6:新增 IPv6 段只对 IPv6 字面量生效,且按完整首段判定
+    'https://[fe7f::1]/',
+    'https://fc.example.com/',
+    'https://fe80.example.com/',
+    'https://ff.example.com/',
+    'https://ffmpeg.org/',
+    'https://198.20.0.1/',
+    'https://198.17.255.255/',
+    'https://lan.example.com/',
   ])('放行公网 %s', (u) => {
     expect(isBlockedHost(host(u))).toBe(false);
   });

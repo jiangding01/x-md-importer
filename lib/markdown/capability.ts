@@ -227,7 +227,8 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions): C
  * 此前这里自带一套「只认 ATX `# `」的扫描,frontmatter-only 与 setext 标题的文档在记录页
  * 显示「未命名草稿」,而实际导入的标题是对的:同一份文档两个标题,又一次「UI 撒谎」。
  * 抽不到才回落默认文案(此处唯一的额外职责,extractTitle 返回 null)。
+ * `parseOpts` 透传给 extractTitle(P7):标题判定随解析开关与实际写入一致,不继承残留开关;不传按默认值。
  */
-export function firstTitle(md: string, en: boolean): string {
-  return extractTitle(md)?.title ?? (en ? 'Untitled draft' : '未命名草稿');
+export function firstTitle(md: string, en: boolean, parseOpts?: ParseOptions): string {
+  return extractTitle(md, parseOpts)?.title ?? (en ? 'Untitled draft' : '未命名草稿');
 }
