@@ -67,9 +67,10 @@ const RE_LINKED_IMAGE_LINE_HEAD = /^\[!\[([^\]]*)\]\(/;
 /**
  * 独占一行的 Obsidian 内嵌图片 `![[path]]` 或 `![[path|alt]]`(wiki 风格)。
  * path 是相对文件夹的本地路径,由 content 侧 File System Access 读取(见 lib/bridge/localVault)。
- * 组1 = `path` 或 `path|alt`——由 matchObsidianImageLine 再切分 `|`。
+ * 组1 = `path` 或 `path|alt`——由主循环的图片分支(及 frontmatter.extractCover 的 wikiTarget)再切分 `|`。
+ * 导出供 frontmatter.extractCover 复用(P6),cover 值与正文同一套「整行恰为一张 wiki 图」判定。
  */
-const RE_OBSIDIAN_IMAGE_LINE = /^!\[\[([^\]]+)\]\]$/;
+export const RE_OBSIDIAN_IMAGE_LINE = /^!\[\[([^\]]+)\]\]$/;
 /**
  * ATX 标题 / 引用:允许 CommonMark 的 **0-3 空格缩进**(B3-6 / P2-8)。此前要求顶格,
  * 缩进一格的标题、引用整块降级成段落,前导空格还以字面量进正文。≥4 空格仍不认——那是
@@ -176,23 +177,14 @@ export function isImageLine(line: string): boolean {
 
 /**
  * setext 标题下划线的级别:`===` → 1、`---` → 2;不是下划线返回 null。
- * 导出供 frontmatter.ts 的 H1 抽取复用——标题抽取与正文解析必须用**同一套**判定,
- * 否则会出现「parser 认成标题、extractTitle 抽不到」的分裂(本项目在 frontmatter/围栏
- * 判定上已栽过两次「第二套实现漂移」,见 HANDOFF §8)。
+ * 仅解析主循环内部使用:标题抽取(frontmatter.findFirstH1)不再自行判定 setext,而是取
+ * parseLines 经 forEachContentLine.onHeading 上报的标题(P3,单一来源),杜绝「parser 认成标题、
+ * extractTitle 抽不到」或反之的分裂(本项目已栽过多次「第二套实现漂移」,见 HANDOFF §8)。
  */
-export function setextUnderlineLevel(line: string): 1 | 2 | null {
+function setextUnderlineLevel(line: string): 1 | 2 | null {
   if (RE_SETEXT_EQ.test(line)) return 1;
   if (RE_SETEXT_DASH.test(line)) return 2;
   return null;
-}
-
-/**
- * 该行是否为「普通段落文本行」——即不是任何块级语法的起始、也不是空行。
- * setext 标题的正文行必须满足它(`# x` / `- x` / `> x` 等下方跟 `===` 不构成 setext)。
- * 导出同样是为了让 frontmatter.ts 复用同一判定。
- */
-export function isParagraphLine(line: string): boolean {
-  return !isBlockBoundary(line);
 }
 
 /**
@@ -220,56 +212,91 @@ export function frontmatterBodyStart(lines: string[]): number {
 }
 
 /**
+ * 解析主循环每产出一个标题块即上报(P3):`[start, end)` 为该标题占用的源行**半开区间**——ATX 为
+ * 1 行;setext 覆盖正文各行 + 下划线行(单行 setext 即 end − start === 2)。`level` 按源写法
+ * (ATX 的 `#` 数;setext `===` → 1、`---` → 2),不是映射后的块类型。`raw` 为标题文本源:ATX 取
+ * `#` 之后的内容(**未**剥闭合井号),setext 取剥掉列表缩进后的段落文本(`- a\n\n  b\n===` → `b`)。
+ */
+export type HeadingVisitor = (
+  start: number,
+  end: number,
+  level: number,
+  kind: 'atx' | 'setext',
+  raw: string,
+) => void;
+
+/**
+ * forEachContentLine 的选项。解析开关(obsidianImg / wikilink / taskList,P7)与 parseMarkdown 同义:
+ * 遍历所依据的围栏 / 标题判定受它们影响(如 obsidianImg 决定 `![[x]]` 是否打断列表续行 → 其后
+ * 缩进围栏是否处于列表语境),未传的按默认值,**不继承**上一次 parseMarkdown 残留的模块级开关。
+ */
+export interface ContentLineOptions extends ParseOptions {
+  /** 从 frontmatterBodyStart 起扫,文首 YAML 块整块不交给 visitor(B3-3,默认关闭)。 */
+  skipFrontmatter?: boolean;
+  /** 标题上报(P3);标题抽取取数的**唯一入口**,见 HeadingVisitor。 */
+  onHeading?: HeadingVisitor;
+}
+
+/**
  * 严格围栏感知地遍历 md 行:对每个「位于代码围栏之外」的行调用 visitor(line, index)。
  * 围栏识别与 parseMarkdown 主循环**同源**(matchFenceOpen/matchFenceClose:闭栏须裸行、
  * 数量 ≥ 开栏、`~~~` 与 ``` 不互闭);未闭合的围栏开栏行按普通内容处理(同主循环)——
  * 整个围栏块(开栏行 … 闭栏行)被跳过,内部的 `# x` / `![]()` 等不会被 visitor 看到。
  * visitor 返回 true 时提前停止遍历。
  *
- * 抽出此 helper 是为消除「三处 fence 追踪各写一份、语义漂移」:frontmatter.findFirstH1、
- * stripFirstImageLine 均改用它,与解析主循环保持同一套严格围栏判定。
+ * 抽出此 helper 是为消除「三处 fence 追踪各写一份、语义漂移」:stripFirstImageLine 用它的围栏
+ * 判定;frontmatter.findFirstH1 用它的 onHeading(标题本身也取自解析主循环,P3)。
  *
  * `skipFrontmatter`(B3-3 / P1-6):从 frontmatterBodyStart 起扫,文首 YAML 块整块不交给
- * visitor——`# 注释` 是合法 YAML 注释(Obsidian 模板常见),否则会被标题抽取当成文章标题、
- * 甚至被 stripFirstH1 从 frontmatter **内部**删掉一行。**默认关闭**:此开关有意做成显式的,
- * 不隐式改本 helper 的既有语义(其余消费方的行为必须逐字节不变)。传给 visitor 的 index 始终
- * 是**原始行下标**(调用方按它 splice 才不会删错行)。
+ * visitor——`# 注释` 是合法 YAML 注释(Obsidian 模板常见),否则会被当成内容行。**默认关闭**:
+ * 此开关有意做成显式的,不隐式改本 helper 的既有语义(其余消费方的行为必须逐字节不变)。传给
+ * visitor 的 index 始终是**原始行下标**(调用方按它 splice 才不会删错行)。onHeading 不受此开关
+ * 影响:parseLines 自身就跳过 frontmatter,不会从 YAML 块上报标题。
  */
 export function forEachContentLine(
   lines: string[],
   visitor: (line: string, index: number) => boolean | void,
-  opts: { skipFrontmatter?: boolean } = {},
+  opts: ContentLineOptions = {},
 ): void {
-  // 围栏区间**直接取自解析主循环**(A4):列表内缩进围栏的判定依赖列表语境(内容列),
-  // 在这里另写一套追踪必然漂移;让 parseLines 把它认定的每个已闭合围栏报上来,两边按构造同步。
-  // 未闭合围栏 parseLines 不上报 → 开栏行照常交给 visitor(与主循环「按普通文本处理」一致)。
-  const fenceClose = new Map<number, number>();
-  parseLines(lines, (open, close) => fenceClose.set(open, close));
-  let i = opts.skipFrontmatter ? frontmatterBodyStart(lines) : 0;
-  while (i < lines.length) {
-    const close = fenceClose.get(i);
-    if (close !== undefined) {
-      i = close + 1; // 跳过整个围栏块(含开/闭栏行)
-      continue;
+  // P7:整个遍历(parseLines + visitor 循环)都在调用方给定的解析开关下进行,结束后还原。
+  withParseOptions(opts, () => {
+    // 围栏区间**直接取自解析主循环**(A4):列表内缩进围栏的判定依赖列表语境(内容列),
+    // 在这里另写一套追踪必然漂移;让 parseLines 把它认定的每个已闭合围栏报上来,两边按构造同步。
+    // 未闭合围栏 parseLines 不上报 → 开栏行照常交给 visitor(与主循环「按普通文本处理」一致)。
+    const fenceClose = new Map<number, number>();
+    parseLines(lines, { onFence: (open, close) => fenceClose.set(open, close), onHeading: opts.onHeading });
+    let i = opts.skipFrontmatter ? frontmatterBodyStart(lines) : 0;
+    while (i < lines.length) {
+      const close = fenceClose.get(i);
+      if (close !== undefined) {
+        i = close + 1; // 跳过整个围栏块(含开/闭栏行)
+        continue;
+      }
+      if (visitor(lines[i] ?? '', i)) return;
+      i += 1;
     }
-    if (visitor(lines[i] ?? '', i)) return;
-    i += 1;
-  }
+  });
 }
 
 /**
  * 删除正文中「第一张独占行图片」(裸 / 带链接皆可)——供封面取自正文首图且设为
  * 「从正文移除」时使用,避免封面图在正文重复。跳过围栏代码块(与解析一致)。
+ * `opts` 为解析开关(P7,透传 forEachContentLine,围栏判定随之与实际解析一致)。
  */
-export function stripFirstImageLine(md: string): string {
+export function stripFirstImageLine(md: string, opts: ParseOptions = {}): string {
   const lines = md.split(/\r?\n/);
   let target = -1;
-  forEachContentLine(lines, (line, index) => {
-    if (isImageLine(line)) {
-      target = index;
-      return true;
-    }
-  });
+  forEachContentLine(
+    lines,
+    (line, index) => {
+      if (isImageLine(line)) {
+        target = index;
+        return true;
+      }
+    },
+    // 只取解析开关:调用方若传入更宽的对象(如带 skipFrontmatter),不得改变本函数的遍历范围。
+    { obsidianImg: opts.obsidianImg, wikilink: opts.wikilink, taskList: opts.taskList },
+  );
   if (target < 0) return md;
   lines.splice(target, 1);
   return lines.join('\n');
@@ -288,11 +315,28 @@ export interface ParseOptions {
 }
 
 // 解析开关:parseMarkdown **同步执行**(内部无 await)、JS 单线程不会重入,故用模块级标志
-// 在入口一次性设置,免去给 walkInline / isBlockBoundary 逐层穿参。仅 parseMarkdown 写、
-// 块级/行内解析只读。
+// 在入口一次性设置,免去给 walkInline / isBlockBoundary 逐层穿参。由 parseMarkdown 写(不还原),
+// 以及 withParseOptions 临时写入并还原;块级/行内解析只读。
 let optObsidianImg = true;
 let optWikilink = true;
 let optTaskList: 'symbol' | 'plain' = 'symbol';
+
+/**
+ * 在给定解析开关下同步执行 fn,结束(含抛错)后还原模块级开关(P7)。未传的开关**显式**取默认值,
+ * 不继承上一次 parseMarkdown 残留的状态——forEachContentLine(→ 标题抽取 / stripFirstImageLine)
+ * 与 inlinePlainText 都经此设置,结果只取决于调用方自己的 opts。
+ */
+function withParseOptions<T>(opts: ParseOptions, fn: () => T): T {
+  const saved = [optObsidianImg, optWikilink, optTaskList] as const;
+  optObsidianImg = opts.obsidianImg ?? true;
+  optWikilink = opts.wikilink ?? true;
+  optTaskList = opts.taskList ?? 'symbol';
+  try {
+    return fn();
+  } finally {
+    [optObsidianImg, optWikilink, optTaskList] = saved;
+  }
+}
 
 /**
  * H4+ 降级块的内部标记(A15):降级产物(unstyled + 整行 BOLD)与「整段加粗段落」同形,能力面板
@@ -314,12 +358,21 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
   return parseLines(md.split(/\r?\n/));
 }
 
+/** parseLines 的上报钩子,仅 forEachContentLine 使用(不另导出直接调 parseLines 的入口)。 */
+interface ParseHooks {
+  /** 每产出一个已闭合围栏块即上报其开/闭栏行下标。 */
+  onFence?: (open: number, close: number) => void;
+  /** 每产出一个标题块即上报(P3),见 HeadingVisitor。 */
+  onHeading?: HeadingVisitor;
+}
+
 /**
- * 块级主循环。`onFence(open, close)`:每产出一个已闭合围栏块即上报其开/闭栏行下标——
- * forEachContentLine 借此与解析**同一套**围栏判定(含列表语境的缩进放宽,A4),不另写追踪。
- * 围栏判定不受解析开关影响(围栏行恒为段落边界),故 forEachContentLine 直接调用无需设开关。
+ * 块级主循环。`hooks.onFence` 让 forEachContentLine 与解析**同一套**围栏判定(含列表语境的缩进
+ * 放宽,A4),`hooks.onHeading` 让标题抽取与解析**同一套**标题判定(P3),都不另写追踪。
+ * 两者都受解析开关影响(如 obsidianImg 决定 `![[x]]` 是否打断列表续行 → 列表语境 → 缩进围栏 /
+ * setext 是否成立),故调用方须先设好开关(forEachContentLine 经 withParseOptions,P7)。
  */
-function parseLines(lines: string[], onFence?: (open: number, close: number) => void): ImportBlock[] {
+function parseLines(lines: string[], hooks: ParseHooks = {}): ImportBlock[] {
   const blocks: ImportBlock[] = [];
   // 跳过文首 YAML frontmatter(判定见 frontmatterBodyStart)。
   let i = frontmatterBodyStart(lines);
@@ -334,6 +387,10 @@ function parseLines(lines: string[], onFence?: (open: number, close: number) => 
    * 的行都属于当前项——缩进续行与 lazy 续行(不缩进)同样并入,剥前导空白后以 `\n` 连接,
    * 再整体交 walkInline(offset 自然以拼接后的文本计算)。返回拼接内容与下一个待处理行下标。
    * 首行内容为空(`- ` 空项)时不吸收:CommonMark 下空项后的不缩进行不属于该项。
+   *
+   * setext 下划线(`===` / `--` / `-`)同样作为 lazy 续行并入、不升格标题(P3,CommonMark §4.3
+   * Example 93/94:下划线不能是列表项的 lazy 续行);`---` 仍由 isBlockBoundary 的分割线规则拦下。
+   * 标题抽取经 onHeading 取数,与此天然同口径。
    */
   const absorbListContinuation = (first: string, contentCol: number): { content: string; next: number } => {
     const parts = [first];
@@ -342,10 +399,14 @@ function parseLines(lines: string[], onFence?: (open: number, close: number) => 
       while (k < lines.length) {
         const next = lines[k] ?? '';
         if (isBlockBoundary(next, true)) break;
-        if (RE_UL.test(next) || RE_OL.test(next)) break; // 新列表项 / 任意缩进的子项交主循环
+        // 新列表项 / 子项交主循环:无序标记与 `1.` 一律断开(任意缩进)。
+        if (RE_UL.test(next) || RE_OL_INTERRUPT.test(next)) break;
+        // 序号非 1 的有序行(P5):缩进 < 当前项内容列 ⇒ 兄弟项 / 跳出,交主循环;缩进 ≥ 内容列 ⇒ 它不能
+        // 打断段落(CommonMark),作为续行吸收——`- 去年\n  2024. 冬天很冷` 不再被切成有序子项。
+        // 不看当前项是有序还是无序;未缩进的 `- 去年\n2024. 冬天很冷` 仍断开(与 commonmark.js 一致)。
+        const ol = RE_OL.exec(next);
+        if (ol && indentWidth(ol[1] ?? '') < contentCol) break;
         if (matchFenceOpen(next, contentCol)) break; // 列表内缩进围栏(A4)
-        // setext 下划线(`===`)不吸收:维持既有口径(块首列表项下的 `===` 独立成段),与 extractTitle 不分裂。
-        if (setextUnderlineLevel(next) !== null) break;
         if (next.includes('|') && isTableSeparator(lines[k + 1] ?? '')) break;
         parts.push(next.replace(/^[ \t]+/, ''));
         k += 1;
@@ -399,7 +460,7 @@ function parseLines(lines: string[], onFence?: (open: number, close: number) => 
         const closeLine = (lines[j] ?? '').replace(/^[ \t]+/, '');
         const markdown = [marker + lang, ...body, closeLine].join('\n');
         blocks.push({ kind: 'atomic', entityType: 'MARKDOWN', data: { markdown } });
-        onFence?.(i, j);
+        hooks.onFence?.(i, j);
         i = j + 1;
         continue;
       }
@@ -541,6 +602,7 @@ function parseLines(lines: string[], onFence?: (open: number, close: number) => 
       const hb = textBlock(type, inline);
       if (demoted) demotedHeadings.add(hb);
       blocks.push(hb);
+      hooks.onHeading?.(i, i + 1, level, 'atx', heading[2] ?? '');
       i += 1;
       continue;
     }
@@ -608,8 +670,10 @@ function parseLines(lines: string[], onFence?: (open: number, close: number) => 
     // 放在段落收集**之后**判定,天然支持多行 setext 正文;也天然让 `---` 在此处
     // 优先当下划线而非分割线(CommonMark 同序:有前置段落时 setext 胜出)。
     // 级别映射与 ATX 一致:一级/二级同归 header-one(X 只有两级标题,见 TextBlockType)。
-    if (k < lines.length && setextUnderlineLevel(lines[k] ?? '') !== null) {
+    const setextLevel = k < lines.length ? setextUnderlineLevel(lines[k] ?? '') : null;
+    if (setextLevel !== null) {
       blocks.push(textBlock('header-one', walkInline(paraText)));
+      hooks.onHeading?.(i, k + 1, setextLevel, 'setext', paraText);
       i = k + 1;
       continue;
     }
@@ -631,20 +695,12 @@ function stripAtxClosing(content: string): string {
  * 再经 walkInline 去掉行内标记——`**粗** 标题` → `粗 标题`、`[链接](u) 标题` → `链接 标题`。
  * 与 parser 产出 header-one 块的 text **同一条路径**,frontmatter.findFirstH1(→ extractTitle /
  * capability.firstTitle)共用它,文章标题与正文标题不再分裂。
- * 行内开关(wikilink 等)固定按默认值解析并在返回前还原——标题抽取不带解析开关,
- * 不能继承上一次 parseMarkdown 残留的模块级状态。
+ * 行内开关(wikilink 等)固定按默认值解析并在返回前还原(withParseOptions)——标题**文本**口径
+ * 维持既有行为,不继承上一次 parseMarkdown 残留的模块级状态。
  */
 export function inlinePlainText(s: string, opts: { atxClosing?: boolean } = {}): string {
   const content = (opts.atxClosing ?? true) ? stripAtxClosing(s) : s.trim();
-  const saved = [optObsidianImg, optWikilink, optTaskList] as const;
-  optObsidianImg = true;
-  optWikilink = true;
-  optTaskList = 'symbol';
-  try {
-    return walkInline(content).text.trim();
-  } finally {
-    [optObsidianImg, optWikilink, optTaskList] = saved;
-  }
+  return withParseOptions({}, () => walkInline(content).text.trim());
 }
 
 // ---------------------------------------------------------------------------
@@ -805,9 +861,8 @@ function listDepth(stack: number[], width: number): number {
 
 /**
  * 段落边界:空行,或任一块级元素的起始行——段落收集到这些行前停止。
- * `interrupting`:仅段落收集循环传 true(该行要去打断一个已开启的段落),影响有序列表判定,
- * 见 isTopLevelListLine。`isParagraphLine` 等「块首语境」的消费方保持默认 false,
- * 口径与主循环块首的列表分支一致(不制造「parser 认列表、extractTitle 认标题」的分裂)。
+ * `interrupting`:段落收集与列表续行吸收传 true(该行要去打断一个已开启的段落 / 列表项内容),
+ * 影响有序列表判定,见 isTopLevelListLine;默认 false 为「块首语境」口径(与主循环块首的列表分支一致)。
  */
 function isBlockBoundary(line: string, interrupting = false): boolean {
   if (line.trim() === '') return true;
@@ -834,7 +889,8 @@ function isBlockBoundary(line: string, interrupting = false): boolean {
  * title 剥离**保守只认 `"…"` / `'…'` 两种**:`url (标题)` 形态与 `photo (1).png` 这类真实
  * 文件名无法区分,误剥会把好路径切坏,故不碰。剥离统一落在本函数(裸图片行与「带链接图片」
  * 两条分支都经它),避免第二套实现漂移;`<>` 分支提前 return,其 `>` 之后的 title 本就被忽略。
- * 导出供 frontmatter.extractCover 的 `cover: ![x](a.png "t")` 复用(A6),不另写第二套剥离。
+ * frontmatter.extractCover 的 `cover: ![x](a.png "t")` 经 matchImageLine / matchLinkedImageLine 间接复用
+ * (A6 / P6),不另写第二套剥离。
  */
 export function normalizeImageSrc(raw: string): string {
   const s = raw.trim();
@@ -851,8 +907,9 @@ export function normalizeImageSrc(raw: string): string {
  * `![a](x) ![b](y)` **不**匹配(返回 null,交由上层按普通文本保留),杜绝旧版贪婪 `.+`
  * 把整行吞成 source 畸形(`x) ![b](y`)的单张图。入参需为**已 trim** 的行。
  * `<>` 包裹的 destination(CommonMark,含空格路径必需)由尖括号感知 + normalizeImageSrc 处理。
+ * 导出供 frontmatter.extractCover 复用(P6):cover 值与正文同一套「整行恰为一张图」判定。
  */
-function matchImageLine(line: string): { alt: string; src: string } | null {
+export function matchImageLine(line: string): { alt: string; src: string } | null {
   const head = RE_IMAGE_LINE_HEAD.exec(line);
   if (!head) return null;
   const alt = head[1] ?? '';
@@ -873,9 +930,9 @@ function matchImageLine(line: string): { alt: string; src: string } | null {
  *  - 链接图后跟裸图 `[![a](i.png)](l) ![b](y.png)`(b 静默丢失);
  *  - 链接图后跟尾随文本 `[![a](i.png)](l)(注:见原文)`(注释丢失)。
  * 内层 src 经 normalizeImageSrc(剥 `<>` / title);外层 link 只做结构校验、不返回(X 图片不能套超链)。
- * 入参需为**已 trim** 的行。
+ * 入参需为**已 trim** 的行。导出供 frontmatter.extractCover 复用(P6)。
  */
-function matchLinkedImageLine(line: string): { alt: string; src: string } | null {
+export function matchLinkedImageLine(line: string): { alt: string; src: string } | null {
   const head = RE_LINKED_IMAGE_LINE_HEAD.exec(line);
   if (!head) return null;
   const alt = head[1] ?? '';
@@ -930,8 +987,9 @@ function scanParenClose(line: string, start: number): number | null {
  * 缩进上限按 fenceMaxIndent(自身缩进, listContentCol):顶层 0-3(B3-6),列表语境且缩进 ≥ 内容列时放宽(A4)。
  * 开栏正则 RE_FENCE_LINE 与主循环 info 规范化共用;闭栏缩进上限随 Fence.maxIndent 走——
  * 漏改任一处就会「语言标记丢失」或「闭栏认不出、整段吞进正文」。
+ * 导出供 frontmatter.findFirstH1 判定「setext 标题文本是开栏行」(L1),不另写围栏正则。
  */
-function matchFenceOpen(line: string, listContentCol: number | null = null): Fence | null {
+export function matchFenceOpen(line: string, listContentCol: number | null = null): Fence | null {
   const m = line.match(RE_FENCE_LINE);
   if (!m) return null;
   const indent = indentWidth(m[1] ?? '');
@@ -990,6 +1048,46 @@ function normalizeCodeInfo(info: string): string {
  */
 const MAX_INLINE_DEPTH = 100;
 
+/**
+ * 单次 walkInline 调用内的扫描缓存(P1 / P2),只对同一个 src 有效:
+ *  - closeMemo:定界符 → 按起点记忆的 findClosing 结果(CLOSE_UNKNOWN = 未算),见 findClosing;
+ *  - runStart / runEnd(p):p 所在同字符连续串的串首 / 串尾(开区间)。首次查询时整串回填,
+ *    之后串内任一位置 O(1)——canOpen / canClose 不再对长串逐位重扫。
+ */
+interface InlineScan {
+  closeMemo: Map<string, Int32Array>;
+  runStart: (p: number) => number;
+  runEnd: (p: number) => number;
+}
+
+/** 建立 src 的扫描缓存;表惰性分配(多数文本块用不到强调符)。p 须 < src.length。 */
+function createInlineScan(src: string): InlineScan {
+  let starts: Int32Array | null = null;
+  let ends: Int32Array | null = null;
+  /** 确保 p 所在串已回填,返回两张表。ends[q] === 0 表示未算(串尾恒 > q ≥ 0)。 */
+  const ensure = (p: number): { s: Int32Array; e: Int32Array } => {
+    starts ??= new Int32Array(src.length);
+    ends ??= new Int32Array(src.length);
+    if ((ends[p] ?? 0) === 0) {
+      const ch = src[p];
+      let b = p;
+      while (b > 0 && src[b - 1] === ch) b -= 1;
+      let e = p + 1;
+      while (e < src.length && src[e] === ch) e += 1;
+      for (let q = b; q < e; q += 1) {
+        starts[q] = b;
+        ends[q] = e;
+      }
+    }
+    return { s: starts, e: ends };
+  };
+  return {
+    closeMemo: new Map(),
+    runStart: (p) => ensure(p).s[p] ?? p,
+    runEnd: (p) => ensure(p).e[p] ?? p + 1,
+  };
+}
+
 /** 解析一段行内文本;offset/length 均基于剥掉标记后的最终文本。depth 为当前递归深度(防栈溢出)。 */
 function walkInline(src: string, depth = 0): InlineResult {
   let out = '';
@@ -1014,10 +1112,14 @@ function walkInline(src: string, depth = 0): InlineResult {
 
   let i = 0;
   const n = src.length;
-  // A2 性能:按定界符缓存「从位置 p 起找不到合规闭符」(CommonMark openers_bottom 思路),本次调用内
-  // 有效——之后 start ≥ p 直接返回 -1,病理输入(`'**a '.repeat(5000)`)由 O(n²) 降为线性。
-  const noCloseFrom = new Map<string, number>();
-  const findClose = (start: number, delim: string): number => findClosing(src, start, delim, noCloseFrom);
+  // P1 / P2 性能:本次调用内的扫描缓存(闭符记忆表 + 同字符串首尾,见 InlineScan / findClosing)。
+  // 仅针对**强调符定界符**(`* _ ~`)的扫描:`'**a '.repeat(5000)`、「`**x` + 行内代码」重复串、长串 `~` / `*`
+  // 等由 O(n²) 降为线性。行内代码长反引号串(matchCodeSpan)、链接(matchLink)、wikilink 的 indexOf
+  // 在病理输入下仍为 O(n²),属旧问题,不在本次范围。
+  const scan = createInlineScan(src);
+  const findClose = (start: number, delim: string): number => findClosing(src, start, delim, scan);
+  /** p 处的强调符能否开(A2,见 canOpenRun);串尾取自缓存。 */
+  const canOpen = (p: number): boolean => canOpenRun(src, scan.runEnd(p));
 
   /**
    * 递归包裹一段强调:未超深度上限则解析内层 [innerStart,innerEnd) 并挂样式;
@@ -1100,9 +1202,19 @@ function walkInline(src: string, depth = 0): InlineResult {
     // 强调符的最小 flanking(A2):开符号后一字符不得是空白(canOpen),闭符号前一字符不得是空白
     // (findClosing 内 canClose 跳过不满足的候选)。否则 `2 * 3 * 4` 会把 ` 3 ` 设成斜体、吞掉两个
     // 乘号;`a _ b _ c`、`x ~~ y ~~ z` 同类。不满足的符号落到末尾按普通字符原样输出。
+    //
+    // P2:canOpen 只看整串之后的字符,串内每个位置结论相同。整串不能开(串后为空白 / 行尾)时,
+    // 串内每个位置下面各分支都落空、逐字符原样输出——直接整串输出并跳过,结果逐字节相同,
+    // `'a' + '~'.repeat(50000)` 这类长串不再逐位重算 canOpen(旧实现 O(n²))。
+    if ((ch === '*' || ch === '_' || ch === '~') && !canOpen(i)) {
+      const end = scan.runEnd(i);
+      out += src.slice(i, end);
+      i = end;
+      continue;
+    }
 
     // ***x*** 粗+斜
-    if (src.startsWith('***', i) && canOpen(src, i)) {
+    if (src.startsWith('***', i) && canOpen(i)) {
       const close = findClose(i + 3, '***');
       if (close > i + 3) {
         wrap(i + 3, close, close + 3, ['BOLD', 'ITALIC']);
@@ -1118,7 +1230,7 @@ function walkInline(src: string, depth = 0): InlineResult {
       }
     }
     // **x** 粗
-    if (src.startsWith('**', i) && canOpen(src, i)) {
+    if (src.startsWith('**', i) && canOpen(i)) {
       const close = findClose(i + 2, '**');
       if (close > i + 2) {
         wrap(i + 2, close, close + 2, ['BOLD']);
@@ -1126,7 +1238,7 @@ function walkInline(src: string, depth = 0): InlineResult {
       }
     }
     // ~~x~~ 删除线
-    if (src.startsWith('~~', i) && canOpen(src, i)) {
+    if (src.startsWith('~~', i) && canOpen(i)) {
       const close = findClose(i + 2, '~~');
       if (close > i + 2) {
         wrap(i + 2, close, close + 2, ['STRIKETHROUGH']);
@@ -1134,7 +1246,7 @@ function walkInline(src: string, depth = 0): InlineResult {
       }
     }
     // *x* 斜体
-    if (ch === '*' && canOpen(src, i)) {
+    if (ch === '*' && canOpen(i)) {
       const close = findClose(i + 1, '*');
       if (close > i + 1) {
         wrap(i + 1, close, close + 1, ['ITALIC']);
@@ -1142,7 +1254,7 @@ function walkInline(src: string, depth = 0): InlineResult {
       }
     }
     // _x_ 斜体:规避 snake_case 词内下划线(左右侧不得紧贴字母数字)
-    if (ch === '_' && !isWordChar(src[i - 1]) && canOpen(src, i)) {
+    if (ch === '_' && !isWordChar(src[i - 1]) && canOpen(i)) {
       const close = findClose(i + 1, '_');
       if (close > i + 1 && !isWordChar(src[close + 1])) {
         wrap(i + 1, close, close + 1, ['ITALIC']);
@@ -1230,56 +1342,82 @@ function matchLink(src: string, start: number): { textRaw: string; url: string; 
   return { textRaw: src.slice(start + 1, close), url: src.slice(urlStart, j), end: j + 1 };
 }
 
+/** findClosing 记忆表里「该起点尚未计算」的标记(结果本身只会是 ≥ -1 的下标)。 */
+const CLOSE_UNKNOWN = -2;
+
 /**
- * 从 start 处向后寻找闭合定界符 delim,返回其起始下标(找不到 -1)。
- * 扫描时跳过行内代码(代码优先);对单字符定界符(* / _)跳过更长的同字符连续段
- * (避免把 ** 中的星号误判为 * 的闭合)。前一字符是空白的候选不能闭合(canClose,A2),
- * 跳过继续找:`**a ** b**` 的中间 `**` 不闭合,整段 `a ** b` 加粗(CommonMark)。
+ * 从 start 处向后寻找闭合定界符 delim,返回其起始下标(找不到 -1)。delim 恒由同一字符组成
+ * (`*` / `_` / `**` / `***` / `~~`)。扫描时跳过行内代码(代码优先)与反斜杠转义对(A12);
+ * 对单字符定界符(* / _)跳过更长的同字符连续段(避免把 ** 中的星号误判为 * 的闭合)。前一字符是
+ * 空白的候选不能闭合(canClose,A2),跳过继续找:`**a ** b**` 的中间 `**` 不闭合,整段 `a ** b`
+ * 加粗(CommonMark)。
  *
- * `noCloseFrom`(可选,A2 性能):记录每个定界符「从该位置起已确认无闭符」的最小起点;start ≥ 它直接
- * 返回 -1。仅在扫描**未跨过行内代码**时写入——代码段从中途起扫可能对齐到不同的反引号,结论不保证对
- * 更靠后的起点成立;反斜杠转义对的切分不依赖起点(起点紧跟定界符),跨过转义可缓存。单字符定界符从同字符连续段中途起扫
- * 的唯一差异是「start 恰为段末」时可返回 start 本身,调用方均要求 close > start,结论等价。
+ * 记忆化(P1 / P2,行为零差异):扫描每一步的去向只取决于当前位置,所以从任一起点出发的扫描路径
+ * 确定、结果是起点的纯函数——路径上经过的每个位置与起点结果相同。按定界符各建一张记忆表
+ * (scan.closeMemo),扫描遇到已算位置直接取用,结束时把整条路径回填:每个位置每种定界符至多真正
+ * 扫一次(仅指本函数的定界符扫描;路径上的 matchCodeSpan 自身对长反引号串仍可能 O(n),属旧问题)。
+ * 旧实现只缓存「未跨行内代码」的失败,「`**x` + 行内代码」重复串 这类跨代码的输入退化 O(n²)。
+ * 同字符串整段处理(P2):
+ *  - 多字符定界符:串内各位置的 canClose 只看串首之前一字符、结论相同;不成立则串内其余位置都只会
+ *    逐位走出串,整串回填并跳到串尾;
+ *  - 单字符定界符:从串内 p 起剩余长度 ≥ 2 时整段跳到串尾,故 [p+1, 串尾-2] 与 p 同结果,一并回填;
+ *    **串末位置剩余长度为 1、本身可能就是闭符,须按自身判定,不回填**。
  */
-function findClosing(src: string, start: number, delim: string, noCloseFrom?: Map<string, number>): number {
-  const cachedFrom = noCloseFrom?.get(delim);
-  if (cachedFrom !== undefined && start >= cachedFrom) return -1;
-  const single = delim.length === 1;
+function findClosing(src: string, start: number, delim: string, scan: InlineScan): number {
+  let memo = scan.closeMemo.get(delim);
+  if (!memo) {
+    memo = new Int32Array(src.length).fill(CLOSE_UNKNOWN);
+    scan.closeMemo.set(delim, memo);
+  }
   const dch = delim[0] ?? '';
-  // 跨过行内代码后,结论依赖扫描起点的对齐(见下),不写缓存。
-  let alignDependent = false;
+  const path: number[] = [];
+  let result = -1;
   let i = start;
   while (i < src.length) {
+    const known = memo[i] ?? CLOSE_UNKNOWN;
+    if (known !== CLOSE_UNKNOWN) {
+      result = known;
+      break;
+    }
+    path.push(i);
     const ch = src[i];
     // 反斜杠转义(A12):与 walkInline / matchLink 同口径,`\` + ASCII 标点整体跳过,被转义的定界符不能闭合。
-    // 起点总是紧跟定界符(`src[start-1]` 不可能是反斜杠),转义对的切分不依赖起点,故跨过转义仍可写
-    // noCloseFrom 缓存;跨过行内代码则不行。
     if (ch === '\\' && RE_PUNCT.test(src[i + 1] ?? '')) {
       i += 2;
       continue;
     }
     if (ch === '`') {
-      alignDependent = true;
       const cs = matchCodeSpan(src, i);
       i = cs ? cs.end : i + 1;
       continue;
     }
-    if (single) {
-      if (ch === dch) {
-        let run = 1;
-        while (src[i + run] === dch) run += 1;
-        if (run === 1 && canClose(src, i)) return i;
-        i += run;
-        continue;
-      }
+    if (ch !== dch) {
       i += 1;
       continue;
     }
-    if (src.startsWith(delim, i) && canClose(src, i)) return i;
-    i += 1;
+    const end = scan.runEnd(i);
+    if (delim.length === 1) {
+      if (end - i === 1 && canCloseRun(src, scan.runStart(i))) {
+        result = i;
+        break;
+      }
+      for (let q = i + 1; q < end - 1; q += 1) path.push(q);
+      i = end;
+      continue;
+    }
+    if (end - i < delim.length) {
+      i += 1; // 串内剩余不足一个定界符(即 startsWith 不成立):逐位前进
+      continue;
+    }
+    if (canCloseRun(src, scan.runStart(i))) {
+      result = i;
+      break;
+    }
+    for (let q = i + 1; q < end; q += 1) path.push(q);
+    i = end;
   }
-  if (noCloseFrom && !alignDependent && (cachedFrom === undefined || start < cachedFrom)) noCloseFrom.set(delim, start);
-  return -1;
+  for (const q of path) memo[q] = result;
+  return result;
 }
 
 /**
@@ -1315,24 +1453,18 @@ function isSafeUrl(u: string): boolean {
 }
 
 /**
- * 强调开符号(最小 left-flanking,A2):从 i 起的**整段同字符连续串**之后紧跟的字符存在且不是空白。
+ * 强调开符号(最小 left-flanking,A2):**整段同字符连续串**之后紧跟的字符存在且不是空白。
  * 看整段而非仅 `len` 个字符(CommonMark 按 delimiter run 判定):否则 `a *** b` 的 `***` 判不过后,
- * 落到 `**` 分支时「后一字符」是第三个 `*`,会被误判为可开。
+ * 落到 `**` 分支时「后一字符」是第三个 `*`,会被误判为可开。`runEnd` 为该串串尾(开区间,取自 InlineScan)。
  */
-function canOpen(src: string, i: number): boolean {
-  const ch = src[i];
-  let e = i;
-  while (src[e] === ch) e += 1;
-  const next = src[e];
+function canOpenRun(src: string, runEnd: number): boolean {
+  const next = src[runEnd];
   return next !== undefined && !/\s/.test(next);
 }
 
-/** 强调闭符号(最小 right-flanking,A2):i 所在同字符连续串**之前**紧邻的字符存在且不是空白。 */
-function canClose(src: string, i: number): boolean {
-  const ch = src[i];
-  let b = i;
-  while (b > 0 && src[b - 1] === ch) b -= 1;
-  const prev = src[b - 1];
+/** 强调闭符号(最小 right-flanking,A2):同字符连续串**之前**紧邻的字符存在且不是空白。`runStart` 为串首。 */
+function canCloseRun(src: string, runStart: number): boolean {
+  const prev = src[runStart - 1];
   return prev !== undefined && !/\s/.test(prev);
 }
 

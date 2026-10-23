@@ -11,9 +11,11 @@ import {
   forEachContentLine,
   frontmatterBodyStart,
   inlinePlainText,
-  isParagraphLine,
-  normalizeImageSrc,
-  setextUnderlineLevel,
+  matchFenceOpen,
+  matchImageLine,
+  matchLinkedImageLine,
+  RE_OBSIDIAN_IMAGE_LINE,
+  type ParseOptions,
 } from './parser';
 
 /** 抽取结果:命中标题及其来源(供上层决定是否从正文移除 H1)。 */
@@ -134,100 +136,103 @@ function wikiTarget(inner: string): string {
 
 /**
  * 从文首 frontmatter 解析封面 `cover`;支持 Obsidian 的 `![[x]]`(嵌入)、`[[x]]`(内链,无 `!`)、
- * `![](x)` 三种包裹写法(剥壳)。无 → null。仅解析 frontmatter,正文首图由上层用块级图兜底。
+ * `![](x)` / `[![](x)](y)` 包裹写法(剥壳)。无 → null。仅解析 frontmatter,正文首图由上层用块级图兜底。
+ *
+ * 判定按**整值**进行(P6),与正文「整行恰为一张图」同口径,复用 parser 的整行匹配(不再用贪婪正则——
+ * 旧版 `![a](x.png) ![b](y.png)` 会被吞成 `x.png) ![b](y.png`、两个 wiki 链接被吞成一个畸形路径):
+ *  1. **wiki 优先**:以 `![[` / `[[` 开头 → 整值恰为一个 wiki 链接则取路径(`|` 之后的图注/尺寸
+ *     由 wikiTarget 切掉),否则 null;
+ *  2. 以 `![` / `[![` 开头 → 整值恰为一张图(裸 / 带链接)则取地址(已经 normalizeImageSrc 剥 `<>`
+ *     与可选 title,A6),否则(两张图、畸形)null;
+ *  3. 其余 → 按原样作为路径(`assets/图 #1.png` 等合法路径不受影响)。
  */
 export function extractCover(md: string): string | null {
   const raw = frontmatterValue(md, ['cover', 'Cover', '封面']);
   if (raw === null) return null;
-  // 兼容 ![[assets/x.png]] 包裹(先于 [[x]] 判断,避免被误剥成 !x)
-  const wiki = /^!\[\[(.+?)\]\]$/.exec(raw);
-  if (wiki) return wikiTarget(wiki[1] ?? '');
-  // 兼容 Obsidian 无 ! 的内链 [[assets/x.png]]
-  const wikiLink = /^\[\[(.+?)\]\]$/.exec(raw);
-  if (wikiLink) return wikiTarget(wikiLink[1] ?? '');
-  const md2 = /^!\[[^\]]*\]\((.+)\)$/.exec(raw);
-  // destination 规范化复用 parser.normalizeImageSrc(A6):剥 `<>` 与可选 title(`a.png "t"` → `a.png`),
-  // 与正文图片同一套规则,不另写第二套。
-  if (md2) return normalizeImageSrc(md2[1] ?? '');
+  if (raw.startsWith('![[') || raw.startsWith('[[')) {
+    // 复用正文的 `![[x]]` 整行判定;无 `!` 的内链补上 `!` 后同口径(等价于 /^!?\[\[([^\]]+)\]\]$/)。
+    const wiki = RE_OBSIDIAN_IMAGE_LINE.exec(raw.startsWith('!') ? raw : `!${raw}`);
+    return wiki ? wikiTarget(wiki[1] ?? '') : null;
+  }
+  if (raw.startsWith('![') || raw.startsWith('[![')) {
+    return (matchImageLine(raw) ?? matchLinkedImageLine(raw))?.src ?? null;
+  }
   return raw;
 }
 
 /**
- * 逐行扫描定位「首个位于代码围栏外的一级标题」,返回其行号、**占用行数**与标题。
- * 两种写法都认:ATX `# x`(1 行)与 **setext `x` + `===`**(2 行)。
- * **必须跳过围栏代码块**——否则代码示例里的 `# 注释` 会被误当文章标题(与 parser 一致)。
- * extractTitle 与 stripFirstH1 共用它,保证「抽为标题的那行」与「从正文移除的那行」一致;
- * lineCount 就是为 setext 的两行而加——按 1 行删会把 `===` 下划线孤零零留在正文。
+ * 正文首个可作文章标题的一级标题:取解析主循环经 forEachContentLine.onHeading 上报的标题(P3),
+ * 返回其源行半开区间 `[start, end)` 与纯文本标题。**单一来源**:标题判定(围栏 / 公式 / 列表 lazy
+ * 续行 / setext / frontmatter 跳过)全部与 parseMarkdown 同源,不再有自己的段落行 / 下划线 /
+ * standalone 启发式——那套第二实现曾造成「`- item\n标题\n===` 正文是列表、却被抽成标题」、
+ * 「`$$` 公式里的 `# x` 被抽成标题并被 stripFirstH1 删坏公式」等分裂(HANDOFF §8 同类教训)。
  *
- * setext 只认**一级**(`===`):`---` 是二级,与 ATX 的 `## ` 一样不作文章标题。
- * 判定复用 parser 导出的 `setextUnderlineLevel`/`isParagraphLine`,不另写一套——
- * 否则会出现「parser 认成标题、extractTitle 抽不到」的分裂(HANDOFF §8 记过两次同类教训)。
+ * 取第一个满足条件的标题:ATX 一级(`#`;`##` 虽同样映射为 header-one 但不作文章标题),或**单行**
+ * setext `===`(正文 1 行 + 下划线 1 行,end − start === 2)——多行 setext 正文时标题该取整段,
+ * stripFirstH1 按区间删虽可行但这类写法极罕见,维持「不认」的既有取舍(标题留在正文,不误伤);
+ * 且纯文本非空。纯文本按写法区分:ATX 用 inlinePlainText(raw)(剥闭合井号),setext 用
+ * `atxClosing: false`(`标题 #\n===` 的标题是「标题 #」)。
+ * setext 文本是开栏行(未闭合的 ``` / `~~~`)或 `$$` 时跳过、继续找下一个(L1):正文确实把它渲染成
+ * 标题「```」,但那是未闭合起行的副产物,不是作者意图的文章标题。只少抽、不改正文解析,故抽到的
+ * 标题仍对应正文中同一源行的 header-one(P3 不变量不受影响)。
+ *
+ * `opts` 为解析开关(P7):标题判定随之与实际解析一致(如 obsidianImg 决定 `![[a.png]]\n标题\n===`
+ * 是图片 + 单行 setext 还是多行 setext),不继承上一次 parseMarkdown 残留的模块级开关。
+ * extractTitle 与 stripFirstH1 共用它,保证「抽为标题的那几行」与「从正文移除的那几行」一致。
  */
-function findFirstH1(lines: string[]): { index: number; lineCount: number; title: string } | null {
-  let found: { index: number; lineCount: number; title: string } | null = null;
-  // 复用 parser 的严格围栏遍历(与解析主循环同源):`~~~` 与 ``` 不互闭、闭栏须裸行且数量足够,
-  // 代码块内的 `# 注释` 不会被误当文章标题。`/^#\s+/` 只匹配 H1(`## ` 因 `#` 后非空白不命中)。
-  // skipFrontmatter(B3-3 / P1-6):文首 YAML 块不参与标题扫描——`# 元数据区` 这类合法 YAML
-  // 注释此前会被抽成文章标题,h1Handle=remove 时还从 frontmatter 内部删行。判定与 parser 的
-  // frontmatterBodyStart 同源(即与 frontmatterBody 同源),不新开第二套。
-  forEachContentLine(lines, (line, index) => {
-    // `^ {0,3}` 与 parser 的 RE_HEADING 同步放宽(B3-6):否则缩进一格的 `# 标题` 会出现
-    // 「parser 认成标题、extractTitle 抽不到」的分裂。≥4 空格同样不认(缩进代码领域)。
-    const h1 = /^ {0,3}#\s+(.+)$/.exec(line);
-    if (h1) {
-      // 标题取**纯文本**(A7):剥 ATX 闭合井号与行内标记,与 parser 产出的 header-one 文本同源。
-      const title = inlinePlainText(h1[1] ?? '');
-      if (title.length > 0) {
-        found = { index, lineCount: 1, title };
-        return true;
-      }
-    }
-    // setext 一级标题:本行是普通段落文本,下一行是 `===`。
-    // 额外要求**本行独立成段**(上一行为空/块边界/文首)——多行 setext 正文时,
-    // 标题该取整段而非末行,且 stripFirstH1 按固定行数删会删错;这类写法极罕见,
-    // 宁可不认(标题留在正文,不误伤),也不做不完整的处理。
-    if (isParagraphLine(line) && setextUnderlineLevel(lines[index + 1] ?? '') === 1) {
-      const prev = index > 0 ? (lines[index - 1] ?? '') : '';
-      const standalone = index === 0 || prev.trim() === '' || !isParagraphLine(prev);
-      const title = inlinePlainText(line, { atxClosing: false }); // setext 无闭合井号语义
-      if (standalone && title.length > 0) {
-        found = { index, lineCount: 2, title };
-        return true;
-      }
-    }
-  }, { skipFrontmatter: true });
-  return found;
+function findFirstH1(lines: string[], opts: ParseOptions = {}): { start: number; end: number; title: string } | null {
+  const headings: Array<{ start: number; end: number; kind: 'atx' | 'setext'; raw: string }> = [];
+  // visitor 立即返回 true:这里只要 onHeading(解析主循环在遍历行之前已跑完整篇)。
+  // 文首 frontmatter 由 parseLines 自身跳过(与 parseMarkdown 同源),YAML 注释 `# x` 不会被上报。
+  forEachContentLine(lines, () => true, {
+    obsidianImg: opts.obsidianImg,
+    wikilink: opts.wikilink,
+    taskList: opts.taskList,
+    onHeading: (start, end, level, kind, raw) => {
+      if (level !== 1) return;
+      if (kind === 'setext' && end - start !== 2) return;
+      if (kind === 'setext' && (matchFenceOpen(raw.trim()) !== null || raw.trim() === '$$')) return; // L1
+      headings.push({ start, end, kind, raw });
+    },
+  });
+  for (const h of headings) {
+    const title = h.kind === 'atx' ? inlinePlainText(h.raw) : inlinePlainText(h.raw, { atxClosing: false });
+    if (title.length > 0) return { start: h.start, end: h.end, title };
+  }
+  return null;
 }
 
 /** 从正文抽取第一个 H1(跳过代码块);无则 null。 */
-function fromH1(md: string): string | null {
-  return findFirstH1(md.split(/\r?\n/))?.title ?? null;
+function fromH1(md: string, opts: ParseOptions): string | null {
+  return findFirstH1(md.split(/\r?\n/), opts)?.title ?? null;
 }
 
 /**
  * 删除正文中「被抽为标题的那一行 H1」(跳过代码块,与 extractTitle 同源)。
  * 在 md 文本层按行删除——而非 blocks 层,因为 parser 把 H1/H2 都映射成 header-one,
  * blocks 层无法区分,按 type 删首个 header-one 会在「H2 在 H1 之前」时删错块。
+ * `opts` 为解析开关(P7),须与 extractTitle 传同一份,删的才是抽出的那个标题。
  */
-export function stripFirstH1(md: string): string {
+export function stripFirstH1(md: string, opts: ParseOptions = {}): string {
   const lines = md.split(/\r?\n/);
-  const found = findFirstH1(lines);
+  const found = findFirstH1(lines, opts);
   if (!found) return md;
-  // 删 found.lineCount 行:ATX 是 1 行,setext 是「正文行 + `===` 下划线」共 2 行
+  // 删标题占用的整个源行区间:ATX 是 1 行,setext 是「正文行 + `===` 下划线」共 2 行
   // (只删 1 行会把下划线孤零零留在正文,再被解析成分割线/段落)。
-  lines.splice(found.index, found.lineCount);
+  lines.splice(found.start, found.end - found.start);
   return lines.join('\n');
 }
 
 /**
  * 抽取文章标题。frontmatter 优先,其次正文首个 H1,都没有则返回 null。
  * @param md 原始 Markdown 文本。
+ * @param opts 解析开关(P7),与实际写入时 parseMarkdown 用的同一份;不传按默认值。
  */
-export function extractTitle(md: string): ExtractedTitle | null {
+export function extractTitle(md: string, opts: ParseOptions = {}): ExtractedTitle | null {
   const fm = fromFrontmatter(md);
   if (fm !== null) return { title: fm, source: 'frontmatter' };
 
-  const h1 = fromH1(md);
+  const h1 = fromH1(md, opts);
   if (h1 !== null) return { title: h1, source: 'h1' };
 
   return null;

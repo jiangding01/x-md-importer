@@ -196,6 +196,7 @@ export const IMAGE_FAIL_REASONS = [
   'local-not-found',
   'local-no-folder', // C30:两个作用域都未连接本地文件夹
   'local-permission-lapsed', // C30:已连接文件夹读权限回落(浏览器重启后 prompt),需重新授权
+  'local-ambiguous', // B1:按文件名兜底时同名图片多处,无法确定是哪一张(不静默挑一个)
   'local-too-large',
   'local-bad-type',
   'data-uri-invalid',
@@ -214,6 +215,10 @@ export const IMAGE_FAIL_REASONS = [
   // index 取「最可能的来源图」(最早未被追回的超时图),无候选时取末张图——不用 -2 哨兵:
   // 存储校验(validateImageFailures 拒 index < -1)与报告卡(index<0 显示为封面)尚未适配。
   'orphan-media',
+  // B2:此前有超时图的晚到 MEDIA 无法追踪(无 pendingKey 或其块已消失)、之后又有图成功归位,
+  // 且存在孤儿 MEDIA——后续图可能认领了它的晚到块,位置可能错位。只此一条(index = 最早的
+  // 不可追踪超时图),不计入 imageFail;不猜归属、如实提示用户核对。
+  'media-order-uncertain',
 
   // 封面
   'cover-set-failed', // 封面 File 已备好但 setCoverImage 未落地
@@ -268,18 +273,19 @@ export type ImportResult =
       imageFailures?: ImageFailure[];
       /**
        * B1 诊断:哪些阶段在 onChange 后等待 React 提交超时(settle 1.5s 未观察到预期 state)。
-       * 仅诊断用,content / sidepanel 不消费;缺省 = 全部阶段按时落盘。
+       * 缺省 = 全部阶段按时落盘。仅 X 页面 console 可见:sidepanel 侧经 resultGuards 归一化时
+       * 有意丢弃(不入存储、UI 不消费),排查请看 X 页面 console 的 `[MarkFlow]` 日志。
        */
       settleTimeouts?: string[];
       /**
-       * B2 诊断:超时降级后又「晚到」并被追回归位的图片数(已计入 imageOk、已从失败明细移除)。
-       * 缺省 = 0。仅诊断用,UI 不消费。
+       * B2 诊断:超时降级后又「晚到」并按 pendingKey 精确追回归位的图片数(已计入 imageOk、已从
+       * 失败明细移除)。缺省 = 0。仅 X 页面 console 可见(同 settleTimeouts,经 resultGuards 丢弃)。
        */
       imageLateRecovered?: number;
       /**
        * B2 诊断:正文新增 MEDIA 块数超出 imageOk 的数量(无法归属的孤儿图,需手动删除)。
-       * 缺省 = 0;>0 时失败明细另有一条 reason='orphan-media'(不计入 imageFail)。仅诊断用,UI 不消费
-       * (UI 经该失败明细呈现)。
+       * 缺省 = 0;>0 时失败明细另有一条 reason='orphan-media'(不计入 imageFail)。本字段仅 X 页面
+       * console 可见(同 settleTimeouts,经 resultGuards 丢弃);UI 经该失败明细呈现。
        */
       orphanMedia?: number;
     }

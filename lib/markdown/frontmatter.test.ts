@@ -307,7 +307,7 @@ describe('extractCover', () => {
   });
 
   // B3-10(P2-12):`![[path|alt]]` 的 `|alt` 是图注/尺寸,不是路径的一部分。
-  // 不切分则封面查找必败,且与 parser 对同一语法的处理(matchObsidianImageLine)不一致。
+  // 不切分则封面查找必败,且与 parser 对同一语法的处理(主循环 `![[x|alt]]` 图片分支)不一致。
   it('`![[path|alt]]` 剥壳后再切掉 `|别名`', () => {
     expect(extractCover('---\ncover: "![[assets/a.png|封面图]]"\n---\n')).toBe('assets/a.png');
     expect(extractCover('---\ncover: ![[a.png|300]]\n---\n')).toBe('a.png');
@@ -362,5 +362,177 @@ describe('A6/A7 发版前修复', () => {
     const md = '# **粗** [链](http://a) 标题 ##';
     const h = parseMarkdown(md)[0];
     expect(h?.kind === 'text' ? h.text : null).toBe(extractTitle(md)?.title);
+  });
+});
+
+// ===========================================================================
+// 修复方案 2026-10-23(v0.5.0 打 tag 前):P3 / P7 / P6
+// ===========================================================================
+
+// P3:标题判定单一来源——findFirstH1 只认 parseLines 经 forEachContentLine.onHeading 上报的标题,
+// 不再有自己的 isParagraphLine / setextUnderlineLevel / standalone 启发式。
+describe('P3 标题判定与解析同源(定点)', () => {
+  /** md 中 header-one 块的文本(trim 后),用于「两侧一致」断言。 */
+  const headerTexts = (md: string): string[] =>
+    parseMarkdown(md).flatMap((b) => (b.kind === 'text' && b.type === 'header-one' ? [b.text.trim()] : []));
+
+  it('`标题 #\\n===`:setext 不剥 ATX 闭合井号,标题为「标题 #」', () => {
+    const md = '标题 #\n===';
+    expect(extractTitle(md)).toEqual({ title: '标题 #', source: 'h1' });
+    expect(headerTexts(md)).toEqual(['标题 #']);
+    expect(stripFirstH1(md)).toBe('');
+  });
+
+  it('`- item\\n标题\\n===`:lazy 续行里的 `===` 不构成标题(两侧都不认)', () => {
+    const md = '- item\n标题\n===';
+    expect(extractTitle(md)).toBeNull();
+    expect(headerTexts(md)).toEqual([]);
+    expect(stripFirstH1(md)).toBe(md);
+  });
+
+  it('`- \\n标题\\n===`:空项后的段落是标题', () => {
+    const md = '- \n标题\n===';
+    expect(extractTitle(md)).toEqual({ title: '标题', source: 'h1' });
+    expect(headerTexts(md)).toEqual(['标题']);
+    expect(stripFirstH1(md)).toBe('- ');
+  });
+
+  it('`> a\\nb\\n===`:两侧一致认作标题「b」(引用 lazy 属旧行为,本次不动)', () => {
+    const md = '> a\nb\n===';
+    expect(extractTitle(md)).toEqual({ title: 'b', source: 'h1' });
+    expect(headerTexts(md)).toEqual(['b']);
+    expect(stripFirstH1(md)).toBe('> a');
+  });
+
+  it('`标题\\n===`:单行 setext 照常', () => {
+    expect(extractTitle('标题\n===')).toEqual({ title: '标题', source: 'h1' });
+    expect(stripFirstH1('标题\n===\n正文')).toBe('正文');
+  });
+
+  it('`$$\\n# x\\n$$`:公式内的 `# x` 不是标题,stripFirstH1 不改公式', () => {
+    const md = '$$\n# x\n$$\n\n正文';
+    expect(extractTitle(md)).toBeNull();
+    expect(stripFirstH1(md)).toBe(md);
+  });
+
+  it('第一个标题不合格(二级 / 多行 setext / 纯文本为空)时继续找下一个', () => {
+    expect(extractTitle('## 二级\n\n第一行\n第二行\n===\n\n# [](u)\n\n# 真标题')).toEqual({
+      title: '真标题',
+      source: 'h1',
+    });
+  });
+});
+
+// L1(独立审查):未闭合的开栏行 / `$$` 起行下方紧跟 `===` 时,正文按 setext 渲染成标题「```」/「$$」,
+// 但它显然不是作者意图的文章标题——标题抽取跳过它、继续找下一个(正文解析不改)。
+describe('L1 setext 标题文本为开栏行 / `$$` 时不作文章标题', () => {
+  for (const [md, rest] of [
+    ['```\n===\n# 真标题\n正文', '```\n===\n正文'],
+    ['$$\n===\n# 真标题', '$$\n==='],
+    ['~~~\n===\n# 真标题', '~~~\n==='],
+  ] as const) {
+    it(`${JSON.stringify(md)} → 标题「真标题」,stripFirstH1 删的是 \`# 真标题\` 行`, () => {
+      expect(extractTitle(md)).toEqual({ title: '真标题', source: 'h1' });
+      expect(stripFirstH1(md)).toBe(rest);
+    });
+  }
+
+  it('正文解析不变:未闭合开栏行 + `===` 仍是 header-one', () => {
+    const h = parseMarkdown('```\n===\n# 真标题')[0];
+    expect(h?.kind === 'text' ? [h.type, h.text] : null).toEqual(['header-one', '```']);
+  });
+});
+
+describe('P3 不变量:标题行区间与 parseMarkdown 按源行对应(行级模糊)', () => {
+  const alphabet = ['- a', '- ', '> q', '标题', '===', '--', '---', '```', '$$', '# h', '## h', '2024. x', ''];
+
+  /** 与 stripFirstH1 结果一致的所有删除方案 [s, removed](removed ∈ {1, 2};重复行时可能多个)。 */
+  const removals = (lines: string[], stripped: string): Array<[number, number]> => {
+    const out: Array<[number, number]> = [];
+    for (const removed of [1, 2]) {
+      for (let s = 0; s + removed <= lines.length; s += 1) {
+        if ([...lines.slice(0, s), ...lines.slice(s + removed)].join('\n') === stripped) out.push([s, removed]);
+      }
+    }
+    return out;
+  };
+
+  it('extractTitle(h1) 删掉的行区间恰是 parseMarkdown 中同一源行起的 header-one,文本一致', () => {
+    // mulberry32(32 位整数运算):`seed * 1103515245` 式浮点 LCG 会超出 2^53 精度、退化成短周期。
+    let seed = 20261023;
+    const rnd = () => {
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let t = seed;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const failures: string[] = [];
+    for (let t = 0; t < 3000; t += 1) {
+      const n = 1 + Math.floor(rnd() * 8);
+      const lines = Array.from({ length: n }, () => alphabet[Math.floor(rnd() * alphabet.length)] ?? '');
+      const md = lines.join('\n');
+      const title = extractTitle(md);
+      if (title?.source !== 'h1') continue;
+      const full = parseMarkdown(md);
+      const ok = removals(lines, stripFirstH1(md)).some(([s, removed]) => {
+        // 前缀 [0, s) 产出的块数即标题块在全文中的下标;前缀 [0, s+removed) 恰多出这一块且与全文同形
+        const before = parseMarkdown(lines.slice(0, s).join('\n')).length;
+        const upto = parseMarkdown(lines.slice(0, s + removed).join('\n'));
+        const b = full[before];
+        return (
+          b?.kind === 'text' &&
+          b.type === 'header-one' &&
+          b.text.trim() === title.title &&
+          upto.length === before + 1 &&
+          JSON.stringify(upto[before]) === JSON.stringify(b)
+        );
+      });
+      if (!ok) failures.push(md);
+    }
+    expect(failures.slice(0, 5)).toEqual([]);
+  });
+});
+
+describe('P7 标题抽取只取决于自身解析开关', () => {
+  // obsidianImg=true:`![[a.png]]` 是图片块,`标题\n===` 单行 setext → 标题;
+  // obsidianImg=false:`![[a.png]]` 是段落行,与 `标题` 组成多行 setext → 不作文章标题。
+  const md = '![[a.png]]\n标题\n===';
+
+  it('残留开关 true / false 两种前置下,结果只取决于自身 opts', () => {
+    for (const residue of [true, false]) {
+      parseMarkdown('x', { obsidianImg: residue });
+      expect([residue, extractTitle(md)]).toEqual([residue, { title: '标题', source: 'h1' }]);
+      parseMarkdown('x', { obsidianImg: residue });
+      expect([residue, extractTitle(md, { obsidianImg: false })]).toEqual([residue, null]);
+      parseMarkdown('x', { obsidianImg: residue });
+      expect([residue, stripFirstH1(md)]).toEqual([residue, '![[a.png]]']);
+      parseMarkdown('x', { obsidianImg: residue });
+      expect([residue, stripFirstH1(md, { obsidianImg: false })]).toEqual([residue, md]);
+    }
+  });
+});
+
+// P6:cover 值按「整值恰为一个图片 / wiki 链接」判定,复用 parser 的整行图片匹配,不再用贪婪正则。
+describe('P6 extractCover 整值判定', () => {
+  const cover = (v: string) => extractCover(`---\ncover: ${v}\n---\n正文`);
+
+  it('单图 / 带链接图 / wiki 形态 → 取地址', () => {
+    expect(cover('![a](x.png)')).toBe('x.png');
+    expect(cover('[![a](x.png)](http://l)')).toBe('x.png');
+    expect(cover('![[a.png]]')).toBe('a.png');
+    expect(cover('[[a.png]]')).toBe('a.png');
+    expect(cover('![[a.png|300]]')).toBe('a.png');
+  });
+
+  it('两张图 / 两个 wiki / 畸形 → null(与正文「整行一张图」口径一致)', () => {
+    expect(cover('![a](x.png) ![b](y.png)')).toBeNull();
+    expect(cover('![[a.png]] ![[b.png]]')).toBeNull();
+    expect(cover('[[a.png]] [[b.png]]')).toBeNull();
+    expect(cover('![a](x.png')).toBeNull();
+  });
+
+  it('纯路径按原样作为路径', () => {
+    expect(cover('a.png')).toBe('a.png');
   });
 });

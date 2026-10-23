@@ -503,9 +503,12 @@ export default defineUnlistedScript(() => {
 
   // -------------------------------------------------------------------------
   // B2 晚到追回 —— 图 k 超时降级(写回原文)后,X 的上传并未取消;k 的 MEDIA 若在图 k+1 的
-  // 等待期才插入,旧实现会把它当成 k+1 的结果归位到 marker k+1,此后逐张错位、末张成孤儿。
-  // 现在登记每张超时图的「原文写回位置」,轮询发现**来历不明的已确认 MEDIA** 时先按 FIFO
-  // 还给最早超时的图:删掉其原文、MEDIA 归位到该处,再继续等本图自己的 MEDIA。
+  // 等待期才插入,会被当成 k+1 的结果归位到 marker k+1,此后逐张错位、末张成孤儿。
+  // 登记每张超时图的「原文写回位置」与超时那刻的 pending 块 key;该块拿到 mediaId 时**按 key
+  // 精确**还给该图:删掉其原文、MEDIA 归位到该处,再继续等本图自己的 MEDIA。
+  // 无 key 可追踪(超时时尚无块 / 块后来消失)的晚到块**不猜归属**(曾有的末轮 FIFO 无归属证据、
+  // 猜错即两图对调且全报成功,已删除):收尾时若有孤儿 MEDIA 且其后有图成功归位,如实上报一条
+  // media-order-uncertain 提示用户核对(见 runImport 孤儿审计)。
   // -------------------------------------------------------------------------
 
   /**
@@ -513,8 +516,8 @@ export default defineUnlistedScript(() => {
    * - fallbackKey:replaceMarkerWithText 写回原文所在块 key(块 merge 保 key)。定位时还要求
    *   该块文本仍含 fallbackText;不满足(X 重建了块 key)则退回「整块文本 === fallbackText」搜索。
    * - pendingKey:超时那刻已出现但未确认(无 mediaId)的 MEDIA 块 key。它已在后续图的 before
-   *   快照内、不会被误当新块;只按 key 精确等它拿到 mediaId,不参与 FIFO——除非该块消失
-   *   (X 可能换新 key 落定),此时退回 FIFO。
+   *   快照内、不会被误当新块;只按 key 精确等它拿到 mediaId。为空或该块消失(X 可能换新 key
+   *   落定)即「不可追踪」:不再追回,收尾按 media-order-uncertain 规则如实上报。
    */
   type LateEntry = {
     imageIndex: number;
@@ -522,15 +525,10 @@ export default defineUnlistedScript(() => {
     fallbackText: string;
     pendingKey: string | null;
   };
-  /** 待追回队列(按超时先后 = FIFO)。模块级同 settleTimeouts:importInFlight 串行化,runImport 入口清零。 */
+  /** 待追回队列(按超时先后排列)。模块级同 settleTimeouts:importInFlight 串行化,runImport 入口清零。 */
   let pendingLate: LateEntry[] = [];
   /** 已追回的图片下标(runImport 收尾据此 imageOk++ 并移除对应 upload-timeout 明细)。 */
   let lateRecovered: number[] = [];
-  /**
-   * 已有归属的 MEDIA 块 key:图片阶段开始时正文已有的 + 每张图 waitForNewMedia 认领的(含未确认)
-   * + 已追回的。末轮追回(无 before 快照可用)以此排除「有主」的块。
-   */
-  let claimedMedia = new Set<string>();
   /**
    * 追回会**写正文**(此前 waitForNewMedia 只读),必须服从 runImport 的切文章闸门:
    * runImport 入口挂上 articleSwitched,finally 复位为「一律禁止」。
@@ -625,22 +623,13 @@ export default defineUnlistedScript(() => {
 
   /**
    * 单次追回尝试:读最新 state,至多追回**一张**,返回是否发生了认领(调用方据此重钉光标/再试)。
-   * 1) 精确:登记了 pendingKey 且该块仍在 → 它拿到 mediaId 即还给该图;
-   * 2) FIFO(仅 allowFifo=true,即图片循环结束后的末轮扫描):最早一张「无 pendingKey 或其块已
-   *    消失」的超时图,认领第一个**来历不明**的已确认 MEDIA——排除 exclude、ownPending(本图等待期
-   *    已跟踪过的 pending 块,视为本图自己的占位)、claimedMedia、及任何登记过的 pendingKey。
-   *    取舍:循环进行中**不做 FIFO**——第 k+1 张图的块可能「首次被看到即 ready」(从未以 pending
-   *    形态进入 ownPending),FIFO 会把它抢给超时的第 k 张,造成反向错位。末轮时所有图都已认领
-   *    完自己的块,剩余无归属的 ready MEDIA 才可安全按 FIFO 分给最早超时图,其余交孤儿审计。
-   * 只认 ready(带 mediaId)的块:pending 块无法区分是谁的,交本图自己的稳定性判定。
-   * 认领即出队并记入 exclude/claimedMedia——即使归位失败(原文找不到)也不再让它被本图误认,
-   * 留给收尾的 orphan-media 审计如实上报。
+   * 只做**精确**追回:登记了 pendingKey 且该块仍在、已拿到 mediaId → 还给该图。无 pendingKey 或
+   * 其块已消失的超时图不追回——没有归属证据,猜即可能两图对调且全报成功(B2:末轮 FIFO 已删除),
+   * 交收尾的孤儿审计与 media-order-uncertain 提示如实上报。
+   * 认领即出队——即使归位失败(原文找不到)也不再重试,留给收尾的 orphan-media 审计如实上报。
+   * 被认领的 pendingKey 块在超时那刻已存在,天然在后续图的 before 快照内,不会被本图当成新块。
    */
-  const recoverLateOnce = async (
-    exclude: Set<string>,
-    ownPending: Set<string>,
-    allowFifo: boolean,
-  ): Promise<boolean> => {
+  const recoverLateOnce = async (): Promise<boolean> => {
     if (!pendingLate.length || lateWriteBlocked()) return false;
     const node = findDraftStateNode();
     if (!node) return false;
@@ -656,23 +645,9 @@ export default defineUnlistedScript(() => {
         break;
       }
     }
-    if (!pick && allowFifo) {
-      const fifo = pendingLate.find((e) => !e.pendingKey || !bm.has(e.pendingKey));
-      if (fifo) {
-        const registered = new Set(pendingLate.map((e) => e.pendingKey).filter((k): k is string => !!k));
-        let readyKey: string | null = null;
-        bm.forEach((b, k) => {
-          if (readyKey || exclude.has(k) || ownPending.has(k) || claimedMedia.has(k) || registered.has(k)) return;
-          if (mediaBlockState(content, b) === 'ready') readyKey = k;
-        });
-        if (readyKey) pick = { entry: fifo, mediaKey: readyKey };
-      }
-    }
     if (!pick) return false;
     const { entry, mediaKey } = pick;
     pendingLate = pendingLate.filter((e) => e !== entry);
-    exclude.add(mediaKey);
-    claimedMedia.add(mediaKey);
     if (await relocateLateMedia(node, entry, mediaKey)) {
       lateRecovered.push(entry.imageIndex);
       if (import.meta.env.DEV) console.info('[MarkFlow] 晚到图片已追回归位', { imageIndex: entry.imageIndex, mediaKey });
@@ -689,9 +664,9 @@ export default defineUnlistedScript(() => {
    *   或出现满 32s 封顶 → confirmed:true(正文图放行);未达标而 budget 到点 → confirmed:false(未确认);
    * - 全程未出现新 MEDIA 块 → null。
    * 返回 confirmed 交由调用方决定成功/降级——**「有块但未确认」绝不谎报成功**。
-   * B2:每轮先给此前超时图按 pendingKey 精确追回晚到 MEDIA(recoverLateOnce,不做 FIFO——
-   * 防止把本图「首见即 ready」的块抢给前一张超时图);追回会改 selection,
-   * 随后把光标重钉回本图 marker 再继续等本图——budget 不延长(通道超时预算不放大)。
+   * B2:每轮先给此前超时图按 pendingKey 精确追回晚到 MEDIA(recoverLateOnce,只认登记过的 key,
+   * 不猜归属);追回会改 selection,随后把光标重钉回本图 marker 再继续等本图——budget 不延长
+   * (通道超时预算不放大)。
    */
   const waitForNewMedia = async (
     before: Set<string>,
@@ -701,11 +676,9 @@ export default defineUnlistedScript(() => {
     const deadline = Date.now() + budgetMs;
     // 当前 pending 块的跟踪:firstSeen=首次出现时刻;signature/signatureSince=最近签名及其保持起始时刻。
     let pending: { key: string; firstSeen: number; signature: string; signatureSince: number } | null = null;
-    // 本图等待期跟踪过的 pending 块:视为本图自己的占位,晚到追回的 FIFO 不得认领它。
-    const ownPending = new Set<string>();
     while (Date.now() < deadline) {
       await delay(350);
-      if (pendingLate.length && (await recoverLateOnce(before, ownPending, false))) {
+      if (pendingLate.length && (await recoverLateOnce())) {
         const n = findDraftStateNode();
         if (n && !lateWriteBlocked()) await placeSelectionAtMarker(n, marker);
         continue;
@@ -730,7 +703,6 @@ export default defineUnlistedScript(() => {
           } else if (!pendingKey) {
             pendingKey = key;
             pendingData = data;
-            ownPending.add(key);
           }
         } catch {
           /* ignore */
@@ -1009,8 +981,6 @@ export default defineUnlistedScript(() => {
     }
 
     const media = await waitForNewMedia(before, budgetMs, marker);
-    // 本图认领的块(含未确认)记入有主集合——末轮追回不得把它当来历不明的晚到块。
-    if (media) claimedMedia.add(media.key);
     // 无新 MEDIA 块,或有块但未确认(无 mediaId 且稳定性未达标)→ 未确认成功,交调用方降级。
     if (!media || !media.confirmed) return { ok: false, reason: 'upload-timeout', pendingKey: media?.key };
 
@@ -1163,7 +1133,6 @@ export default defineUnlistedScript(() => {
     // B2 晚到追回的模块级账本按次清零;追回写正文须服从本次的切文章闸门(finally 复位为禁止)。
     pendingLate = [];
     lateRecovered = [];
-    claimedMedia = new Set();
     lateWriteBlocked = articleSwitched;
     // 每次运行独立的 marker 前缀,避免与历史残留 / 并发写入串扰。
     const markerPrefix = `__MARKFLOW_IMG_${Math.random().toString(36).slice(2, 8)}_`;
@@ -1425,11 +1394,13 @@ export default defineUnlistedScript(() => {
           detail: detail === undefined ? undefined : truncateForReport(detail, 200),
         });
       };
-      // B2:图片阶段开始时正文已有的 MEDIA(append 模式的旧图)——既是「有主」集合的起点,
-      // 也是收尾 orphan-media 审计的基线(新增 MEDIA 数 = 终态 MEDIA − 基线)。
+      // B2:图片阶段开始时正文已有的 MEDIA(append 模式的旧图)——收尾 orphan-media 审计的
+      // 基线(新增 MEDIA 数 = 终态 MEDIA − 基线)。
       const mediaBaseNode = imageMarkers.length ? findDraftStateNode() : null;
       const initialMedia = mediaBaseNode ? snapshotMediaKeys(mediaBaseNode) : null;
-      if (initialMedia) for (const k of initialMedia) claimedMedia.add(k);
+      // B2:上传循环里成功归位的图片下标——收尾判定「不可追踪的超时图之后是否有图成功归位」
+      // (media-order-uncertain 的条件之一)。
+      const placedIndices: number[] = [];
       for (const { marker, imageIndex, fallbackText, source } of imageMarkers) {
         // 每张图前复查:中途切文章立即停手(marker 留在原文章,由错误文案引导用户回去检查),
         // 绝不对切换后的文章做 replace/sweep/封面等任何改写。
@@ -1459,20 +1430,21 @@ export default defineUnlistedScript(() => {
         }
         if (outcome.ok) {
           imageOk += 1;
+          placedIndices.push(imageIndex);
         } else {
           pushFailure(imageIndex, source, 'upload', outcome.reason, outcome.detail);
           const node = findDraftStateNode();
           const fallbackKey = node ? await replaceMarkerWithText(node, marker, fallbackText) : null;
-          // B2:超时 ≠ X 放弃上传——登记待追回,后续图的等待期若出现晚到 MEDIA 先还给它。
+          // B2:超时 ≠ X 放弃上传——登记待追回,其 pending 块后续拿到 mediaId 时按 key 精确还给它。
           if (outcome.reason === 'upload-timeout') {
             pendingLate.push({ imageIndex, fallbackKey, fallbackText, pendingKey: outcome.pendingKey ?? null });
           }
         }
       }
-      // B2 末轮追回:所有图已认领完自己的块,此处先精确(pendingKey)、再 FIFO 把剩余无归属的
-      // ready MEDIA 分给最早超时图(FIFO 只在这里做,见 recoverLateOnce)。只扫当前 state、
-      // 不额外等待——通道超时(基础 45s + 每图 45s)不随此放大;此后才到的计入 orphan-media 审计。
-      while (pendingLate.length && (await recoverLateOnce(new Set(claimedMedia), new Set(), true))) {
+      // B2 末轮追回:只按 pendingKey **精确**扫一遍当前 state(无归属证据的块不猜,末轮 FIFO 已删除)。
+      // 不额外等待——通道超时(基础 45s + 每图 45s)不随此放大;此后才到的、以及不可追踪超时图的
+      // 晚到块计入 orphan-media 审计与 media-order-uncertain 提示。
+      while (pendingLate.length && (await recoverLateOnce())) {
         /* 每轮至多追回一张,直至无可认领 */
       }
       // 追回的图:计成功、移除其 upload-timeout 明细(同一事实只记一份账,imageFail 仍由明细派生)。
@@ -1567,6 +1539,30 @@ export default defineUnlistedScript(() => {
             const idx = pendingLate[0]?.imageIndex ?? firstUploadFail?.index ?? imageMarkers.length - 1;
             pushFailure(idx, imageMarkers[idx]?.source ?? '', 'upload', 'orphan-media', `${orphanMedia} unmatched MEDIA block(s)`);
             console.warn('[MarkFlow] 正文多出无法归属的图片,请手动检查删除', { orphanMedia, added, imageOk });
+            // B2 不确定提示(不猜归属,如实上报):存在「不可追踪」的未追回超时图 k(无 pendingKey,
+            // 或其块已不在当前 blockMap)且 k 之后有图在循环里成功归位——那张图可能认领了 k 的
+            // 晚到块,k+1 起位置可能错位。只推**一条**(index = 最早的不可追踪 k),不计 imageFail
+            // (同 orphan-media,在 imageFail 取值之后推入)。以「来历不明的多余 MEDIA」> 0 为门槛
+            // 压误报:X 拒收某图时全程无 pending 块是常态,不能每次都报错位;代价是错位链末块在本
+            // 审计之后才到时漏报(此时孤儿也不可见),属已知残留。
+            // 门槛扣除可追踪超时图自己的块:snapshotMediaKeys 把 pending 块也算 MEDIA,pendingKey 仍在
+            // blockMap 的超时图(未追回)自身就会让 orphanMedia > 0,那不是错位证据。
+            const auditBm = readEditorState(node).getCurrentContent().getBlockMap();
+            const trackedPending = pendingLate.filter((e) => e.pendingKey !== null && auditBm.has(e.pendingKey)).length;
+            const untracked =
+              orphanMedia - trackedPending > 0
+                ? pendingLate.find(
+                    (e) => (!e.pendingKey || !auditBm.has(e.pendingKey)) && placedIndices.some((i) => i > e.imageIndex),
+                  )
+                : undefined;
+            if (untracked) {
+              const k = untracked.imageIndex;
+              const last = imageMarkers.length - 1; // imageIndex 即 imageMarkers 下标(见 marker 生成处)
+              // detail 不带编号:原因文案已说「这张及之后」;引擎编号在 coverKeep=remove 时会与报告卡
+              // 序号(sidepanel 侧 +1)差 1,且 detail 不走 i18n——与 orphan-media 同为英文诊断串。
+              pushFailure(k, imageMarkers[k]?.source ?? '', 'upload', 'media-order-uncertain', 'earlier upload timed out (untracked); this and later images may be misplaced');
+              console.warn('[MarkFlow] 超时图片的晚到结果无法追踪,后续图片位置可能错位,请核对', { from: k, to: last });
+            }
           }
         }
       }

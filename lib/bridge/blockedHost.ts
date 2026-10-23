@@ -24,8 +24,11 @@ export function isBlockedHost(host: string): boolean {
   // 归一剥「尾点」(FQDN 根标签):`new URL('http://localhost./').hostname` === 'localhost.',
   // 尾点被保留会让 'localhost.'/'foo.local.'/'x.nip.io.' 绕过下方精确/后缀匹配 → 放行到回环/内网。
   // 尾点只对命名主机 / IPv4 有意义;IPv6 字面量(`[::1]` 等)不带尾点,剥了反而可能误伤,故跳过。
-  const h = isIPv6Literal ? unbracketed : unbracketed.replace(/\.$/, '');
+  // F6:剥**全部**尾点——`localhost..` 也是合法 hostname,只剥一个仍留 `localhost.` 绕过。
+  const h = isIPv6Literal ? unbracketed : unbracketed.replace(/\.+$/, '');
   if (h === 'localhost' || h.endsWith('.local') || h.endsWith('.internal') || h.endsWith('.localhost')) return true;
+  // F6:路由器 / 发行版常用的本地搜索域(dnsmasq、OpenWrt 默认 `.lan`,`.localdomain` 见 /etc/hosts)。
+  if (h.endsWith('.localdomain') || h.endsWith('.lan')) return true;
   if (h === '0.0.0.0' || h === '::1' || h === '::') return true;
   // 常见「泛解析到内网 / 回环」的 wildcard-DNS 服务:形如 10-0-0-1.nip.io、
   // 127.0.0.1.sslip.io、xxx.localtest.me 会被公网 DNS 解析到内网/回环地址。
@@ -59,6 +62,7 @@ export function isBlockedHost(host: string): boolean {
     if (/^0\./.test(h)) return true; // 0.0.0.0/8「本网络」
     if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(h)) return true; // 100.64.0.0/10 CGNAT
     if (/^(22[4-9]|2[3-5]\d)\./.test(h)) return true; // 224.0.0.0/4 组播 + 240.0.0.0/4 保留/广播
+    if (/^198\.1[89]\./.test(h)) return true; // F6:198.18.0.0/15 基准测试网段(RFC 2544,常被内网设备占用)
   }
   if (isIPv6Literal) {
     // NAT64 前缀 64:ff9b::/96 与本地用途 64:ff9b:1::/48(RFC 6052/8215):内嵌 IPv4 可指向内网
@@ -68,6 +72,12 @@ export function isBlockedHost(host: string): boolean {
     // IPv4-compatible `::a.b.c.d`——URL 会把 [::127.0.0.1] 规范化成 [::7f00:1])。公网单播地址首段
     // 必非 0,合法图床不会用 → 一律拒,作为 ::ffff: 映射规则的复检兜底。
     if (h.startsWith('::')) return true;
+    // F6:按**完整首段**(4 位十六进制)判定,URL 规范化会去前导零,`fe8::` 实为 0fe8 不在段内。
+    // fe80::/10 全段(fe80–febf;上方 `fe80:` 只覆盖其首个 /16)、fec0::/10(已废弃的站点本地)、
+    // ff00::/8 组播。
+    if (/^fe[89ab][0-9a-f]:/.test(h)) return true;
+    if (/^fe[c-f][0-9a-f]:/.test(h)) return true;
+    if (/^ff[0-9a-f]{2}:/.test(h)) return true;
   }
   return false;
 }

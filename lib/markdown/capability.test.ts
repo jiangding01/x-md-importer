@@ -418,3 +418,16 @@ describe('capability · A15 H4+ 降级只认真标题', () => {
     expect(JSON.parse(JSON.stringify(b))).toEqual(b);
   });
 });
+
+// P7(修复方案 2026-10-23):firstTitle 透传解析开关,结果只取决于自身 opts,不继承上一次 parseMarkdown 的残留。
+describe('firstTitle · 解析开关透传(P7)', () => {
+  it('残留开关 true / false 两种前置下结果一致', () => {
+    const md = '![[a.png]]\n标题\n===';
+    for (const residue of [true, false]) {
+      parseMarkdown('x', { obsidianImg: residue });
+      expect([residue, firstTitle(md, false)]).toEqual([residue, '标题']);
+      parseMarkdown('x', { obsidianImg: residue });
+      expect([residue, firstTitle(md, false, { obsidianImg: false })]).toEqual([residue, '未命名草稿']);
+    }
+  });
+});

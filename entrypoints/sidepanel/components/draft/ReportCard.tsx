@@ -15,6 +15,7 @@ const REASON_KEY: Record<ImageFailReason, keyof Dict> = {
   'local-not-found': 'rsnLocalNotFound',
   'local-no-folder': 'rsnLocalNoFolder',
   'local-permission-lapsed': 'rsnLocalPermLapsed',
+  'local-ambiguous': 'rsnLocalAmbiguous',
   'local-too-large': 'rsnLocalTooLarge',
   'local-bad-type': 'rsnLocalBadType',
   'data-uri-invalid': 'rsnDataUri',
@@ -29,6 +30,7 @@ const REASON_KEY: Record<ImageFailReason, keyof Dict> = {
   'marker-residue': 'rsnMarkerResidue',
   'cover-set-failed': 'rsnCoverSet',
   'orphan-media': 'rsnOrphanMedia',
+  'media-order-uncertain': 'rsnMediaOrderUncertain',
 };
 
 function reasonText(reason: string, t: Dict): string {

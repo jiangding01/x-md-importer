@@ -464,10 +464,14 @@ describe('有序列表打断段落的收紧(B3-11)', () => {
     expect(b.text).toBe('前面一段\n2024. 冬');
   });
 
-  it('块首的 `2024. 冬` + `===` 仍按有序列表处理(与 extractTitle 口径不分裂)', () => {
+  // P3:setext 下划线不能是列表项的 lazy 续行(CommonMark §4.3 Example 93/94),`===` 并入列表项、不产生标题;
+  // extractTitle 经 onHeading 与解析同源,同样不认标题(见 frontmatter.test.ts P3 用例)。
+  it('块首的 `2024. 冬` + `===`:`===` 作为 lazy 续行并入有序列表项', () => {
     const blocks = parseMarkdown('2024. 冬\n===');
-    expect(asText(blocks[0]).type).toBe('ordered-list-item');
-    expect(asText(blocks[1]).text).toBe('===');
+    expect(blocks).toHaveLength(1);
+    const b = asText(blocks[0]);
+    expect(b.type).toBe('ordered-list-item');
+    expect(b.text).toBe('冬\n===');
   });
 });
 
@@ -1671,5 +1675,180 @@ describe('解析层 P2 收尾(A12–A14)', () => {
   it('A14 正常单行公式不回归', () => {
     const b = asAtomic(parseMarkdown('$$ E = mc^2 $$')[0]);
     expect(b.entityType).toBe('LATEX');
+  });
+});
+
+// ===========================================================================
+// 修复方案 2026-10-23(v0.5.0 打 tag 前):P3 / P7 / P1 / P2 / P5
+// ===========================================================================
+
+describe('P3 setext 下划线不作列表项的 lazy 续行', () => {
+  it('`- item\\n标题\\n===`:整体是一个列表项,不产生标题(CommonMark Example 93/94)', () => {
+    const blocks = parseMarkdown('- item\n标题\n===');
+    expect(blocks).toHaveLength(1);
+    const b = asText(blocks[0]);
+    expect(b.type).toBe('unordered-list-item');
+    expect(b.text).toBe('item\n标题\n===');
+  });
+
+  it('`--` / `-` 同为 lazy 续行;`---` 仍被分割线规则拦下', () => {
+    expect(parseMarkdown('- a\n--').map((x) => asText(x).text)).toEqual(['a\n--']);
+    expect(parseMarkdown('- a\n-').map((x) => asText(x).text)).toEqual(['a\n-']);
+    const hr = parseMarkdown('- a\n---');
+    expect(asText(hr[0]).text).toBe('a');
+    expect(asAtomic(hr[1]).entityType).toBe('DIVIDER');
+  });
+
+  it('空项 `- ` 后的段落 + `===` 仍是标题(空项不吸收续行)', () => {
+    const blocks = parseMarkdown('- \n标题\n===');
+    expect(asText(blocks[1]).type).toBe('header-one');
+    expect(asText(blocks[1]).text).toBe('标题');
+  });
+});
+
+describe('forEachContentLine · onHeading 上报(P3)', () => {
+  type Seen = [number, number, number, string, string];
+  const headingsOf = (md: string, opts: Parameters<typeof forEachContentLine>[2] = {}): Seen[] => {
+    const seen: Seen[] = [];
+    forEachContentLine(md.split('\n'), () => true, {
+      ...opts,
+      onHeading: (start, end, level, kind, raw) => {
+        seen.push([start, end, level, kind, raw]);
+      },
+    });
+    return seen;
+  };
+
+  it('ATX:半开区间 [start, end) 为 1 行,level 按源 `#` 数,raw 为 `#` 之后的内容(含闭合井号)', () => {
+    expect(headingsOf('# 一级\n## 二级 ##\n#### 四级')).toEqual([
+      [0, 1, 1, 'atx', '一级'],
+      [1, 2, 2, 'atx', '二级 ##'],
+      [2, 3, 4, 'atx', '四级'],
+    ]);
+  });
+
+  it('setext:区间覆盖正文行 + 下划线;raw 为段落文本', () => {
+    expect(headingsOf('标题\n===')).toEqual([[0, 2, 1, 'setext', '标题']]);
+    expect(headingsOf('a\nb\n---')).toEqual([[0, 3, 2, 'setext', 'a\nb']]);
+  });
+
+  it('setext 的 raw 剥掉列表缩进(`- a\\n\\n  b\\n===` → `b`)', () => {
+    expect(headingsOf('- a\n\n  b\n===')).toEqual([[2, 4, 1, 'setext', 'b']]);
+  });
+
+  it('围栏 / 公式 / frontmatter 内的 `# x` 不上报', () => {
+    expect(headingsOf('```\n# a\n```\n$$\n# b\n$$\n# c')).toEqual([[6, 7, 1, 'atx', 'c']]);
+    expect(headingsOf('---\n# 注释\n---\n# 正文')).toEqual([[3, 4, 1, 'atx', '正文']]);
+  });
+
+  it('列表 lazy 续行里的 `===` 不上报(与 parseMarkdown 同源)', () => {
+    expect(headingsOf('- item\n标题\n===')).toEqual([]);
+  });
+});
+
+describe('P7 forEachContentLine 不继承残留解析开关', () => {
+  // obsidianImg 决定 `![[x]]` 是否打断列表续行 → 决定后面缩进 4 的 ``` 是否处于列表语境(A4)→ 围栏是否成立。
+  const lines = ['- a', '![[x.png]]', '    ```', '    # 注释', '    ```', '# 真标题'];
+  const visit = (opts?: Parameters<typeof forEachContentLine>[2]): string[] => {
+    const visited: string[] = [];
+    forEachContentLine(
+      lines,
+      (line) => {
+        visited.push(line);
+      },
+      opts,
+    );
+    return visited;
+  };
+
+  it('结果只取决于自身 opts:残留 true/false 两种前置下一致', () => {
+    for (const residue of [true, false]) {
+      parseMarkdown('x', { obsidianImg: residue });
+      expect([residue, visit()]).toEqual([residue, lines]); // 默认 obsidianImg=true:图片行打断列表,无围栏
+      parseMarkdown('x', { obsidianImg: residue });
+      expect([residue, visit({ obsidianImg: false })]).toEqual([residue, ['- a', '![[x.png]]', '# 真标题']]);
+    }
+  });
+
+  it('stripFirstImageLine 接受解析开关(签名与 forEachContentLine 对齐)', () => {
+    expect(stripFirstImageLine('正文\n![](a.png)', { obsidianImg: false })).toBe('正文');
+  });
+});
+
+describe('P5 列表续行里序号非 1 的有序行', () => {
+  const shape = (md: string) =>
+    parseMarkdown(md).map((x) => [asText(x).type, asText(x).depth ?? 0, asText(x).text]);
+
+  it('缩进 ≥ 内容列的 `2024. 冬天很冷` 作为续行吸收(不切成有序子项)', () => {
+    expect(shape('- 去年\n  2024. 冬天很冷')).toEqual([['unordered-list-item', 0, '去年\n2024. 冬天很冷']]);
+    expect(shape('1. a\n   2024. 冬')).toEqual([['ordered-list-item', 0, 'a\n2024. 冬']]);
+    expect(shape('- a\n- b\n  3. c')).toEqual([
+      ['unordered-list-item', 0, 'a'],
+      ['unordered-list-item', 0, 'b\n3. c'],
+    ]);
+  });
+
+  it('缩进 < 内容列 → 交主循环(兄弟项 / 跳出)', () => {
+    expect(shape('1. 步骤一\n   - 细节\n2. 步骤二')).toEqual([
+      ['ordered-list-item', 0, '步骤一'],
+      ['unordered-list-item', 1, '细节'],
+      ['ordered-list-item', 0, '步骤二'],
+    ]);
+    expect(shape('1. a\n   - b\n   - c\n2. d\n3. e')).toEqual([
+      ['ordered-list-item', 0, 'a'],
+      ['unordered-list-item', 1, 'b'],
+      ['unordered-list-item', 1, 'c'],
+      ['ordered-list-item', 0, 'd'],
+      ['ordered-list-item', 0, 'e'],
+    ]);
+    expect(shape('- a\n  1. b\n  3. c')).toEqual([
+      ['unordered-list-item', 0, 'a'],
+      ['ordered-list-item', 1, 'b'],
+      ['ordered-list-item', 1, 'c'],
+    ]);
+  });
+
+  it('未缩进的 `2024. 冬天很冷` 保持现状(无序项后接有序列表,与 commonmark.js 一致)', () => {
+    expect(shape('- 去年\n2024. 冬天很冷')).toEqual([
+      ['unordered-list-item', 0, '去年'],
+      ['ordered-list-item', 0, '冬天很冷'],
+    ]);
+  });
+});
+
+describe('P1/P2 闭符扫描记忆化(性能,行为零差异由差分模糊在仓库外验收)', () => {
+  /** 先用小输入预热一次,再取 3 次最小耗时(ms)。 */
+  const minMs = (s: string): number => {
+    parseMarkdown('a ~~b~~ *c* **d** _e_ `f` [g](h)');
+    let best = Number.POSITIVE_INFINITY;
+    for (let k = 0; k < 3; k += 1) {
+      const t0 = performance.now();
+      parseMarkdown(s);
+      best = Math.min(best, performance.now() - t0);
+    }
+    return best;
+  };
+  const cases: Array<[string, string]> = [
+    ['P1 `**x \\`y\\` ` × 8000', '**x `y` '.repeat(8000)],
+    ['P1 `调用 *args 与 \\`f()\\` 。` × 8000', '调用 *args 与 `f()` 。'.repeat(8000)],
+    ['P2 `a` + 50000 个 `~`', 'a' + '~'.repeat(50000)],
+    ['P2 20000 个 `*` + `a`', '*'.repeat(20000) + 'a'],
+  ];
+  for (const [name, s] of cases) {
+    // 超时放宽到 60s:改前每次 >2s,3 次取最小会超默认 5s,放宽是为了让红灯落在断言而非超时上。
+    it(`${name} < 300ms`, () => {
+      expect(minMs(s)).toBeLessThan(300);
+    }, 60_000);
+  }
+
+  it('同字符串内起扫的边角钉住现状(记忆化不能整串套用起点结果)', () => {
+    // `***a*`:`*` 从串中起扫跳过 `**`、闭于末尾 `*`;外层斜体包住 `**a`(内层 `**` 无闭合按字面)
+    const b = inlineOf('***a*');
+    expect(b.text).toBe('**a');
+    expect(stylesOf(b, 'ITALIC').map((r) => sliceRange(b.text, r))).toEqual(['**a']);
+    // `x**a*`:从 `**` 串末起扫时串末自身即可闭合(但不满足 close > start),须单独判定;斜体只落在 a
+    const c = inlineOf('x**a*');
+    expect(c.text).toBe('x*a');
+    expect(stylesOf(c, 'ITALIC').map((r) => sliceRange(c.text, r))).toEqual(['a']);
   });
 });

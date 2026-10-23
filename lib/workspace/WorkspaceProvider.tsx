@@ -13,7 +13,12 @@ import { useSettings } from '@/lib/settings/SettingsProvider';
 import { useConnection } from '@/lib/bridge/useConnection';
 import { useProbe } from '@/lib/bridge/useProbe';
 import { getFolderStatus, importToXTab, probeXTabContent, setTitleOnXTab } from '@/lib/bridge/importArticle';
-import { requestRemoteImagePermissions } from '@/lib/bridge/imagePermissions';
+import {
+  countDeniedRemote,
+  queryRemoteImagePermissions,
+  relabelPermissionFailures,
+  requestRemoteImagePermissions,
+} from '@/lib/bridge/imagePermissions';
 import {
   ARTICLE_SWITCHED_ERROR,
   BAD_RESULT_ERROR,
@@ -216,7 +221,8 @@ export function WorkspaceProvider({
   // 只做「进入即锁、结束即解」的闸门作用,UI 展示仍用 importing state。
   const importingRef = useRef(false);
   // B2-1:ask 弹窗挂起期间钉死的写入目标(tabId + articleId 双钥),确认/取消后即清。
-  const pendingAskTarget = useRef<{ tabId: number; articleId: string | null } | null>(null);
+  // B6:permRequested=本轮首次点击已发起过 host 权限申请——确认路径据此跳过 request 与 toast。
+  const pendingAskTarget = useRef<{ tabId: number; articleId: string | null; permRequested: boolean } | null>(null);
 
   const showToast = useCallback((msg: string, kind: ToastKind = 'success') => {
     if (timers.current.toast) clearTimeout(timers.current.toast);
@@ -549,7 +555,7 @@ export function WorkspaceProvider({
     const item: HistoryItem = {
       // UUID 而非 Date.now():双窗口同毫秒导入会撞 number id(React key 冲突、删除连删两条)。
       id: crypto.randomUUID(),
-      title: firstTitle(md, en),
+      title: firstTitle(md, en, parseOptsSnapshot),
       date: `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')} ${now.toTimeString().slice(0, 5)}`,
       ok,
       deg,
@@ -564,7 +570,8 @@ export function WorkspaceProvider({
 
     setImporting(false);
     // autoReport 三档如实生效(P1-10):此前只区分 never/非 never,「仅异常时」(默认值)形同 always。
-    // 失败明细全部纳入:marker-residue / orphan-media 不计入 deg/fail,但同样需要用户介入。
+    // 失败明细全部纳入:marker-residue / orphan-media / media-order-uncertain 不计入 deg/fail,
+    // 但同样需要用户介入。
     const hasAnomaly = deg > 0 || fail > 0 || (imageFailures?.length ?? 0) > 0;
     setReportVisible(opts.autoReport === 'always' || (opts.autoReport === 'anomaly' && hasAnomaly));
     // B4-6(P2-25):报告卡的数据源在此钉死——与 reportVisible 同一刻写入,后续 md 编辑/opts
@@ -616,13 +623,17 @@ export function WorkspaceProvider({
       // onExisting=ask 的首次点击:权限申请(手势链首个 await)+ 即时探针之后,编辑器有内容
       // 则钉住目标、弹 OverwriteDialog 并提前返回;为空则按传入 mode(replace)继续写入。
       askIfContent = false,
+      // B6:ask 确认路径(首次点击已申请过权限)——跳过 request 与 toast,只用 contains 重算
+      // 未授权 origin 供失败改标。避免拒绝后确认覆盖时二次弹窗 + 二次 toast。
+      permAlreadyRequested = false,
     ) => {
       // 同步闸门优先于一切:极快双击时第二次调用在这里直接短路,
       // 不会重复触发下载阶段(在任何 await 之前完成拦截)。
       if (importingRef.current) return;
       importingRef.current = true;
       setImporting(true);
-      setReportVisible(false);
+      // B6:报告卡不在此处收起——ask 首次点击若弹 OverwriteDialog 后用户取消,上次报告应仍在;
+      // 收起时机挪到 ask 提前 return 之后(见下方 setReportVisible(false))。
       try {
         setStageLabel(t.stParse);
         setStagePct(40);
@@ -631,9 +642,12 @@ export function WorkspaceProvider({
         // 标题抽取放在解析前:既决定后续是否设置标题,也决定要不要移除正文首个 H1。
         // h1Handle=remove:在 md 文本层删那行 H1(不在 blocks 层按 type 删——parser 把 H1/H2
         // 都映射成 header-one,blocks 层无法区分,见 stripFirstH1 注释)。
-        const extracted = opts.setTitle ? extractTitle(md) : null;
-        const bodyMd = extracted?.source === 'h1' && opts.h1Handle === 'remove' ? stripFirstH1(md) : md;
-        let blocks = parseMarkdown(bodyMd, { obsidianImg: opts.obsidianImg, wikilink: opts.wikilink, taskList: opts.taskList });
+        // P7:标题抽取 / 移除与正文解析用**同一份**解析开关(标题判定随开关变化,如 obsidianImg
+        // 决定 `![[a.png]]\n标题\n===` 是否构成单行 setext),不继承上一次 parseMarkdown 的残留开关。
+        const parseOpts = { obsidianImg: opts.obsidianImg, wikilink: opts.wikilink, taskList: opts.taskList };
+        const extracted = opts.setTitle ? extractTitle(md, parseOpts) : null;
+        const bodyMd = extracted?.source === 'h1' && opts.h1Handle === 'remove' ? stripFirstH1(md, parseOpts) : md;
+        let blocks = parseMarkdown(bodyMd, parseOpts);
 
         // 封面来源:frontmatter cover > 正文首图。首图取自**已解析 blocks 的首个 ImageBlock**——
         // 与实际上传/移除同源,避免用 images() 全文正则误选到内联图 / 代码块内的图(review #1)。
@@ -666,19 +680,20 @@ export function WorkspaceProvider({
           blocks.some((b) => b.kind === 'image' && classifyImageSource(b.source) === 'local') ||
           (coverSource !== null && classifyImageSource(coverSource) === 'local');
 
-        // 远程图 / 封面 host 权限:必须在用户手势内、任何其它 await 之前(上面全同步)。
+        // 远程图 / 封面 host 权限:首次点击时必须在用户手势内、任何其它 await 之前(上面全同步)。
         // 传**已解析的 blocks**(B3-4 / P1-7):权限申请的图片来源与实际上传的来源同一份,
         // 不再走全文正则(`<>` 包裹的远程图曾被判 local → 该 origin 不申请 → 下载必被拒)。
-        const perm = await requestRemoteImagePermissions(blocks, coverSource ? [coverSource] : []);
-        // C25:用户拒绝授权此前静默——远程图随后全部降级,用户只看到「图片 0/N」不知缘由。
-        // 被拒即时提示受影响张数(正文远程图块 + 远程封面),导入照常继续(正文不受影响)。
-        const permDenied = !perm.granted && perm.origins.length > 0;
-        if (permDenied) {
-          const isRemote = (src: string) => /^https?:\/\//i.test(src);
-          const remoteCount =
-            blocks.filter((b) => b.kind === 'image' && isRemote(b.source)).length +
-            (coverSource !== null && isRemote(coverSource) ? 1 : 0);
-          showToast(t.permDeniedToast.replace('{n}', String(remoteCount)), 'error');
+        // B6:ask 确认路径不再申请(首次点击已申请过),只 contains 重算,不弹窗、不 toast。
+        const extraUrls = coverSource ? [coverSource] : [];
+        const perm = permAlreadyRequested
+          ? await queryRemoteImagePermissions(blocks, extraUrls)
+          : await requestRemoteImagePermissions(blocks, extraUrls);
+        // C25 / B4:被拒即时提示**确实未授权**的张数(按块计,含远程封面;已授权 origin 与被拦
+        // 主机不计),导入照常继续(正文不受影响)。对方 `ACAO:*` 时无权限也可能下载成功,故文案
+        // 只说「可能无法下载」。确认路径首次点击已提示过,不再重复。
+        if (!permAlreadyRequested) {
+          const deniedCount = countDeniedRemote(blocks, coverSource, perm.deniedOrigins);
+          if (deniedCount > 0) showToast(t.permDeniedToast.replace('{n}', String(deniedCount)), 'error');
         }
 
         // review B1 + B2-1:正文写入前把目标 X 标签**一次**钉死并全程复用。ask 流程传入
@@ -709,15 +724,18 @@ export function WorkspaceProvider({
             void refreshProbe();
             if (fresh.hasContent) {
               // B2-1:弹窗**之前**就钉死 {tabId, articleId},确认后透传给 startImport(取消时清掉),
-              // 挂起期间切到另一篇草稿也写不到别处。importing 由 finally 复位,弹窗确认时是一次
-              // 新手势,startImport 会再走一遍「权限申请为首个 await」(已授权则立即返回)。
-              pendingAskTarget.current = { tabId: pinnedTabId, articleId: expectedArticleId };
+              // 挂起期间切到另一篇草稿也写不到别处。importing 由 finally 复位。
+              // B6:首次点击时 request 必须是第一个 await(上方已做);确认路径不再申请——记下
+              // permRequested,确认时 startImport 跳过 request 与 toast,只 contains 重算改标依据。
+              pendingAskTarget.current = { tabId: pinnedTabId, articleId: expectedArticleId, permRequested: true };
               setAskOverwrite(true);
               return;
             }
             // 编辑器确为空 → 直接按传入 mode(replace)整体写入,沿用刚探测的目标。
           }
         }
+        // B6:确定要写入了才收起上次的报告卡(ask 弹窗被取消时报告仍保留)。
+        setReportVisible(false);
 
         // 写入中(等待 content → injector 直写)
         setStageLabel(t.stBody);
@@ -767,16 +785,11 @@ export function WorkspaceProvider({
           let imageFailures = coverRemovedBodyImage
             ? res.imageFailures?.map((f) => (f.index >= 0 ? { ...f, index: f.index + 1 } : f))
             : res.imageFailures;
-          // C25:本次权限申请被拒时,远程抓取的「网络层失败」(无 host 权限的跨源 fetch 表现为
+          // C25 / B4:来源 origin 确实未授权的「网络层失败」(无 host 权限的跨源 fetch 表现为
           // TypeError: Failed to fetch)改标为 remote-permission-denied,报告给出真实原因。
-          // 只改这一类:http 4xx/超时/非图片等明确的其它原因保持原样(可能来自早已授权的 origin)。
-          if (permDenied && imageFailures) {
-            imageFailures = imageFailures.map((f) =>
-              f.reason === 'remote-fetch-failed' && /failed to fetch|permission/i.test(f.detail ?? '')
-                ? { ...f, reason: 'remote-permission-denied' }
-                : f,
-            );
-          }
+          // 只改被拒 origin 的这一类:已授权 origin 的同类失败(真网络故障)与 http 4xx/超时/
+          // 非图片等明确原因保持原样(见 relabelPermissionFailures)。
+          if (imageFailures) imageFailures = relabelPermissionFailures(imageFailures, perm.deniedOrigins);
           finishImport(toastMsg, res.imageFail, res.blockCount, imageFailures);
         } else {
           // 失败:不写成功记录,以可读中文/英文提示错误(复位在 finally 统一处理)。
@@ -832,17 +845,18 @@ export function WorkspaceProvider({
     void startImport(mode);
   }, [md, importing, connected, opts.onExisting, startImport]);
 
+  // B6:确认路径透传「本轮已申请过权限」——startImport 跳过 request 与 toast(不二次弹窗)。
   const overwriteAppend = useCallback(() => {
     setAskOverwrite(false);
     const pinned = pendingAskTarget.current;
     pendingAskTarget.current = null;
-    void startImport('append', pinned ?? undefined);
+    void startImport('append', pinned ?? undefined, false, pinned?.permRequested ?? false);
   }, [startImport]);
   const overwriteConfirm = useCallback(() => {
     setAskOverwrite(false);
     const pinned = pendingAskTarget.current;
     pendingAskTarget.current = null;
-    void startImport('replace', pinned ?? undefined);
+    void startImport('replace', pinned ?? undefined, false, pinned?.permRequested ?? false);
   }, [startImport]);
   const overwriteCancel = useCallback(() => {
     setAskOverwrite(false);
