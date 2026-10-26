@@ -809,7 +809,7 @@ export function WorkspaceProvider({
     // setCover/coverKeep/scrollTop/obsidianImg/wikilink…),逐列极易漏(漏了会 stale-closure
     // 读到旧值——切开关后不改 md 就点写入即失效)。setOpt 每次产生新 opts 引用,依赖整个 opts
     // 让任一设置切换都重建回调,正确且防再漏。
-    [md, en, t, opts, finishImport, showToast, askTitleConflict, recalibrateFolders, refreshProbe],
+    [md, t, opts, finishImport, showToast, askTitleConflict, recalibrateFolders, refreshProbe],
   );
 
   const writeX = useCallback(async () => {
@@ -890,7 +890,7 @@ export function WorkspaceProvider({
         },
       );
     },
-    [showToast, t.copiedToast, t.errWriteFail],
+    [showToast, t.copiedToast, t.errCopyFail],
   );
   const deleteHistoryItem = useCallback(
     (id: string | number) => commitHistory(history.filter((h) => h.id !== id)),
