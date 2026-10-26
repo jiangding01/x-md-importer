@@ -1,5 +1,5 @@
 import type { ImageFailure } from '@/lib/bridge/protocol';
-import { capability, firstTitle } from '@/lib/markdown/capability';
+import { capability, firstTitle, type CapabilityAdjust } from '@/lib/markdown/capability';
 import type { HistoryItem } from '@/lib/storage/schema';
 
 /** 本次导入实际使用的解析开关(与 HistoryItem.parseOpts 同形)。 */
@@ -14,6 +14,8 @@ export type RunParseOpts = { obsidianImg: boolean; wikilink: boolean; taskList: 
 export interface LastRunSnapshot {
   md: string;
   parseOpts: RunParseOpts;
+  /** 第三批 P11:本次写入移除了标题块 / 封面首图——报告卡按它重算明细,与 deg 同口径。 */
+  adjust: CapabilityAdjust;
   ok: number;
   deg: number;
   fail: number;
@@ -26,6 +28,8 @@ export interface RunInput {
   md: string;
   /** startImport 解析用的同一份开关。 */
   parseOpts: RunParseOpts;
+  /** 第三批 P11:与写入流程同一判定的移除项(h1Handle=remove 的标题、coverKeep=remove 的首图)。 */
+  adjust: CapabilityAdjust;
   en: boolean;
   /** 引擎回传的实际写入块数。 */
   blockCount: number;
@@ -50,8 +54,8 @@ export interface RunInput {
  *  - hasAnomaly = 有降级 / 失败 / 任一失败明细(orphan-media / media-order-uncertain 不计数但需用户介入)。
  */
 export function buildRunRecord(input: RunInput): { item: HistoryItem; snapshot: LastRunSnapshot; hasAnomaly: boolean } {
-  const { md, parseOpts, en, blockCount, imageFail, imageFailures, id, now } = input;
-  const cap = capability(md, en, parseOpts);
+  const { md, parseOpts, adjust, en, blockCount, imageFail, imageFailures, id, now } = input;
+  const cap = capability(md, en, parseOpts, adjust);
   const ok = Math.max(0, blockCount - imageFail);
   const deg = cap.filter((c) => c.badge === 'warn').reduce((a, c) => a + c.count, 0);
   const coverFail = (imageFailures ?? []).filter((f) => f.index < 0 && f.reason !== 'marker-residue').length;
@@ -69,7 +73,7 @@ export function buildRunRecord(input: RunInput): { item: HistoryItem; snapshot: 
     parseOpts,
   };
   const hasAnomaly = deg > 0 || fail > 0 || (imageFailures?.length ?? 0) > 0;
-  return { item, snapshot: { md, parseOpts, ok, deg, fail, imageFailures }, hasAnomaly };
+  return { item, snapshot: { md, parseOpts, adjust, ok, deg, fail, imageFailures }, hasAnomaly };
 }
 
 /**

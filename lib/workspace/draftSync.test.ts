@@ -32,3 +32,12 @@ describe('decideDraftChange', () => {
     expect(echoes.size).toBe(0);
   });
 });
+
+// 第三批 O7:草稿写失败后的退避重试间隔。
+import { draftRetryDelay } from './draftSync';
+
+describe('draftRetryDelay', () => {
+  it('第 1 / 2 / ≥3 次失败:2s / 5s / 15s', () => {
+    expect([1, 2, 3, 9].map(draftRetryDelay)).toEqual([2000, 5000, 15000, 15000]);
+  });
+});

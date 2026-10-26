@@ -11,6 +11,7 @@ import type { Options } from '@/lib/settings/options';
 import { clearFolder, connectFolder, getFolderStatus } from '@/lib/bridge/importArticle';
 import { BackupImportError, exportBackup, importBackup } from '@/lib/storage/backup';
 import { downloadText } from '@/lib/ui/download';
+import { folderErrText } from '@/lib/ui/folderErrText';
 
 /**
  * 触发浏览器下载一个 JSON 文件(备份 / 诊断快照共用)。
@@ -103,14 +104,6 @@ export function SettingsTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** 文件夹操作错误码 → 可读文案(不把英文诊断码直接弹给用户)。 */
-  const folderErrText = (error: string): string => {
-    if (error === 'disconnected') return t.folderNeedXToast;
-    if (error === 'permission-denied') return t.folderDeniedToast;
-    if (error === 'timeout') return t.folderTimeoutToast;
-    return t.folderFailToast;
-  };
-
   // 本地图片文件夹「连接 / 清除」——浮层出现在 X 页面(需页面手势触发 showDirectoryPicker),
   // sidepanel 侧只负责发消息、透传结果、更新 opts.folder(连接状态)+ opts.folderName(显示名)。
   const handleFolderAction = async () => {
@@ -121,7 +114,7 @@ export function SettingsTab() {
         setOpt('folderName', null);
         showToast(t.folderClearedToast);
       } else {
-        showToast(folderErrText(res.error), 'error');
+        showToast(folderErrText(t, res.error), 'error');
       }
       return;
     }
@@ -134,7 +127,7 @@ export function SettingsTab() {
       showToast(`${t.folderConnectedToast}${res.folderName ?? ''}`);
       return;
     }
-    if (!res.ok && res.error !== 'cancelled') showToast(folderErrText(res.error), 'error');
+    if (!res.ok && res.error !== 'cancelled') showToast(folderErrText(t, res.error), 'error');
   };
 
   /** 快捷键:打开 Chrome 的扩展快捷键设置页(纯 UI 预览无 chrome.tabs 时提示地址)。 */

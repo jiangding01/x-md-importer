@@ -8,7 +8,7 @@
  * 导出签名与 CapItem 结构保持不变(消费方 CapabilityPanel / ReportCard / AssetsCard 不改)。
  */
 
-import { extractTitle } from './frontmatter';
+import { extractTitle, parseMarkdownWithoutTitleMeta } from './frontmatter';
 import { isDemotedHeading, isUnclosedFence, parseMarkdownWithMeta, type ParseOptions } from './parser';
 
 export type CapBadge = 'native' | 'special' | 'image' | 'warn';
@@ -20,14 +20,30 @@ export interface CapItem {
   note: string;
 }
 
+/** 能力计数的「实际写入」调整(第三批 P11),由写入流程按同一判定传入。 */
+export interface CapabilityAdjust {
+  /** h1Handle=remove 且标题取自正文 H1:去掉被抽为文章标题的那个块。 */
+  removeTitle?: boolean;
+  /** coverKeep=remove 且封面取自正文首图:去掉第一个图片块。 */
+  removeCoverImage?: boolean;
+}
+
 /**
  * parseOpts 透传给 parseMarkdown——面板必须与「实际会写入的内容」同一份解析开关下产出,
  * 否则用户关掉 obsidianImg/wikilink/taskList 后,面板仍按默认开的口径统计,又是一次
  * 「UI 撒谎」(计数与真实写入不一致)。调用方拿不到 opts 时不传,退回 parseMarkdown 的默认值。
  */
-export function capability(md: string, en: boolean, parseOpts?: ParseOptions): CapItem[] {
+export function capability(md: string, en: boolean, parseOpts?: ParseOptions, adjust: CapabilityAdjust = {}): CapItem[] {
   // 第二批 P3:注释块不产出块,其个数只能取解析元数据(与写入同一次解析口径)。
-  const { blocks, htmlComments } = parseMarkdownWithMeta(md, parseOpts);
+  // 第三批 P11:adjust 与写入流程同一判定——去掉被移除的标题块(h1Handle=remove)与作封面的正文首图
+  // (coverKeep=remove),报告按「实际写入」计数。
+  const parsed = adjust.removeTitle ? parseMarkdownWithoutTitleMeta(md, parseOpts) : parseMarkdownWithMeta(md, parseOpts);
+  const { htmlComments } = parsed;
+  let blocks = parsed.blocks;
+  if (adjust.removeCoverImage) {
+    const i = blocks.findIndex((b) => b.kind === 'image');
+    if (i >= 0) blocks = blocks.filter((_, k) => k !== i);
+  }
 
   let headers = 0; // header-one(源 H1/H2)
   let subheaders = 0; // header-two(源 H3)
@@ -51,6 +67,7 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions): C
   let mathResidue = 0; // 文本块内残留的 $$ 起行(未闭合公式的开头,已降级为普通文本)
   let unclosedFenceBlocks = 0; // 第二批 P2:未闭合围栏按 CommonMark 延伸到文末的代码块
   let commentResidue = 0; // 第二批 P3:未闭合的 HTML 注释(回退为文本写入)
+  let inlineComments = 0; // 第三批 P11:段落中间的行内 HTML 注释(原样写入)
 
   const RE_INLINE_CODE = /`[^`]+`/g;
   const RE_INLINE_IMAGE = /!\[[^\]]*\]\([^)]*\)/g;
@@ -88,15 +105,21 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions): C
       // 故不按形态判,只认 parser 打的降级标记。
       boldParas += 1;
     }
+    // 第三批 P11:降级标题自带的整段 BOLD 不计入行内样式(它已计为「降级标题」),内部的其他样式照常计。
+    const demoted = isDemotedHeading(b);
     for (const r of b.inlineStyleRanges) {
+      if (demoted && r.style === 'BOLD' && r.offset === 0 && r.length === b.text.length) continue;
       if (r.style === 'BOLD' || r.style === 'ITALIC' || r.style === 'STRIKETHROUGH') inlineStyles += 1;
     }
     links += b.links.length;
     inlineCode += (b.text.match(RE_INLINE_CODE) || []).length;
     if (b.depth !== undefined && b.depth > 0) multiLevelList += 1;
     if (b.task) taskListItems += 1;
-    inlineImages += (b.text.match(RE_INLINE_IMAGE) || []).length;
-    footnotes += (b.text.match(RE_FOOTNOTE) || []).length;
+    // 第三批 P11:行内代码里的 `![a](b)` / `[^1]` 是代码字面量,不计为行内图片 / 脚注。
+    const textNoCode = b.text.replace(RE_INLINE_CODE, '');
+    inlineImages += (textNoCode.match(RE_INLINE_IMAGE) || []).length;
+    footnotes += (textNoCode.match(RE_FOOTNOTE) || []).length;
+    inlineComments += (textNoCode.match(/<!--[\s\S]*?-->/g) || []).length;
     if (RE_HTML_BLOCK_START.test(b.text.trim())) htmlBlocks += 1;
     // 真公式已被 parser 识别成 LATEX atomic(上面单独计 mathBlocks);落到文本块的只剩
     // **未闭合多行公式的开头**(裸 `$$` 行)——如实标降级。`$$100` 这类行内双美元其后非空、
@@ -211,6 +234,12 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions): C
     htmlComments,
     'special',
     en ? 'Author notes · not written to X' : '作者备注 · 不写入 X',
+  );
+  add(
+    en ? 'Inline HTML comments' : '行内 HTML 注释',
+    inlineComments,
+    'warn',
+    en ? 'Inside a paragraph · written as-is' : '段落中的注释 · 原样写入',
   );
   add(
     en ? 'Unclosed HTML comment' : 'HTML 注释未闭合',

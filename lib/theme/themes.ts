@@ -18,9 +18,6 @@ export const skinMeta: Record<Skin, Exclude<ThemeMode, 'system'>[]> = {
   glass: ['light', 'dark'],
 };
 
-/** accent 点缀色候选（仅「极简」主题生效，其余主题点缀色固定）。 */
-export const ACCENTS: Accent[] = ['#1D9BF0', '#0F766E', '#D97757', '#6D5AE6'];
-
 const FONTS = {
   sans: "'Noto Sans SC',-apple-system,'PingFang SC','Microsoft YaHei',system-ui,sans-serif",
   disp: "'Space Grotesk','Noto Sans SC',-apple-system,'PingFang SC',system-ui,sans-serif",

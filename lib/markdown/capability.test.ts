@@ -445,3 +445,29 @@ describe('第二批 P2 / P3 能力面板如实告知', () => {
     expect(item('- <!-- x -->\n\n> <!-- y -->', /HTML 注释未闭合/)).toBeUndefined();
   });
 });
+
+describe('第三批 P11 能力面板计数口径', () => {
+  const item = (md: string, label: RegExp, adjust?: Parameters<typeof capability>[3]) =>
+    capability(md, false, undefined, adjust).find((c) => label.test(c.label));
+  it('行内代码里的 `[^1]` / `![a](b)` 不计为脚注 / 行内图片', () => {
+    expect(item('正文 `[^1]` 和 `![a](b.png)`', /脚注/)).toBeUndefined();
+    expect(item('正文 `[^1]` 和 `![a](b.png)`', /行内图片/)).toBeUndefined();
+    expect(item('正文[^1] ![a](b.png) 续', /脚注/)).toMatchObject({ count: 1 });
+  });
+  it('段落中间的行内 HTML 注释 → warn 计数', () => {
+    expect(item('正文 <!-- a --> 续 <!-- b -->', /行内 HTML 注释/)).toMatchObject({ count: 2, badge: 'warn' });
+  });
+  it('四级标题的整段加粗不计入「粗体 / 斜体 / 删除线」(只计降级标题)', () => {
+    expect(item('#### 四级', /^粗体 \/ 斜体/)).toBeUndefined();
+    expect(item('#### 四级 *斜*', /^粗体 \/ 斜体/)).toMatchObject({ count: 1 });
+  });
+  it('adjust:去掉被移除的标题块与作封面的首图后再计数', () => {
+    const md = '# 标题\n\n![](https://a.com/x.png)\n\n正文';
+    expect(item(md, /二级标题/)).toMatchObject({ count: 1 });
+    expect(item(md, /二级标题/, { removeTitle: true })).toBeUndefined();
+    const imgs = (adjust?: Parameters<typeof capability>[3]) =>
+      capability(md, false, undefined, adjust).filter((c) => c.badge === 'image').reduce((a, c) => a + c.count, 0);
+    expect(imgs()).toBe(1);
+    expect(imgs({ removeCoverImage: true })).toBe(0);
+  });
+});

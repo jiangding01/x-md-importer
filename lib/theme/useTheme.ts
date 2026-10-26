@@ -1,5 +1,5 @@
 import { usePrefs } from '@/lib/prefs/PrefsProvider';
-import { resolveDark, skinMeta, type Accent, type Skin, type ThemeMode } from './themes';
+import { resolveDark, skinMeta, type Skin, type ThemeMode } from './themes';
 
 /** 主题读写 API，派生自全局 prefs。 */
 export function useTheme() {
@@ -15,7 +15,6 @@ export function useTheme() {
     canToggleTheme,
     setSkin: (skin: Skin) => setPrefs({ skin }),
     setTheme: (theme: ThemeMode) => setPrefs({ theme }),
-    setAccent: (accent: Accent) => setPrefs({ accent }),
     toggleTheme: () => setPrefs({ theme: dark ? 'light' : 'dark' }),
   };
 }

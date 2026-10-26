@@ -23,3 +23,11 @@ export function decideDraftChange(args: {
   if (args.incoming === args.current || args.hasPending || args.importing) return 'ignore';
   return 'adopt';
 }
+
+/**
+ * 草稿写入失败后的重试间隔(第三批 O7):第 1 / 2 / ≥3 次连续失败分别 2s / 5s / 15s 后重试,成功即复位。
+ * 此前失败后不重置 max-wait、也不安排重试——存储持续失败时每次按键都整篇写一次,停手后又不再重试。
+ */
+export function draftRetryDelay(failCount: number): number {
+  return failCount <= 1 ? 2000 : failCount === 2 ? 5000 : 15000;
+}
