@@ -2,7 +2,7 @@ import { useRef, type CSSProperties, type DragEvent } from 'react';
 import { useI18n } from '@/lib/i18n/useI18n';
 import { useSettings } from '@/lib/settings/SettingsProvider';
 import { useWorkspace } from '@/lib/workspace/WorkspaceProvider';
-import { Preview } from '@/lib/markdown/Preview';
+import { DraftPreview } from './DraftPreview';
 import { isFileDrag } from '@/lib/ui/drag';
 
 const toolbar: CSSProperties = {
@@ -188,7 +188,7 @@ export function EditorCard({ onImport }: { onImport: () => void }) {
           />
         ) : (
           <div style={{ flex: 1, overflow: 'auto', padding: '14px 18px', minWidth: 0 }}>
-            <Preview md={md} />
+            <DraftPreview />
           </div>
         )}
 
