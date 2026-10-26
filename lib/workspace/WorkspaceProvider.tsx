@@ -29,7 +29,6 @@ import {
   type ImportMode,
   type SetTitleResponse,
 } from '@/lib/bridge/protocol';
-import { capability, firstTitle } from '@/lib/markdown/capability';
 import { extractCover, extractTitle, parseMarkdownWithoutTitle } from '@/lib/markdown/frontmatter';
 import { parseMarkdown } from '@/lib/markdown/parser';
 import { sampleEn, sampleZh } from '@/lib/markdown/sample';
@@ -37,8 +36,11 @@ import { DRAFT_KEY, removeDraft, saveDraft } from '@/lib/storage/draftStore';
 import { HISTORY_KEY, removeHistory, saveHistory, type HistoryItem } from '@/lib/storage/historyStore';
 import { removeOptions } from '@/lib/storage/optionsStore';
 import { removePrefs } from '@/lib/storage/prefs';
+import { createEchoQueue } from '@/lib/storage/echoQueue';
 import { validateHistory } from '@/lib/storage/schema';
 import { downloadText } from '@/lib/ui/download';
+import { decideDraftChange } from '@/lib/workspace/draftSync';
+import { buildRunRecord, type LastRunSnapshot, type RunParseOpts } from '@/lib/workspace/runRecord';
 import type { Tab } from '@/entrypoints/sidepanel/types';
 import type { Dict } from '@/lib/i18n/dict';
 
@@ -48,21 +50,8 @@ type Mode = 'edit' | 'preview';
  * 成功/中性提示不传第二参即为缺省(沿用原有观感)。 */
 export type ToastKind = 'success' | 'error';
 
-/**
- * 报告卡的数据快照(B4-6/P2-25):导入收尾时钉死,ReportCard 只认它,不读当前 md/当前设置
- * (会随后续编辑/切换开关跳变),也不读 history[0](用户在「记录」页删除/清空历史会让它
- * 突然跳变甚至消失)。字段比文档描述的 `{ md, parseOpts }` 更宽——ok/deg/fail/imageFailures
- * 来自本次写入的真实结果(图片上传是否失败等,单靠重新 parse md 推不出来),一并冻结进快照
- * 才能让「明细」与「汇总」真正共享同一个不可变数据源,而不是只钉住明细、汇总仍读可变数组。
- */
-export interface LastRunSnapshot {
-  md: string;
-  parseOpts: { obsidianImg: boolean; wikilink: boolean; taskList: 'symbol' | 'plain' };
-  ok: number;
-  deg: number;
-  fail: number;
-  imageFailures?: ImageFailure[];
-}
+/** 报告卡数据快照的类型定义已迁到 lib/workspace/runRecord.ts(W1),此处转导出保持既有导入点。 */
+export type { LastRunSnapshot };
 
 interface WorkspaceValue {
   // 全局
@@ -251,6 +240,11 @@ export function WorkspaceProvider({
   // max-wait 把最坏丢失从「整段连续输入」压回 ≤2s(review 修复)。
   // pending 非 null = 有未落盘的本地编辑;flush 失败会把值放回 pending 供下次重试。
   const pendingDraft = useRef<string | null>(null);
+  // W2:本实例已发起、尚未收到 onChanged 回声的草稿写入(见 lib/storage/echoQueue)。迟到的旧回声
+  // 按队列吞掉,不再被当成另一窗口的编辑采纳。lastPersisted = 最近一次确认与 storage 一致的值:
+  // 与它相同的写入 Chrome 不发 onChanged,不登记(否则滞留在队列里)。
+  const [draftEchoes] = useState(() => createEchoQueue<string>(8));
+  const lastPersisted = useRef(initialMd);
   const pendingSince = useRef(0);
   const persistTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
@@ -262,18 +256,22 @@ export function WorkspaceProvider({
     const v = pendingDraft.current;
     if (v === null) return true;
     pendingDraft.current = null;
+    const expectEcho = v !== lastPersisted.current;
+    if (expectEcho) draftEchoes.push(v);
     try {
       await saveDraft(v);
+      lastPersisted.current = v;
       markPersist('draft', true);
       return true;
     } catch (err) {
+      if (expectEcho) draftEchoes.drop(v); // 写入失败不会有回声
       console.error('[MarkFlow] draft persist failed:', err);
       // 失败值放回 pending(除非期间已有更新的编辑),下次 flush 触发时重试,不静默丢。
       if (pendingDraft.current === null) pendingDraft.current = v;
       markPersist('draft', false);
       return false;
     }
-  }, [markPersist]);
+  }, [markPersist, draftEchoes]);
 
   const schedulePersist = useCallback(
     (v: string) => {
@@ -357,19 +355,20 @@ export function WorkspaceProvider({
       // 留着旧内容,一次键入就把「已清除」的数据整份写回 storage(review 修复)。
       if (draftChange && (typeof draftChange.newValue === 'string' || draftChange.newValue === undefined)) {
         const incoming = typeof draftChange.newValue === 'string' ? draftChange.newValue : '';
-        // 采纳条件(顺序即优先级):非 echo、本地无未落盘编辑、非导入中。
-        // 有 pending 时不采纳:本地更新,随后 flush 会写回并再广播,吞掉 pending 才是丢数据。
-        // 导入中不采纳:startImport 闭包依赖 md 一致性(blocks/历史都取自它)。
-        // **不看 hasFocus**(review 修复):onChanged 是边沿触发,「聚焦时拒收」的更新永远不会
-        // 再送达——A 窗口 blur-flush 的广播若晚于 B 获得焦点,B 会永远停在陈旧草稿上,
-        // 第一次键入就把 A 的整段编辑覆盖回去(正是 P0-2 要堵的丢法)。聚焦但无 pending
-        // = 本地已全部落盘,采纳外部新值是安全的;真正的并发编辑由 pending 闸门保护。
+        // 判定见 decideDraftChange(W2):自写回声(含迟到的旧回声)→ 不采纳;否则非同值、本地无未落盘
+        // 编辑、非导入中才采纳。**不看 hasFocus**:onChanged 是边沿触发,「聚焦时拒收」的更新永远不会
+        // 再送达——A 窗口 blur-flush 的广播若晚于 B 获得焦点,B 会永远停在陈旧草稿上(review 修复)。
         const adoptable =
-          incoming !== mdRef.current &&
-          pendingDraft.current === null &&
-          !importingRef.current;
+          decideDraftChange({
+            incoming,
+            current: mdRef.current,
+            hasPending: pendingDraft.current !== null,
+            importing: importingRef.current,
+            echoes: draftEchoes,
+          }) === 'adopt';
         if (adoptable) {
           mdRef.current = incoming;
+          lastPersisted.current = incoming;
           setMdState(incoming);
           setCheckVisible(false);
           setReportVisible(false);
@@ -397,7 +396,7 @@ export function WorkspaceProvider({
     };
     chrome.storage.onChanged.addListener(handler);
     return () => chrome.storage.onChanged.removeListener(handler);
-  }, [showToast, t.draftSynced]);
+  }, [showToast, t.draftSynced, draftEchoes]);
 
   const playSound = useCallback(() => {
     if (!opts.sound || opts.soundStyle === 'mute') return;
@@ -529,54 +528,38 @@ export function WorkspaceProvider({
     }
   }, [setOpt]);
 
+  // 收尾:历史条目 / 报告快照 / 是否异常由 buildRunRecord 按**本次运行**显式传入的 md + parseOpts 计算
+  // (W1)——此前读组件闭包的 opts.obsidianImg/wikilink/taskList 而依赖数组漏了它们,切开关后不改稿直接
+  // 写入,报告与历史就记下旧开关。口径见 lib/workspace/runRecord.ts。
   // toastMsg:成功收尾提示,默认「已写入」;标题/空替换场景由 startImport 组合后传入。
-  // ok 用注入引擎回传的真实写入块数(blockCount)——此前拿 capability 的格式计数凑数,
-  // 纯文本段落任何类目都不计,导致「实际写入成功、报告 0 成功」(真机回归 T5)。
-  // 口径:成功 = 实际写入块数 - 图片失败数(失败图已降级为文本块,不重复计);
-  // 降级 = capability 的格式降级项计数(H4+/行内代码等,写入成功但格式打折,单位是「处」)。
   const finishImport = useCallback((
+    run: { md: string; parseOpts: RunParseOpts },
     toastMsg: string = t.writtenToast,
     imageFail = 0,
     blockCount = 0,
     imageFailures?: ImageFailure[],
   ) => {
-    // parseOpts 透传:面板计数须与本次实际写入用的同一套解析开关一致(否则关掉
-    // obsidianImg/wikilink/taskList 后报告仍按默认开的口径统计,又是一次 UI 撒谎)。
-    const parseOptsSnapshot = { obsidianImg: opts.obsidianImg, wikilink: opts.wikilink, taskList: opts.taskList };
-    const cap = capability(md, en, parseOptsSnapshot);
-    const ok = Math.max(0, blockCount - imageFail);
-    const deg = cap.filter((c) => c.badge === 'warn').reduce((a, c) => a + c.count, 0);
-    // C26:封面失败(index<0 哨兵,content 在通道层补记)此前只进明细不进 fail——报告「失败 0」
-    // 却列出一条封面失败。fail = 正文图失败数 + 封面失败条目数;marker-residue 按设计不计 fail
-    // (图已落地,只是占位文本残留),即便将来出现在封面哨兵上也排除。
-    const coverFail = (imageFailures ?? []).filter((f) => f.index < 0 && f.reason !== 'marker-residue').length;
-    const fail = imageFail + coverFail;
-    const now = new Date();
-    const item: HistoryItem = {
+    const { item, snapshot, hasAnomaly } = buildRunRecord({
+      md: run.md,
+      parseOpts: run.parseOpts,
+      en,
+      blockCount,
+      imageFail,
+      imageFailures,
       // UUID 而非 Date.now():双窗口同毫秒导入会撞 number id(React key 冲突、删除连删两条)。
       id: crypto.randomUUID(),
-      title: firstTitle(md, en, parseOptsSnapshot),
-      date: `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')} ${now.toTimeString().slice(0, 5)}`,
-      ok,
-      deg,
-      // 图片上传失败(含封面)计入 fail(记录/报告如实反映),其余降级仍归 deg。
-      fail,
-      md,
-      // 失败明细(序号/来源/阶段/原因)随记录持久化,供报告卡展示与事后排查。
-      imageFailures,
-      // 解析开关快照(B4-6):随记录持久化,供历史回看按「当时口径」重算能力明细。
-      parseOpts: parseOptsSnapshot,
-    };
+      now: new Date(),
+    });
 
     setImporting(false);
-    // autoReport 三档如实生效(P1-10):此前只区分 never/非 never,「仅异常时」(默认值)形同 always。
-    // 失败明细全部纳入:marker-residue / orphan-media / media-order-uncertain 不计入 deg/fail,
-    // 但同样需要用户介入。
-    const hasAnomaly = deg > 0 || fail > 0 || (imageFailures?.length ?? 0) > 0;
-    setReportVisible(opts.autoReport === 'always' || (opts.autoReport === 'anomaly' && hasAnomaly));
-    // B4-6(P2-25):报告卡的数据源在此钉死——与 reportVisible 同一刻写入,后续 md 编辑/opts
-    // 切换/history 删改都不会再影响报告卡已展示的内容(ReportCard 只读这份快照)。
-    setLastRunSnapshot({ md, parseOpts: parseOptsSnapshot, ok, deg, fail, imageFailures });
+    // W10:导入挂起期间(如标题 ask 弹窗)草稿已被改动 / 载入了别的内容——setMd 已按约定收起报告并清空
+    // 快照(B4-6:快照与报告卡同生命周期),这里不再把旧稿的报告置回;本次结果照常写进历史。
+    if (mdRef.current === run.md) {
+      // autoReport 三档如实生效(P1-10):「仅异常时」(默认值)只在 hasAnomaly 时展开。
+      setReportVisible(opts.autoReport === 'always' || (opts.autoReport === 'anomaly' && hasAnomaly));
+      // B4-6(P2-25):报告卡的数据源在此钉死,后续 md 编辑/opts 切换/history 删改都不再影响它。
+      setLastRunSnapshot(snapshot);
+    }
 
     const limit = opts.histLimit === 'inf' ? Infinity : Number(opts.histLimit);
     // 读 historyRef.current(最新值)而非闭包 history:标题 ask 弹窗挂起期间用户可能已在记录页
@@ -593,8 +576,8 @@ export function WorkspaceProvider({
     // 写入成功后重探编辑器状态,更新 hasContent——否则「只探一次」的探针会让下次
     // ask 模式误判编辑器仍为空,直接静默 replace 覆盖刚写入的正文(review #3)。
     void refreshProbe();
-    // history 不再进 deps:finishImport 改读 historyRef.current(最新镜像),不依赖闭包快照。
-  }, [md, en, opts.autoReport, opts.histLimit, opts.confetti, commitHistory, showToast, t.writtenToast, playSound, refreshProbe]);
+    // 不读 md / 解析开关 / history 闭包:前两者由 run 显式传入,history 读 historyRef.current。
+  }, [en, opts.autoReport, opts.histLimit, opts.confetti, commitHistory, showToast, t.writtenToast, playSound, refreshProbe]);
 
   // 真实写入:解析 → 送达 X tab → 按结果收尾。纯文本写入近乎瞬时,
   // 进度条只走「解析中 → 写入中 → 完成」三段真实阶段(不再用定时器编造百分比,
@@ -792,7 +775,7 @@ export function WorkspaceProvider({
           // 只改被拒 origin 的这一类:已授权 origin 的同类失败(真网络故障)与 http 4xx/超时/
           // 非图片等明确原因保持原样(见 relabelPermissionFailures)。
           if (imageFailures) imageFailures = relabelPermissionFailures(imageFailures, perm.deniedOrigins);
-          finishImport(toastMsg, res.imageFail, res.blockCount, imageFailures);
+          finishImport({ md, parseOpts }, toastMsg, res.imageFail, res.blockCount, imageFailures);
         } else {
           // 失败:不写成功记录,以可读中文/英文提示错误(复位在 finally 统一处理)。
           // B2-2:提交后失败(committed)或通道超时(injector 可能仍在后台完成提交,content
