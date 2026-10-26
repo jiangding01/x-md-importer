@@ -39,6 +39,7 @@ import type { VaultScope } from '@/lib/bridge/protocol';
 import { normalizeImportResult, normalizeProbeResult, normalizeSetTitleResult } from '@/lib/bridge/resultGuards';
 import { compressImage } from '@/lib/image/compress';
 import { folderOverlayText } from '@/lib/bridge/folderOverlayText';
+import { findEditorElement } from '@/lib/bridge/editorLocator';
 
 /** content 侧图片压缩参数(来自设置 compress/maxEdge/quality);null=不压。 */
 type CompressOpts = { maxEdge: string; quality: number } | null;
@@ -443,7 +444,8 @@ export default defineContentScript({
     const scrollEditorToTop = () => {
       try {
         window.scrollTo({ top: 0, behavior: 'smooth' });
-        const editor = document.querySelector<HTMLElement>('[contenteditable="true"]');
+        // 第三批 I4:与 injector 同口径定位正文编辑器(此前取文档里第一个 contenteditable,可能滚错容器)。
+        const editor = findEditorElement();
         for (let el = editor?.parentElement; el; el = el.parentElement) {
           const oy = getComputedStyle(el).overflowY;
           if (el.scrollHeight > el.clientHeight && (oy === 'auto' || oy === 'scroll')) {

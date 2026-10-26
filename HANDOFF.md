@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**:2026-10-26 · 分支 `claude/happy-ride-bjd4qg`(基于 main `782d306`)· **v0.5.0 尚未打 tag——真机回归通过后打在 main `782d306`,不要打在之后的 main HEAD(第三批进 0.5.1,打错即 tag 漂移)**。本轮全面审查(`docs/review/全面审查-2026-10-26.md`)的修复按用户决定并入 0.5.0:**第一批**(P1/P4/P5、W1/W2/W10,PR #36、#37)与**第二批**(阶段 A 解析 PR #38、阶段 B 界面 / 文案 / 文档 PR #39)均已合入 main。**第三批**方案见 `docs/review/修复方案-2026-10-26-第三批.md`(用户已定:先打 v0.5.0、第三批进 0.5.1;P12 空标题不产出块;ESLint 放阶段 C 单独 PR)。**第三批阶段 A**(P6 / P11 / P12 / H1 / O5 / O7 / O8)本分支实施,记入 CHANGELOG `[Unreleased]`;阶段 B(注入,需真机取证)、阶段 C(结构性优化)待后续。单测 826。逐项明细见 CHANGELOG [0.5.0] / [Unreleased];更早的历史见 §11 与 git log。
+**最后更新**:2026-10-26 · 分支 `claude/happy-ride-bjd4qg`(基于 main `782d306`)· **v0.5.0 尚未打 tag——真机回归通过后打在 main `782d306`,不要打在之后的 main HEAD(第三批进 0.5.1,打错即 tag 漂移)**。本轮全面审查(`docs/review/全面审查-2026-10-26.md`)的修复按用户决定并入 0.5.0:**第一批**(P1/P4/P5、W1/W2/W10,PR #36、#37)与**第二批**(阶段 A 解析 PR #38、阶段 B 界面 / 文案 / 文档 PR #39)均已合入 main。**第三批**方案见 `docs/review/修复方案-2026-10-26-第三批.md`(用户已定:先打 v0.5.0、第三批进 0.5.1;P12 空标题不产出块;ESLint 放阶段 C 单独 PR)。**第三批阶段 A**(P6 / P11 / P12 / H1 / O5 / O7 / O8)已合入 main(PR #40);**阶段 B 的 I2 / I4** 本分支实施(待真机回归 QA T32),I5 / I6 / I7 等用户用 `docs/qa/真机取证脚本-第三批阶段B.md` 取证后再定;阶段 C(结构性优化)待后续。均记入 CHANGELOG `[Unreleased]`。单测 834。逐项明细见 CHANGELOG [0.5.0] / [Unreleased];更早的历史见 §11 与 git log。
 
 ---
 
@@ -247,6 +247,8 @@ pnpm build              # → .output/chrome-mv3
 - **草稿写失败走退避重试,退避期间键入不排定时器**(第三批 O7):`draftFailCount > 0` 时 `schedulePersist` 只更新 pending,由重试定时器落盘;重试成功时若又有新编辑,`flushDraft` 负责恢复常规防抖。改这段时三种时机都要顾到:退避中键入、重试写入进行中键入、失焦 / 手动保存与重试并发。
 - **列表语境按「上一块是否在列表项内部」保留**(第三批 P6):轮首清栈条件是「上一个块不是列表项且不在列表内部」,「在内部」= 该块起行缩进 ≥ 当时的列表内容列。别改回只看块类型——列表里的缩进围栏 / 图片之后子项层级会清零。
 - **能力计数要与写入同一判定**(第三批 P11):报告用 `capability(md, en, parseOpts, adjust)`,`adjust` 由 `startImport` 按 `h1Handle` / `coverKeep` 的实际移除结果给出并存进报告快照;新增「写入前改块」的步骤时,同步加进 `CapabilityAdjust`,否则报告又按原始 md 计数。
+- **正文编辑器定位只有一份**(第三批 I4,`lib/bridge/editorLocator`):injector 与 content 共用 `findEditorElement`。别在 content / 其他地方再写 `querySelector('[contenteditable="true"]')`——页面里第一个可编辑区不一定是正文。
+- **空稿取样的 `x` 要么被主提交替换、要么撤回**(第三批 I2):插入前复查切文章、轮询每轮复查;取样失败时只在正文恰为 `x` 时 `undo`,撤不掉在错误串里带 `SAMPLE_RESIDUE_SUFFIX` 让侧边栏提示。在插入与主提交之间再加 await 会放大残留窗口。
 - **素材板与写入流程的「封面来源 / 是否涉及本地图」只有一份**(第二批 W6,`lib/workspace/importPlan`):别在组件里再写一套判定。
 - **`findClosing` 跳过完整链接要走 `scan.link` 缓存**(第二批 P8):`matchLink` 自身 O(n)(A21),不缓存时每个 `[` 都重算,`[a` 重复串比改前慢约 3 倍。
 - **引用内的围栏产出代码块**(P5,2026-10-26):引用分支先认围栏、按 CommonMark「容器结束即闭合」,并 `onFence` 上报区间;不要把引用改回逐行 `walkInline` 处理围栏行。
@@ -299,6 +301,10 @@ pnpm build              # → .output/chrome-mv3
 ---
 
 ## 11. 最近一次会话小结
+
+**2026-10-26 · 第二十次会话(续)· 第三批阶段 B 的 I2 / I4**:
+- 阶段 A 合入(PR #40)后给出真机取证脚本(`docs/qa/真机取证脚本-第三批阶段B.md`,E1–E4 与 injector 同口径,Chromium 下用模拟页面 / 模拟 Draft 状态跑通四段);用户决定 I2 / I4 先修、取证结果稍后给。
+- I2 / I4 的可判定部分抽为 `lib/bridge/editorLocator`、`lib/bridge/sampleResidue` 加单测;注入层行为只能真机验证(QA T32)。check 审查补一处:定位不到编辑器时不再执行 `insertText`。
 
 **2026-10-26 · 第二十次会话(续)· 第三批阶段 A**:
 - **决定**(用户按推荐):第一、二批真机回归后先打 v0.5.0(打在 main `782d306`),第三批进 0.5.1、记入 CHANGELOG `[Unreleased]`;P12 空标题不产出块;ESLint(O9)放阶段 C 单独 PR。

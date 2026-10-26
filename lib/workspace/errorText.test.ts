@@ -1,6 +1,7 @@
 // 第二批 W11 / I3:引擎错误码映射为本地化文案;未知错误保留原文便于诊断。
 import { describe, expect, it } from 'vitest';
 import { dictionaries } from '../i18n/dict';
+import { SAMPLE_RESIDUE_SUFFIX } from '../bridge/sampleResidue';
 import { importErrorText, titleResultText } from './errorText';
 
 const zh = dictionaries.zh;
@@ -14,6 +15,11 @@ describe('importErrorText', () => {
     expect(importErrorText('import already in progress', zh)).toBe(zh.errImportBusy);
     expect(importErrorText('draft state node not found', zh)).toBe(zh.errNoEditor);
     expect(importErrorText('sample character: unable to acquire via execCommand', zh)).toBe(zh.errNoEditor);
+  });
+  it('第三批 I2:取样失败且撤回不了插入的 x → 找不到编辑器 + 提示手动删除', () => {
+    expect(importErrorText(`sample character: unable to acquire via execCommand${SAMPLE_RESIDUE_SUFFIX}`, zh)).toBe(
+      `${zh.errNoEditor} · ${zh.errSampleResidue}`,
+    );
   });
   it('未知错误:「写入失败: 原文」', () => {
     expect(importErrorText('commit: boom', zh)).toBe(`${zh.errWriteFail}: commit: boom`);

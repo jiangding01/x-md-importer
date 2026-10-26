@@ -194,6 +194,7 @@ const zh = {
   toastCover: '封面',
   errImportBusy: 'X 页面上已有一次写入在进行,请稍后再试',
   errNoEditor: '找不到可写入的编辑器,请刷新 X 页面后重试',
+  errSampleResidue: '编辑器里留下了一个字母 x,请手动删除',
   wipeFolderNotCleared: '本地图片文件夹授权需在打开 X 页面时清除,或到素材板 / 设置里手动断开',
   shortcutsHint: '请在 chrome://extensions/shortcuts 设置快捷键',
 } as const;
@@ -385,6 +386,7 @@ const en: Dict = {
   toastCover: 'cover',
   errImportBusy: 'Another write is already running on this X page — try again shortly',
   errNoEditor: "Couldn't find a writable editor — refresh the X page and retry",
+  errSampleResidue: 'a stray letter "x" was left in the editor — please delete it',
   wipeFolderNotCleared: 'Local image folder access can only be cleared while an X page is open — disconnect it from the assets card or Settings',
   shortcutsHint: 'Set shortcuts at chrome://extensions/shortcuts',
 };

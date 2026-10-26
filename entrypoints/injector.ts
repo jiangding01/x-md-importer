@@ -15,6 +15,8 @@ import {
   type SetTitleResult,
   type TitleConflict,
 } from '@/lib/bridge/protocol';
+import { findEditorElement } from '@/lib/bridge/editorLocator';
+import { isSampleResidue, SAMPLE_CHAR, SAMPLE_RESIDUE_SUFFIX } from '@/lib/bridge/sampleResidue';
 
 /**
  * MAIN world 注入引擎 —— 经 content.ts 的 injectScript 注入,运行于**页面 JS 上下文**
@@ -173,40 +175,8 @@ export default defineUnlistedScript(() => {
   // 两个 runImport 交错直改同一 Draft blockMap 造成重复/错位/按旧 key 找块崩溃)。
   let importInFlight = false;
 
-  // 多级 fallback 选择器(B2-6 改造):**有序数组逐级尝试**——此前是逗号并集,
-  // querySelectorAll 按文档顺序返回、书写顺序毫无优先级,"分级"实为假象;且原第一级
-  // `[data-contents='true'] [contenteditable='true']` 按 Draft 结构 data-contents 是
-  // contenteditable 的**子**节点,永不命中,已删除。层级从「真机实测指纹」到「裸 contenteditable」
-  // 逐级放宽(data-testid="composer" 与 .public-DraftEditor-content 见 docs/技术方案设计.md §2.1)。
-  // 标题字段是 textarea(非 contenteditable),天然不会被任何一级命中,无需显式排除。
-  const EDITOR_SELECTOR_TIERS = [
-    "[contenteditable='true'][data-testid='composer']",
-    "[contenteditable='true'].public-DraftEditor-content",
-    "[contenteditable='true'][role='textbox']",
-    "[contenteditable='true']",
-  ] as const;
-
-  /**
-   * 定位正文编辑器元素:按层级依次查询,级内用几何尺寸(宽 > 200 且高 > 80)过滤掉小型
-   * contenteditable,取**面积最大者**(而非文档顺序第一个)——同级多命中时正文必然最大。
-   */
-  const findEditorElement = (): HTMLElement | null => {
-    for (const selector of EDITOR_SELECTOR_TIERS) {
-      let best: HTMLElement | null = null;
-      let bestArea = 0;
-      for (const el of document.querySelectorAll<HTMLElement>(selector)) {
-        const rect = el.getBoundingClientRect();
-        if (rect.width <= 200 || rect.height <= 80) continue;
-        const area = rect.width * rect.height;
-        if (area > bestArea) {
-          best = el;
-          bestArea = area;
-        }
-      }
-      if (best) return best;
-    }
-    return null;
-  };
+  // 正文编辑器定位(多级选择器 + 尺寸过滤 + 取面积最大者)抽到 lib/bridge/editorLocator,与 content 的
+  // 「完成后滚动到顶部」同口径(第三批 I4)。
 
   /** 从 DOM 元素上取 React fiber(兼容 React ≥17 的 __reactFiber$ 与 ≤16 的 __reactInternalInstance$)。 */
   const getFiberFromElement = (el: HTMLElement): FiberNode | null => {
@@ -1165,10 +1135,18 @@ export default defineUnlistedScript(() => {
 
       if (!sample) {
         // 全空草稿:focus 编辑器 → execCommand 强插一个字符逼出样本 → 轮询重抓等 React 落盘。
-        findEditorElement()?.focus();
-        document.execCommand('insertText', false, 'x');
+        // 第三批 I2:插入前先复查目标文章——插入后若再因切文章拒写,这个字符就留在用户的编辑器里。
+        if (articleSwitched()) return { ok: false, error: ARTICLE_SWITCHED_ERROR };
+        // 定位不到编辑器就不插:execCommand 会插进页面当前聚焦的任意元素(如标题框)。
+        const sampleEditor = findEditorElement();
+        if (!sampleEditor) return { ok: false, error: 'sample character: editor element not found' };
+        sampleEditor.focus();
+        document.execCommand('insertText', false, SAMPLE_CHAR);
         for (let waited = 0; waited < 1600 && !sample; waited += 100) {
           await delay(100);
+          // 轮询期间切了文章:立即停手,绝不从新文章的编辑器取样(下面的 findDraftStateNode 会解析到它)。
+          // 已插入原文章的字符无从撤回(原编辑器已卸载),这一窗口通常只有取样落盘前的约 100ms。
+          if (articleSwitched()) return { ok: false, error: ARTICLE_SWITCHED_ERROR };
           const node = findDraftStateNode();
           if (!node) continue;
           const bm = readEditorState(node).getCurrentContent().getBlockMap();
@@ -1178,7 +1156,24 @@ export default defineUnlistedScript(() => {
             draftNode = node; // 采用取样后的最新状态节点
           }
         }
-        if (!sample) return { ok: false, error: 'sample character: unable to acquire via execCommand' };
+        if (!sample) {
+          // I2:取样失败 → 撤回本次插入(正文恰为取样字符才撤,不误撤用户内容);只试一次,撤不掉如实报告。
+          let residue = false;
+          if (isSampleResidue(sampleEditor.textContent ?? '')) {
+            sampleEditor.focus();
+            try {
+              document.execCommand('undo');
+            } catch {
+              /* 撤回失败按残留处理 */
+            }
+            await delay(200);
+            residue = isSampleResidue(sampleEditor.textContent ?? '');
+          }
+          return {
+            ok: false,
+            error: `sample character: unable to acquire via execCommand${residue ? SAMPLE_RESIDUE_SUFFIX : ''}`,
+          };
+        }
         forcedReplace = true;
       }
 
