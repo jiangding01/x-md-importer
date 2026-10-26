@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**:2026-10-26 · 分支 `claude/happy-ride-bjd4qg`(基于 main `782d306`)· **v0.5.0 尚未打 tag——真机回归通过后打在 main `782d306`,不要打在之后的 main HEAD(第三批进 0.5.1,打错即 tag 漂移)**。本轮全面审查(`docs/review/全面审查-2026-10-26.md`)的修复按用户决定并入 0.5.0:**第一批**(P1/P4/P5、W1/W2/W10,PR #36、#37)与**第二批**(阶段 A 解析 PR #38、阶段 B 界面 / 文案 / 文档 PR #39)均已合入 main。**第三批**方案见 `docs/review/修复方案-2026-10-26-第三批.md`(用户已定:先打 v0.5.0、第三批进 0.5.1;P12 空标题不产出块;ESLint 放阶段 C 单独 PR)。**第三批阶段 A**(P6 / P11 / P12 / H1 / O5 / O7 / O8)已合入 main(PR #40);**阶段 B 的 I2 / I4** 本分支实施(待真机回归 QA T32),I5 / I6 / I7 等用户用 `docs/qa/真机取证脚本-第三批阶段B.md` 取证后再定;阶段 C 方案已定(O9 / O1 / O2 / O4 做,O3 / O6 不做,见方案 §3),C1(ESLint)、C2(单次解析)已合入 main(PR #42、#43),**C3(预览改用解析产出)本分支实施**,C4 待后续。均记入 CHANGELOG `[Unreleased]`。单测 848。逐项明细见 CHANGELOG [0.5.0] / [Unreleased];更早的历史见 §11 与 git log。
+**最后更新**:2026-10-26 · 分支 `claude/happy-ride-bjd4qg`(基于 main `782d306`)· **v0.5.0 尚未打 tag——真机回归通过后打在 main `782d306`,不要打在之后的 main HEAD(第三批进 0.5.1,打错即 tag 漂移)**。本轮全面审查(`docs/review/全面审查-2026-10-26.md`)的修复按用户决定并入 0.5.0:**第一批**(P1/P4/P5、W1/W2/W10,PR #36、#37)与**第二批**(阶段 A 解析 PR #38、阶段 B 界面 / 文案 / 文档 PR #39)均已合入 main。**第三批**方案见 `docs/review/修复方案-2026-10-26-第三批.md`(用户已定:先打 v0.5.0、第三批进 0.5.1;P12 空标题不产出块;ESLint 放阶段 C 单独 PR)。**第三批阶段 A**(P6 / P11 / P12 / H1 / O5 / O7 / O8)已合入 main(PR #40);**阶段 B 的 I2 / I4** 本分支实施(待真机回归 QA T32),I5 / I6 / I7 等用户用 `docs/qa/真机取证脚本-第三批阶段B.md` 取证后再定;阶段 C 方案已定(O9 / O1 / O2 / O4 做,O3 / O6 不做,见方案 §3),C1(ESLint)、C2(单次解析)、C3(预览改用解析产出)已合入 main(PR #42、#43、#44),**C4(设置 / 偏好共用同步 hook)本分支实施**,做完即阶段 C 收官(O3 / O6 按方案不做)。均记入 CHANGELOG `[Unreleased]`。单测 851。逐项明细见 CHANGELOG [0.5.0] / [Unreleased];更早的历史见 §11 与 git log。
 
 ---
 
@@ -249,6 +249,7 @@ pnpm build              # → .output/chrome-mv3
 - **草稿写失败走退避重试,退避期间键入不排定时器**(第三批 O7):`draftFailCount > 0` 时 `schedulePersist` 只更新 pending,由重试定时器落盘;重试成功时若又有新编辑,`flushDraft` 负责恢复常规防抖。改这段时三种时机都要顾到:退避中键入、重试写入进行中键入、失焦 / 手动保存与重试并发。
 - **列表语境按「上一块是否在列表项内部」保留**(第三批 P6):轮首清栈条件是「上一个块不是列表项且不在列表内部」,「在内部」= 该块起行缩进 ≥ 当时的列表内容列。别改回只看块类型——列表里的缩进围栏 / 图片之后子项层级会清零。
 - **能力计数要与写入同一判定**(第三批 P11):报告用 `capability(md, en, parseOpts, adjust)`,`adjust` 由 `startImport` 按 `h1Handle` / `coverKeep` 的实际移除结果给出并存进报告快照;新增「写入前改块」的步骤时,同步加进 `CapabilityAdjust`,否则报告又按原始 md 计数。
+- **整对象切片的多窗口同步只有一份**(第三批 C4,`lib/storage/syncedObject`):设置与偏好都走 `useSyncedObject`;再加同类切片(整对象存一个 key、无未落盘编辑概念)照此接入,别再复制一份 Provider 内的同步代码。`stableJson` 只适用于扁平对象。草稿 / 历史有自己的判定(`decideDraftChange` / `decideHistoryChange`),别并进来。
 - **预览只渲染解析产出**(第三批 C3,`lib/markdown/BlockPreview` + 侧边栏 `DraftPreview`):别再引入通用 Markdown 渲染器——预览的意义就是「写进 X 的样子」。新增块类型 / 行内样式时同步改 BlockPreview;链接 href 只经 `safeHref`(http(s) / mailto),不得用 `dangerouslySetInnerHTML`;图片保持占位框(预览不发网络请求)。
 - **解析结果只算一次、只读共享**(第三批 C2):写入流程用 `analyzeDraft` 一次得出标题 / 正文块 / 去标题块(`blocksWithoutTitle`),收尾与报告卡复用同一份(`RunInput.analysis`、`LastRunSnapshot.analysis`);草稿页卡片读 `useDraftAnalysis()`(DraftTab 内的 `DraftAnalysisProvider`,`useDeferredValue` 延后)。别在组件里再调 `parseMarkdown` / `capability(md…)`;共享的 `blocks` 不得原地修改;要看原文时用 `useDraftAnalysis().md`(与解析配对的那份),别混用 `useWorkspace().md`。
 - **正文编辑器定位只有一份**(第三批 I4,`lib/bridge/editorLocator`):injector 与 content 共用 `findEditorElement`。别在 content / 其他地方再写 `querySelector('[contenteditable="true"]')`——页面里第一个可编辑区不一定是正文。
@@ -305,6 +306,10 @@ pnpm build              # → .output/chrome-mv3
 ---
 
 ## 11. 最近一次会话小结
+
+**2026-10-26 · 第二十次会话(续)· 第三批阶段 C4 + Actions 额度事故**:
+- PR #44 的 CI 两次秒挂:job 没分配到 runner(`runner_id: 0`、无日志),同时段 main 上的运行也一样——仓库 Actions 额度 / 账单问题,非代码。按规则重跑一次确认、在 PR 留言;用户处理额度后重跑全绿再合并。**教训**:「2–3 秒失败 + 无步骤 + 无日志」先查 runner 分配与额度,别去改代码。
+- C4:`useSyncedObject` + 纯函数 `decideSyncedChange` / `stableJson` 单测;审查期 React 脚本模拟双实例(B 跟随 A、快速连改时迟到回声不回退、key 删除回落默认)——新旧代码都绿,去掉回声判定的变异版本变红(脚本须把两次写入落盘分在不同 `act` 里,否则 React 合并渲染、回退看不见)。
 
 **2026-10-26 · 第二十次会话(续)· 第三批阶段 C3**:
 - 预览改为渲染 `analysis.blocks`;纯函数(`inlineSegments` / `safeHref` / `groupBlocks` / `parseTableMarkdown`)与无 hooks 的 `BlockList` 在 node 下用 `renderToStaticMarkup` 单测;全格式样例渲染截图人工检查。check 审查补一处:代码块正文首行形似表格分隔行时被误渲染成表格——`parseTableMarkdown` 先认围栏。删 react-markdown / remark-gfm,侧边栏 JS 450 → 294 KB。
