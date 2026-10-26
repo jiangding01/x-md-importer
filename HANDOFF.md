@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**:2026-10-26 · 分支 `claude/happy-ride-bjd4qg`(基于 main `782d306`)· **v0.5.0 尚未打 tag——真机回归通过后打在 main `782d306`,不要打在之后的 main HEAD(第三批进 0.5.1,打错即 tag 漂移)**。本轮全面审查(`docs/review/全面审查-2026-10-26.md`)的修复按用户决定并入 0.5.0:**第一批**(P1/P4/P5、W1/W2/W10,PR #36、#37)与**第二批**(阶段 A 解析 PR #38、阶段 B 界面 / 文案 / 文档 PR #39)均已合入 main。**第三批**方案见 `docs/review/修复方案-2026-10-26-第三批.md`(用户已定:先打 v0.5.0、第三批进 0.5.1;P12 空标题不产出块;ESLint 放阶段 C 单独 PR)。**第三批阶段 A**(P6 / P11 / P12 / H1 / O5 / O7 / O8)已合入 main(PR #40);**阶段 B 的 I2 / I4** 本分支实施(待真机回归 QA T32),I5 / I6 / I7 等用户用 `docs/qa/真机取证脚本-第三批阶段B.md` 取证后再定;阶段 C(结构性优化)待后续。均记入 CHANGELOG `[Unreleased]`。单测 834。逐项明细见 CHANGELOG [0.5.0] / [Unreleased];更早的历史见 §11 与 git log。
+**最后更新**:2026-10-26 · 分支 `claude/happy-ride-bjd4qg`(基于 main `782d306`)· **v0.5.0 尚未打 tag——真机回归通过后打在 main `782d306`,不要打在之后的 main HEAD(第三批进 0.5.1,打错即 tag 漂移)**。本轮全面审查(`docs/review/全面审查-2026-10-26.md`)的修复按用户决定并入 0.5.0:**第一批**(P1/P4/P5、W1/W2/W10,PR #36、#37)与**第二批**(阶段 A 解析 PR #38、阶段 B 界面 / 文案 / 文档 PR #39)均已合入 main。**第三批**方案见 `docs/review/修复方案-2026-10-26-第三批.md`(用户已定:先打 v0.5.0、第三批进 0.5.1;P12 空标题不产出块;ESLint 放阶段 C 单独 PR)。**第三批阶段 A**(P6 / P11 / P12 / H1 / O5 / O7 / O8)已合入 main(PR #40);**阶段 B 的 I2 / I4** 本分支实施(待真机回归 QA T32),I5 / I6 / I7 等用户用 `docs/qa/真机取证脚本-第三批阶段B.md` 取证后再定;阶段 C 方案已定(O9 / O1 / O2 / O4 做,O3 / O6 不做,见方案 §3),**C1(ESLint)本分支实施**,C2–C4 待后续。均记入 CHANGELOG `[Unreleased]`。单测 834。逐项明细见 CHANGELOG [0.5.0] / [Unreleased];更早的历史见 §11 与 git log。
 
 ---
 
@@ -53,6 +53,7 @@
 - **函数组件，禁用 class**（用户偏好）。ESM，命名导入优先。
 - **主题 = CSS 变量**：四套主题是同一张变量表的不同取值，切主题 = 整套替换 `:root` 变量。组件用 `var(--x)` 内联样式；`:hover` 用 `global.css` 的 `.mf-*` 工具类。
 - **UI 文案禁止竞品对比**（用户明确要求）：只中性陈述自身能力，不出现「竞品/超越/业界唯一」等字眼。
+- **lint**：`pnpm lint`(ESLint,只开 React hooks 两条规则,CI 同跑)。有意省略 hooks 依赖时写 `// eslint-disable-next-line react-hooks/exhaustive-deps` 并在上一行写理由;豁免失效会报错。
 - **工作流**：每批改动先 code review（多角度查找 + 验证）并修复，再提交；feature 分支 → PR → 合并 main；提交前更新本文档 + CHANGELOG。git 校验用 `reflog`/`cat-file`/`ls-remote` 或直接看 GitHub（不要拿同一条命令输出自证）。
 
 ---
@@ -301,6 +302,10 @@ pnpm build              # → .output/chrome-mv3
 ---
 
 ## 11. 最近一次会话小结
+
+**2026-10-26 · 第二十次会话(续)· 第三批阶段 C 方案 + C1**:
+- 方案(think skill):实测 160 KB 文档每次按键能力面板与素材板各全文解析一次(约 30 + 30 ms),写入流程 4 遍解析只在点写入时发生;去掉 react-markdown + remark-gfm 侧边栏 JS 450 → 289 KB。据此 O1 扩到按键路径、O2 做、O4 收窄到 Settings / Prefs、O3 / O6 不做;用户按推荐批准。
+- C1:ESLint 只开 hooks 两条规则;首次运行抓到 `copyHistoryItem` 依赖写错(切语言后复制失败提示仍是旧语言)与 `startImport` 多余依赖 `en`。依赖版本按「发布满 14 天」锁定(caret 会解析到 7–10 天前的新版,改为显式指定版本)。
 
 **2026-10-26 · 第二十次会话(续)· 第三批阶段 B 的 I2 / I4**:
 - 阶段 A 合入(PR #40)后给出真机取证脚本(`docs/qa/真机取证脚本-第三批阶段B.md`,E1–E4 与 injector 同口径,Chromium 下用模拟页面 / 模拟 Draft 状态跑通四段);用户决定 I2 / I4 先修、取证结果稍后给。

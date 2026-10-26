@@ -1,4 +1,4 @@
-# CI:每次 push / PR 跑 类型检查 + 单测 + 构建。
+# CI:每次 push / PR 跑 类型检查 + lint(React hooks 规则)+ 单测 + 构建。
 # 单测覆盖纯函数层(parser/frontmatter/capability/backup validate/localVault 路径器/protocol);
 # injector/content 无诚实单测缝隙(依赖页面 Draft.js fiber),回归靠 docs/qa/ 真机用例。
 name: CI
@@ -31,6 +31,9 @@ jobs:
 
       - name: Typecheck
         run: pnpm compile
+
+      - name: Lint
+        run: pnpm lint
 
       - name: Unit tests
         run: pnpm test

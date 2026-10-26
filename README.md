@@ -98,6 +98,7 @@ pnpm install          # 首次安装会构建 esbuild（已在 pnpm-workspace.ya
 pnpm dev              # WXT 开发模式（HMR）
 pnpm build            # 生产构建 → .output/chrome-mv3
 pnpm compile          # 仅类型检查（tsc --noEmit）
+pnpm lint             # React hooks 规则检查（ESLint，CI 同跑）
 pnpm test             # 单元测试（Vitest）
 pnpm zip              # 打包上架用 zip → .output/x-md-importer-<版本>-chrome.zip
 ```
