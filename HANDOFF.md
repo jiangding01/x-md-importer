@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**:2026-10-23 · 分支 `fix/pre-tag-review-2026-10-23`(基于 main `0ec9b15`)· **PR #32(8 月审查分支)与 #33(10 月三阶段修复 + v0.5.0 定版)均已合入 main;v0.5.0 尚未打 tag**,本分支在打 tag 前修复对 PR #33 复审发现的问题(方案见 `docs/review/修复方案-2026-10-23.md`):本地图同名歧义不再静默挑图(B1)、晚到图片不再按 FIFO 猜归属(B2)、权限被拒提示与 ask 重复弹窗(B4/B5/B6)、SSRF 补漏(F6)、标题抽取与正文解析单一来源(P3/P7)、解析性能与列表续行 / cover 边角(P1/P2/P5/P6)。单测 738。逐项明细见 CHANGELOG [0.5.0];更早的历史见 §11 与 git log。
+**最后更新**:2026-10-26 · 分支 `claude/happy-ride-bjd4qg`(基于 main `d7311cd`)· **v0.5.0 尚未打 tag**。本轮对全部代码做了一次全面审查(`docs/review/全面审查-2026-10-26.md`),第一批修复(方案 `docs/review/修复方案-2026-10-26.md`)按用户决定并入 0.5.0、分两阶段各开一个 PR:**阶段 1(解析层)**——`$$` 公式不再跨空行吞正文 / 认带内容的起闭行(P1)、去标题按块进行不丢相邻内容(P4)、引用里的代码原样保留(P5);阶段 2(W1 / W2 / W10)待做。单测 763。逐项明细见 CHANGELOG [0.5.0];更早的历史见 §11 与 git log。
 
 ---
 
@@ -236,7 +236,10 @@ pnpm build              # → .output/chrome-mv3
 - **`settle` 谓词等待不可去掉**(B1,injector):图片阶段每次 `onChange` 之后都必须等 X 真正提交(谓词:marker 文本已变 / MEDIA 已出现)再读下一轮 editorState。去掉或换回固定 `delay` 会让下一轮用陈旧 state 读-改-写,把上一步(如失败图写回的原文)回滚,marker 重现后被清扫整块删掉——内容静默丢失。settle 超时只记账(`settleTimeouts`)不中断。
 - **权限申请:首次点击时 `request` 必须是第一个 await;ask 确认路径不再申请**:直写与 ask 两条路径的**首次点击**都要先同步解析 blocks 并 `permissions.request`,再做探针/其他 await。任何前置 await(包括「先探针取 articleId」)都会消耗 Chrome 的瞬时用户激活,新 profile 下权限弹窗会直接被拒、不弹出。8 月批次二曾在直写路径前插了探针 await,10 月阶段一才改回。ask 弹窗确认(覆盖 / 追加)时手势已用过,`startImport` 带 `permAlreadyRequested`:跳过 `request` 与 toast,只用 `queryRemoteImagePermissions`(`permissions.contains`,无需手势、不弹窗)对当前 origins 重算未授权集合供失败改标——别在确认路径再调 `requestRemoteImagePermissions`,否则拒绝后会二次弹窗 + 二次 toast(B6)。`permissions.request` 全有或全无,拒绝不影响已授权 origin,故 toast 计数与改标只认 `deniedOrigins`,不能把「被拒」当成「全部未授权」(B4);origin 计算只有 `originPatternOf` 一处。
 - **晚到 MEDIA 只做 `pendingKey` 精确追回,不按顺序猜归属**(B2):循环中与循环结束后各扫一遍当前 state,只把已拿到 mediaId 的、超时那刻登记过 key 的 pending 块还给对应的超时图。**末轮 FIFO 已删除**(曾把任意无主 ready 块按顺序分给最早超时图,无归属证据、猜错即两图对调且全报成功)。无法归属的如实上报:多出的图走 `orphan-media`;存在不可追踪的超时图(无 pendingKey,或其块已消失)、其后有图成功归位、且孤儿数在扣除「仍可追踪(pendingKey 仍在)的超时图自身的块」后仍 > 0 时另推一条 `media-order-uncertain`(detail 为英文诊断串;不计 imageFail;以孤儿数为门槛压误报,代价是错位链末块在审计后才到时漏报,见 backlog)。**别再加「按顺序分配」类兜底**,除非先拿到 MEDIA entity 数据层面的归属证据。
-- **标题抽取只认解析主循环上报的标题**(P3/P7):`findFirstH1` 取 `forEachContentLine` 的 `onHeading` 回调,不要在 `frontmatter.ts` 再写 setext / 段落行的自有判定("第二套实现漂移" 已栽过多次);`extractTitle` / `stripFirstH1` / `firstTitle` 的解析开关必须由调用方透传(`WorkspaceProvider` 与 `capability` 已透传),模块级开关只在 `withParseOptions` 内临时设置并还原。
+- **标题抽取只认解析主循环上报的标题**(P3/P7):`pickTitleHeading` 只从 `parseMarkdownWithHeadings` 上报的标题里挑,不要在 `frontmatter.ts` 再写 setext / 段落行的自有判定("第二套实现漂移" 已栽过多次);`extractTitle` / `parseMarkdownWithoutTitle` / `firstTitle` 的解析开关必须由调用方透传(`WorkspaceProvider` 与 `capability` 已透传),模块级开关只在 `withParseOptions` 内临时设置并还原。
+- **去标题按块下标,不再改 md 文本**(P4,2026-10-26):`h1Handle=remove` 走 `parseMarkdownWithoutTitle`——一次解析、按标题上报的 `blockIndex` 去掉那一块。别退回「删源行 / 换空行再重解析」:删行会让相邻行重新拼接(首行 `---` 被当 frontmatter、两段合并、正文被吸进列表项),换空行同样会改变语境(`- 项\n# 标题\n  续行` 的续行会被吸进列表项)。
+- **`$$` 闭合搜索遇空行即止;带内容的起行只看段落续行**(P1,2026-10-26):LaTeX 数学模式不允许空行,别把闭合搜索改回无界(会跨段落配对、吞正文);`$$ a+b` 这种带内容的起行与口语 `$$100` 同形,只允许裸闭合、且中间遇任何块级起始行即止,别放宽成「带内容 × 带内容」或不设边界。
+- **引用内的围栏产出代码块**(P5,2026-10-26):引用分支先认围栏、按 CommonMark「容器结束即闭合」,并 `onFence` 上报区间;不要把引用改回逐行 `walkInline` 处理围栏行。
 - **本地图按文件名兜底遇同名多处不得静默挑一个**(B1):导入时只有 md 的 `File`、拿不到它在文件夹里的路径;`./`、`../` 开头多候选即 `ambiguous`,单段文件名取最浅者、并列也 `ambiguous`;解码遍优先(解码遍唯一即用、歧义即报歧义,不被原串遍覆盖,解码遍无候选才看原串遍);索引层按作用域顺序,第一个有候选的文件夹决定结果(歧义 / 唯一候选读失败都不再落到下一作用域);歧义与权限回落按作用域顺序归因(排在歧义作用域之前的作用域权限已回落 → 报 `local-permission-lapsed`,否则报歧义)。报告原因 `local-ambiguous`。
 - **pnpm 11 构建脚本**：esbuild 需在 `pnpm-workspace.yaml` `allowBuilds` 放行。
 - **CJK 字体**：只打包拉丁字体，中文用系统栈。
@@ -286,6 +289,12 @@ pnpm build              # → .output/chrome-mv3
 ---
 
 ## 11. 最近一次会话小结
+
+**2026-10-26 · 第二十次会话 · 全面审查 + 第一批修复(阶段 1:解析层)**:
+- **审查**:解析层 / 侧边栏·存储 / 注入链路 / 文档四路(两路由 subagent 并行,结论逐条由主控复现或对照源码核实)→ 31 项新问题(其中 3 项需真机确认)+ 9 条优化,全部不在 10-22 backlog 里,存 `docs/review/全面审查-2026-10-26.md`。
+- **第一批**(用户决定并入 0.5.0,W10 顺带修):阶段 1 做 P1 / P4 / P5,阶段 2 做 W1 / W2 / W10,各一个 PR。提交前用 Waza `check` skill 审查,有问题修完再提。
+- **阶段 1 的 check 审查抓到一处**:P1 初版让 `$$ a+b` 这类带内容的起行只以空行为界,会把中间的列表 / 引用 / 标题吞进公式(`$$100 涨\n- 项\n$$`)——收紧为只看段落续行,补测试。另用「旧提交独立 worktree + 2 万组随机输入」做新旧差分:不含 `$$` / 引用的输入零差异。
+- **教训**:随机差分里「有差异的样本」要逐条看,不能只数数——这次的问题正是从样本里看出来的。
 
 **2026-10-23 · 第十九次会话 · 打 tag 前对 PR #33 的复审修复**:
 - **起点**:PR #32 / #33 合入 main 后、打 tag 前,对 `b3dac9a..0ec9b15` 做五路审查 → 两路对抗性核实 → 两路方案评审,只收核实属实的问题(方案 `docs/review/修复方案-2026-10-23.md`,证伪项与推迟项见其第 3 节)。分支 `fix/pre-tag-review-2026-10-23`,版本号仍 0.5.0,改动并入 CHANGELOG `[0.5.0]`。

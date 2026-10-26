@@ -7,14 +7,16 @@
  * `title:` / `Title:` / `标题:`,不支持嵌套 YAML、不支持多行值。
  */
 
+import type { ImportBlock } from '../bridge/protocol';
 import {
-  forEachContentLine,
   frontmatterBodyStart,
   inlinePlainText,
   matchFenceOpen,
   matchImageLine,
   matchLinkedImageLine,
+  parseMarkdownWithHeadings,
   RE_OBSIDIAN_IMAGE_LINE,
+  type HeadingInfo,
   type ParseOptions,
 } from './parser';
 
@@ -161,66 +163,50 @@ export function extractCover(md: string): string | null {
 }
 
 /**
- * 正文首个可作文章标题的一级标题:取解析主循环经 forEachContentLine.onHeading 上报的标题(P3),
- * 返回其源行半开区间 `[start, end)` 与纯文本标题。**单一来源**:标题判定(围栏 / 公式 / 列表 lazy
- * 续行 / setext / frontmatter 跳过)全部与 parseMarkdown 同源,不再有自己的段落行 / 下划线 /
- * standalone 启发式——那套第二实现曾造成「`- item\n标题\n===` 正文是列表、却被抽成标题」、
- * 「`$$` 公式里的 `# x` 被抽成标题并被 stripFirstH1 删坏公式」等分裂(HANDOFF §8 同类教训)。
+ * 从解析主循环上报的标题里挑出**可作文章标题**的那个(P3 单一来源;P4 起与「去标题块」共用):
+ * 标题判定(围栏 / 公式 / 列表 lazy 续行 / setext / frontmatter 跳过)全部与 parseMarkdown 同源,
+ * 不再有自己的段落行 / 下划线 / standalone 启发式——那套第二实现曾造成「`- item\n标题\n===` 正文是
+ * 列表、却被抽成标题」、「`$$` 公式里的 `# x` 被抽成标题并删坏公式」等分裂(HANDOFF §8 同类教训)。
  *
  * 取第一个满足条件的标题:ATX 一级(`#`;`##` 虽同样映射为 header-one 但不作文章标题),或**单行**
- * setext `===`(正文 1 行 + 下划线 1 行,end − start === 2)——多行 setext 正文时标题该取整段,
- * stripFirstH1 按区间删虽可行但这类写法极罕见,维持「不认」的既有取舍(标题留在正文,不误伤);
- * 且纯文本非空。纯文本按写法区分:ATX 用 inlinePlainText(raw)(剥闭合井号),setext 用
- * `atxClosing: false`(`标题 #\n===` 的标题是「标题 #」)。
+ * setext `===`(正文 1 行 + 下划线 1 行,end − start === 2)——多行 setext 时标题该取整段,这类写法
+ * 极罕见,维持「不认」的既有取舍(标题留在正文,不误伤);且纯文本非空。纯文本按写法区分:ATX 用
+ * inlinePlainText(raw)(剥闭合井号),setext 用 `atxClosing: false`(`标题 #\n===` 的标题是「标题 #」)。
  * setext 文本是开栏行(未闭合的 ``` / `~~~`)或 `$$` 时跳过、继续找下一个(L1):正文确实把它渲染成
- * 标题「```」,但那是未闭合起行的副产物,不是作者意图的文章标题。只少抽、不改正文解析,故抽到的
- * 标题仍对应正文中同一源行的 header-one(P3 不变量不受影响)。
- *
- * `opts` 为解析开关(P7):标题判定随之与实际解析一致(如 obsidianImg 决定 `![[a.png]]\n标题\n===`
- * 是图片 + 单行 setext 还是多行 setext),不继承上一次 parseMarkdown 残留的模块级开关。
- * extractTitle 与 stripFirstH1 共用它,保证「抽为标题的那几行」与「从正文移除的那几行」一致。
+ * 标题「```」,但那是未闭合起行的副产物,不是作者意图的文章标题。只少抽、不改正文解析。
  */
-function findFirstH1(lines: string[], opts: ParseOptions = {}): { start: number; end: number; title: string } | null {
-  const headings: Array<{ start: number; end: number; kind: 'atx' | 'setext'; raw: string }> = [];
-  // visitor 立即返回 true:这里只要 onHeading(解析主循环在遍历行之前已跑完整篇)。
-  // 文首 frontmatter 由 parseLines 自身跳过(与 parseMarkdown 同源),YAML 注释 `# x` 不会被上报。
-  forEachContentLine(lines, () => true, {
-    obsidianImg: opts.obsidianImg,
-    wikilink: opts.wikilink,
-    taskList: opts.taskList,
-    onHeading: (start, end, level, kind, raw) => {
-      if (level !== 1) return;
-      if (kind === 'setext' && end - start !== 2) return;
-      if (kind === 'setext' && (matchFenceOpen(raw.trim()) !== null || raw.trim() === '$$')) return; // L1
-      headings.push({ start, end, kind, raw });
-    },
-  });
+function pickTitleHeading(headings: HeadingInfo[]): (HeadingInfo & { title: string }) | null {
   for (const h of headings) {
+    if (h.level !== 1) continue;
+    if (h.kind === 'setext' && h.end - h.start !== 2) continue;
+    if (h.kind === 'setext' && (matchFenceOpen(h.raw.trim()) !== null || h.raw.trim() === '$$')) continue; // L1
     const title = h.kind === 'atx' ? inlinePlainText(h.raw) : inlinePlainText(h.raw, { atxClosing: false });
-    if (title.length > 0) return { start: h.start, end: h.end, title };
+    if (title.length > 0) return { ...h, title };
   }
   return null;
 }
 
-/** 从正文抽取第一个 H1(跳过代码块);无则 null。 */
+/**
+ * 正文首个可作文章标题的一级标题(见 pickTitleHeading)。
+ * `opts` 为解析开关(P7):标题判定随之与实际解析一致(如 obsidianImg 决定 `![[a.png]]\n标题\n===`
+ * 是图片 + 单行 setext 还是多行 setext)。extractTitle 与 parseMarkdownWithoutTitle 共用它,
+ * 保证「抽为标题的那个」与「从正文去掉的那个」是同一个块。
+ */
 function fromH1(md: string, opts: ParseOptions): string | null {
-  return findFirstH1(md.split(/\r?\n/), opts)?.title ?? null;
+  return pickTitleHeading(parseMarkdownWithHeadings(md, opts).headings)?.title ?? null;
 }
 
 /**
- * 删除正文中「被抽为标题的那一行 H1」(跳过代码块,与 extractTitle 同源)。
- * 在 md 文本层按行删除——而非 blocks 层,因为 parser 把 H1/H2 都映射成 header-one,
- * blocks 层无法区分,按 type 删首个 header-one 会在「H2 在 H1 之前」时删错块。
- * `opts` 为解析开关(P7),须与 extractTitle 传同一份,删的才是抽出的那个标题。
+ * 解析正文并去掉被抽为文章标题的那个 H1 块(`h1Handle=remove` 用,P4)。**按块下标去除**:一次解析,
+ * 其余块与 parseMarkdown(md) 逐一相同。旧 stripFirstH1 在 md 文本层删源行再重解析,删行会让相邻行
+ * 重新拼接——`# 标题\n---\n作者\n---` 删后首行 `---` 被当 frontmatter、`导语\n# 标题\n正文` 两段
+ * 合并、标题后的正文被吸进前面的列表项。是否该去(标题来源是 h1 而非 frontmatter)由调用方判定。
+ * `opts` 须与 extractTitle 传同一份,去掉的才是抽出的那个标题。
  */
-export function stripFirstH1(md: string, opts: ParseOptions = {}): string {
-  const lines = md.split(/\r?\n/);
-  const found = findFirstH1(lines, opts);
-  if (!found) return md;
-  // 删标题占用的整个源行区间:ATX 是 1 行,setext 是「正文行 + `===` 下划线」共 2 行
-  // (只删 1 行会把下划线孤零零留在正文,再被解析成分割线/段落)。
-  lines.splice(found.start, found.end - found.start);
-  return lines.join('\n');
+export function parseMarkdownWithoutTitle(md: string, opts: ParseOptions = {}): ImportBlock[] {
+  const { blocks, headings } = parseMarkdownWithHeadings(md, opts);
+  const h = pickTitleHeading(headings);
+  return h ? blocks.filter((_, i) => i !== h.blockIndex) : blocks;
 }
 
 /**

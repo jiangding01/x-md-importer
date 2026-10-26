@@ -1,9 +1,19 @@
-// lib/markdown/frontmatter.ts 单测:extractTitle / extractCover / stripFirstH1。
+// lib/markdown/frontmatter.ts 单测:extractTitle / extractCover / parseMarkdownWithoutTitle。
 // 覆盖范围见 SKILL 任务描述 §frontmatter.test.ts。测试按当前实际行为编写;
 // 若发现疑似生产 bug,以注释标注(不修改生产代码),并在最终报告汇总。
 import { describe, expect, it } from 'vitest';
-import { extractCover, extractTitle, stripFirstH1 } from './frontmatter';
+import { readFileSync } from 'node:fs';
+import { extractCover, extractTitle, parseMarkdownWithoutTitle } from './frontmatter';
 import { parseMarkdown } from './parser';
+import type { ImportBlock } from '../bridge/protocol';
+
+/** P4:去掉文章标题块后的正文块(取代旧 stripFirstH1 的文本层删行)。 */
+const strip = (md: string, opts?: Parameters<typeof parseMarkdownWithoutTitle>[1]): ImportBlock[] =>
+  parseMarkdownWithoutTitle(md, opts);
+
+/** 块的简写形态,断言用。 */
+const shapeOf = (blocks: ImportBlock[]): string[] =>
+  blocks.map((b) => (b.kind === 'text' ? `${b.type}:${b.text}` : b.kind === 'image' ? `img:${b.source}` : b.entityType));
 
 describe('extractTitle · frontmatter 三键', () => {
   it('title: 命中', () => {
@@ -166,11 +176,9 @@ describe('extractTitle · H1 抽取跳过文首 frontmatter(B3-3 / P1-6)', () =>
     expect(extractTitle(md)).toBeNull();
   });
 
-  it('stripFirstH1 不从 frontmatter 内部删行', () => {
+  it('去标题不触碰 frontmatter:只去掉正文里的 `# 真标题` 块', () => {
     const md = '---\n# 元数据区\nfoo: bar\n---\n\n# 真标题\n\n正文';
-    const stripped = stripFirstH1(md);
-    expect(stripped).toContain('# 元数据区'); // frontmatter 完整保留
-    expect(stripped).not.toContain('# 真标题');
+    expect(shapeOf(strip(md))).toEqual(['unstyled:正文']);
   });
 });
 
@@ -187,8 +195,8 @@ describe('extractTitle · 0-3 空格缩进的 H1(B3-6)', () => {
     expect(extractTitle('    # 不是标题')).toBeNull();
   });
 
-  it('stripFirstH1 删掉的正是那行缩进 H1', () => {
-    expect(stripFirstH1('  # 标题\n\n正文')).toBe('\n正文');
+  it('去掉的正是那行缩进 H1', () => {
+    expect(strip('  # 标题\n\n正文')).toEqual(parseMarkdown('正文'));
   });
 
   it('缩进围栏内的 `# x` 仍被跳过(forEachContentLine 的围栏判定同步放宽)', () => {
@@ -199,34 +207,62 @@ describe('extractTitle · 0-3 空格缩进的 H1(B3-6)', () => {
   });
 });
 
-describe('stripFirstH1', () => {
-  it('删除被抽为标题的那一行,不动其余内容', () => {
+describe('parseMarkdownWithoutTitle(P4:按块去标题)', () => {
+  it('去掉被抽为标题的那一块,不动其余内容', () => {
     const md = '# 标题\n\n正文第一段。\n\n正文第二段。';
-    const stripped = stripFirstH1(md);
-    expect(stripped).toBe('\n正文第一段。\n\n正文第二段。');
-    expect(stripped).not.toContain('# 标题');
+    expect(strip(md)).toEqual(parseMarkdown('正文第一段。\n\n正文第二段。'));
   });
 
   it('不动代码块内的 # x(即使它长得像 H1)', () => {
     const md = '# 真标题\n\n```\n# 这是代码注释,不是标题\n```\n';
-    const stripped = stripFirstH1(md);
-    expect(stripped).not.toContain('# 真标题');
-    expect(stripped).toContain('# 这是代码注释,不是标题'); // 代码块内容原样保留
+    expect(strip(md)).toEqual(parseMarkdown('```\n# 这是代码注释,不是标题\n```\n'));
   });
 
-  it('无 H1 时原样返回', () => {
+  it('无 H1 时与 parseMarkdown 完全一致', () => {
     const md = '只有正文,没有标题。';
-    expect(stripFirstH1(md)).toBe(md);
+    expect(strip(md)).toEqual(parseMarkdown(md));
   });
 
-  it('CRLF 文档:按行删除后以 \\n 重新拼接(换行风格被规范化,当前实际行为)', () => {
-    // 疑似生产 bug 关注点:输入为 CRLF,split(/\r?\n/) 正确切分,但 join('\n') 统一吐出 LF,
-    // 结果文档的换行风格从 CRLF 被静默改写成 LF。这里按当前实际行为断言,不代表这是期望行为。
-    const md = '# 标题\r\n\r\n正文一\r\n\r\n正文二';
-    const stripped = stripFirstH1(md);
-    expect(stripped).toBe('\n正文一\n\n正文二'); // 实际输出已无 \r
-    expect(stripped).not.toContain('\r');
-    expect(stripped.split('\n')).toEqual(['', '正文一', '', '正文二']);
+  it('CRLF 文档照常', () => {
+    expect(strip('# 标题\r\n\r\n正文一\r\n\r\n正文二')).toEqual(parseMarkdown('正文一\n\n正文二'));
+  });
+
+  // 审查复现:旧 stripFirstH1 在文本层删行,相邻行重新拼接后解析结果变了。
+  it('`# 标题\\n---\\n作者\\n---`:分割线与 setext 作者行保留(删行后首行 `---` 曾被当 frontmatter)', () => {
+    expect(shapeOf(strip('# 标题\n---\n作者:张三\n---\n\n正文'))).toEqual([
+      'DIVIDER',
+      'header-one:作者:张三',
+      'unstyled:正文',
+    ]);
+  });
+
+  it('`导语\\n# 标题\\n正文`:导语与正文保持两段(删行后曾合并成一段)', () => {
+    expect(shapeOf(strip('导语\n# 标题\n正文'))).toEqual(['unstyled:导语', 'unstyled:正文']);
+  });
+
+  it('`- 要点\\n# 标题\\n正文`:正文不被吸进列表项', () => {
+    expect(shapeOf(strip('- 要点\n# 标题\n正文'))).toEqual(['unordered-list-item:要点', 'unstyled:正文']);
+  });
+
+  it('`- 项\\n# 标题\\n  续行`:续行不变成列表松散续段(「换成空行」方案的反例)', () => {
+    expect(shapeOf(strip('- 项\n# 标题\n  续行'))).toEqual(['unordered-list-item:项', 'unstyled:续行']);
+  });
+
+  it('语料不变量:去掉的恰是一个文本等于标题的 header-one,其余块与全文解析逐一相等', () => {
+    // 去掉样例的 frontmatter(它带 title,extractTitle 会取 frontmatter 而非 H1;去不去标题由调用方
+    // 按来源决定,这里只验「按 H1 去」的不变量)。
+    const raw = readFileSync(new URL('../../docs/qa/测试样例-全格式.md', import.meta.url), 'utf8');
+    const corpus = raw.replace(/^---\n[\s\S]*?\n---\n/, '');
+    for (const md of [corpus, `# 首标题\n\n${corpus}`, `导语\n${corpus}`]) {
+      const title = extractTitle(md);
+      expect(title?.source).toBe('h1');
+      if (title?.source !== 'h1') continue;
+      const full = parseMarkdown(md);
+      const body = strip(md);
+      const k = full.findIndex((b) => b.kind === 'text' && b.type === 'header-one' && b.text.trim() === title.title);
+      expect(k).toBeGreaterThanOrEqual(0);
+      expect(body).toEqual(full.filter((_, i) => i !== k));
+    }
   });
 });
 
@@ -239,10 +275,8 @@ describe('setext 一级标题的抽取与移除', () => {
     expect(extractTitle('我的标题\n---\n\n正文')).toBeNull();
   });
 
-  it('stripFirstH1 删掉 setext 的两行(正文行 + 下划线)', () => {
-    // 只删 1 行会把 `===` 孤零零留在正文,再被解析成段落/分割线。
-    expect(stripFirstH1('我的标题\n===\n\n正文')).toBe('\n正文');
-    expect(parseMarkdown(stripFirstH1('我的标题\n===\n\n正文'))).toHaveLength(1);
+  it('去掉 setext 标题块(正文行 + 下划线整体),下划线不残留', () => {
+    expect(strip('我的标题\n===\n\n正文')).toEqual(parseMarkdown('正文'));
   });
 
   it('frontmatter title 优先于 setext H1(优先级不变)', () => {
@@ -263,7 +297,7 @@ describe('setext 一级标题的抽取与移除', () => {
     expect(extractTitle('```\n假标题\n===\n```\n\n正文')).toBeNull();
   });
 
-  it('多行段落上方的 setext 不认(避免 stripFirstH1 按固定行数删错)', () => {
+  it('多行段落上方的 setext 不认(整段才是标题,取末行会截断)', () => {
     // 「第一行 / 第二行 / ===」整段才是标题,取末行会截断、删 2 行会留下孤儿行,
     // 这类写法极罕见,宁可不认(标题留在正文)也不误伤。
     expect(extractTitle('第一行\n第二行\n===')).toBeNull();
@@ -380,39 +414,39 @@ describe('P3 标题判定与解析同源(定点)', () => {
     const md = '标题 #\n===';
     expect(extractTitle(md)).toEqual({ title: '标题 #', source: 'h1' });
     expect(headerTexts(md)).toEqual(['标题 #']);
-    expect(stripFirstH1(md)).toBe('');
+    expect(strip(md)).toEqual([]);
   });
 
   it('`- item\\n标题\\n===`:lazy 续行里的 `===` 不构成标题(两侧都不认)', () => {
     const md = '- item\n标题\n===';
     expect(extractTitle(md)).toBeNull();
     expect(headerTexts(md)).toEqual([]);
-    expect(stripFirstH1(md)).toBe(md);
+    expect(strip(md)).toEqual(parseMarkdown(md));
   });
 
   it('`- \\n标题\\n===`:空项后的段落是标题', () => {
     const md = '- \n标题\n===';
     expect(extractTitle(md)).toEqual({ title: '标题', source: 'h1' });
     expect(headerTexts(md)).toEqual(['标题']);
-    expect(stripFirstH1(md)).toBe('- ');
+    expect(strip(md)).toEqual(parseMarkdown('- '));
   });
 
   it('`> a\\nb\\n===`:两侧一致认作标题「b」(引用 lazy 属旧行为,本次不动)', () => {
     const md = '> a\nb\n===';
     expect(extractTitle(md)).toEqual({ title: 'b', source: 'h1' });
     expect(headerTexts(md)).toEqual(['b']);
-    expect(stripFirstH1(md)).toBe('> a');
+    expect(strip(md)).toEqual(parseMarkdown('> a'));
   });
 
   it('`标题\\n===`:单行 setext 照常', () => {
     expect(extractTitle('标题\n===')).toEqual({ title: '标题', source: 'h1' });
-    expect(stripFirstH1('标题\n===\n正文')).toBe('正文');
+    expect(strip('标题\n===\n正文')).toEqual(parseMarkdown('正文'));
   });
 
-  it('`$$\\n# x\\n$$`:公式内的 `# x` 不是标题,stripFirstH1 不改公式', () => {
+  it('`$$\\n# x\\n$$`:公式内的 `# x` 不是标题,去标题不改公式', () => {
     const md = '$$\n# x\n$$\n\n正文';
     expect(extractTitle(md)).toBeNull();
-    expect(stripFirstH1(md)).toBe(md);
+    expect(strip(md)).toEqual(parseMarkdown(md));
   });
 
   it('第一个标题不合格(二级 / 多行 setext / 纯文本为空)时继续找下一个', () => {
@@ -431,9 +465,9 @@ describe('L1 setext 标题文本为开栏行 / `$$` 时不作文章标题', () =
     ['$$\n===\n# 真标题', '$$\n==='],
     ['~~~\n===\n# 真标题', '~~~\n==='],
   ] as const) {
-    it(`${JSON.stringify(md)} → 标题「真标题」,stripFirstH1 删的是 \`# 真标题\` 行`, () => {
+    it(`${JSON.stringify(md)} → 标题「真标题」,去掉的是 \`# 真标题\` 块`, () => {
       expect(extractTitle(md)).toEqual({ title: '真标题', source: 'h1' });
-      expect(stripFirstH1(md)).toBe(rest);
+      expect(strip(md)).toEqual(parseMarkdown(rest));
     });
   }
 
@@ -443,23 +477,12 @@ describe('L1 setext 标题文本为开栏行 / `$$` 时不作文章标题', () =
   });
 });
 
-describe('P3 不变量:标题行区间与 parseMarkdown 按源行对应(行级模糊)', () => {
-  const alphabet = ['- a', '- ', '> q', '标题', '===', '--', '---', '```', '$$', '# h', '## h', '2024. x', ''];
+describe('P3/P4 不变量:去掉的标题块与 extractTitle 一致(行级模糊)', () => {
+  const alphabet = ['- a', '- ', '> q', '标题', '===', '--', '---', '```', '$$', '# h', '## h', '2024. x', '$$ x', 'y $$', ''];
 
-  /** 与 stripFirstH1 结果一致的所有删除方案 [s, removed](removed ∈ {1, 2};重复行时可能多个)。 */
-  const removals = (lines: string[], stripped: string): Array<[number, number]> => {
-    const out: Array<[number, number]> = [];
-    for (const removed of [1, 2]) {
-      for (let s = 0; s + removed <= lines.length; s += 1) {
-        if ([...lines.slice(0, s), ...lines.slice(s + removed)].join('\n') === stripped) out.push([s, removed]);
-      }
-    }
-    return out;
-  };
-
-  it('extractTitle(h1) 删掉的行区间恰是 parseMarkdown 中同一源行起的 header-one,文本一致', () => {
+  it('extractTitle(h1) 时,parseMarkdownWithoutTitle 恰去掉全文解析中一个文本为该标题的 header-one,其余块不变', () => {
     // mulberry32(32 位整数运算):`seed * 1103515245` 式浮点 LCG 会超出 2^53 精度、退化成短周期。
-    let seed = 20261023;
+    let seed = 20261026;
     const rnd = () => {
       seed = (seed + 0x6d2b79f5) >>> 0;
       let t = seed;
@@ -468,29 +491,29 @@ describe('P3 不变量:标题行区间与 parseMarkdown 按源行对应(行级�
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
     const failures: string[] = [];
+    let checked = 0;
     for (let t = 0; t < 3000; t += 1) {
       const n = 1 + Math.floor(rnd() * 8);
-      const lines = Array.from({ length: n }, () => alphabet[Math.floor(rnd() * alphabet.length)] ?? '');
-      const md = lines.join('\n');
+      const md = Array.from({ length: n }, () => alphabet[Math.floor(rnd() * alphabet.length)] ?? '').join('\n');
       const title = extractTitle(md);
-      if (title?.source !== 'h1') continue;
       const full = parseMarkdown(md);
-      const ok = removals(lines, stripFirstH1(md)).some(([s, removed]) => {
-        // 前缀 [0, s) 产出的块数即标题块在全文中的下标;前缀 [0, s+removed) 恰多出这一块且与全文同形
-        const before = parseMarkdown(lines.slice(0, s).join('\n')).length;
-        const upto = parseMarkdown(lines.slice(0, s + removed).join('\n'));
-        const b = full[before];
-        return (
-          b?.kind === 'text' &&
+      const body = strip(md);
+      if (title?.source !== 'h1') {
+        if (JSON.stringify(body) !== JSON.stringify(full)) failures.push(md);
+        continue;
+      }
+      checked += 1;
+      const ok = full.some(
+        (b, k) =>
+          b.kind === 'text' &&
           b.type === 'header-one' &&
           b.text.trim() === title.title &&
-          upto.length === before + 1 &&
-          JSON.stringify(upto[before]) === JSON.stringify(b)
-        );
-      });
+          JSON.stringify(full.filter((_, i) => i !== k)) === JSON.stringify(body),
+      );
       if (!ok) failures.push(md);
     }
     expect(failures.slice(0, 5)).toEqual([]);
+    expect(checked).toBeGreaterThan(100); // 防空转:确有足量带标题的样本
   });
 });
 
@@ -506,9 +529,9 @@ describe('P7 标题抽取只取决于自身解析开关', () => {
       parseMarkdown('x', { obsidianImg: residue });
       expect([residue, extractTitle(md, { obsidianImg: false })]).toEqual([residue, null]);
       parseMarkdown('x', { obsidianImg: residue });
-      expect([residue, stripFirstH1(md)]).toEqual([residue, '![[a.png]]']);
+      expect([residue, strip(md)]).toEqual([residue, parseMarkdown('![[a.png]]')]);
       parseMarkdown('x', { obsidianImg: residue });
-      expect([residue, stripFirstH1(md, { obsidianImg: false })]).toEqual([residue, md]);
+      expect([residue, strip(md, { obsidianImg: false })]).toEqual([residue, parseMarkdown(md, { obsidianImg: false })]);
     }
   });
 });
