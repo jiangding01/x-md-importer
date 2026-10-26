@@ -65,3 +65,29 @@ describe('buildRunRecord · 计数口径(搬自 finishImport,行为不变)', () 
     expect(buildRunRecord(base({ imageFailures: [fail(1, 'orphan-media')] })).hasAnomaly).toBe(true);
   });
 });
+
+// 第二批 W7 / W8
+import { pruneHistory, reportTone } from './runRecord';
+import type { HistoryItem } from '../storage/schema';
+
+describe('reportTone(W7:报告卡标题栏三态)', () => {
+  const snap = (over: object) => ({ md: '', parseOpts: { obsidianImg: true, wikilink: true, taskList: 'symbol' as const }, ok: 1, deg: 0, fail: 0, ...over });
+  it('有失败 → fail;仅降级 / 仅明细 → warn;否则 ok', () => {
+    expect(reportTone(snap({ fail: 1 }))).toBe('fail');
+    expect(reportTone(snap({ deg: 2 }))).toBe('warn');
+    expect(reportTone(snap({ imageFailures: [{ index: 0, source: 's', stage: 'upload', reason: 'orphan-media' }] }))).toBe('warn');
+    expect(reportTone(snap({}))).toBe('ok');
+  });
+});
+
+describe('pruneHistory(W8:上限立即生效)', () => {
+  const items = Array.from({ length: 5 }, (_, i) => ({ id: String(i) }) as HistoryItem);
+  it('超限保留最新(列表头)若干条;未超限 / inf 原样返回同一引用', () => {
+    expect(pruneHistory(items, '50')).toBe(items);
+    expect(pruneHistory(items, 'inf')).toBe(items);
+    const many = Array.from({ length: 60 }, (_, i) => ({ id: String(i) }) as HistoryItem);
+    const out = pruneHistory(many, '50');
+    expect(out).toHaveLength(50);
+    expect(out[0]?.id).toBe('0');
+  });
+});

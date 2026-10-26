@@ -10,6 +10,7 @@ import {
   isMainMessage,
   isProbeRequest,
   isSetTitleRequest,
+  messageLang,
   messageScope,
   truncateForReport,
   type FetchImageResponse,
@@ -37,6 +38,7 @@ import {
 import type { VaultScope } from '@/lib/bridge/protocol';
 import { normalizeImportResult, normalizeProbeResult, normalizeSetTitleResult } from '@/lib/bridge/resultGuards';
 import { compressImage } from '@/lib/image/compress';
+import { folderOverlayText } from '@/lib/bridge/folderOverlayText';
 
 /** content 侧图片压缩参数(来自设置 compress/maxEdge/quality);null=不压。 */
 type CompressOpts = { maxEdge: string; quality: number } | null;
@@ -484,6 +486,7 @@ export default defineContentScript({
     const connectFolder = async (
       scope: VaultScope,
       forcePick: boolean,
+      lang: 'zh' | 'en',
     ): Promise<FolderResponse> => {
       // 「恢复优先」:非强制重选时,若已有存量 handle(浏览器重启后权限回落 prompt,handle 仍在),
       // 浮层走「恢复访问」分支——点一次只弹「允许读取 <文件夹名>」授权,免去重新翻找并重选文件夹。
@@ -502,27 +505,20 @@ export default defineContentScript({
           'background:#fff;color:#0f1419;max-width:340px;padding:20px 22px;border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.25);';
         const title = document.createElement('div');
         title.style.cssText = 'font-weight:700;font-size:15px;margin-bottom:8px;';
-        // 三类文案:恢复(有存量 handle)/ 连接当前文章 / 连接默认——便于用户理解当前动作。
-        title.textContent = existing
-          ? `MarkFlow · 恢复访问「${existing.name}」`
-          : scope === 'active'
-            ? 'MarkFlow · 连接当前文章图片文件夹'
-            : 'MarkFlow · 连接默认图片文件夹';
+        // 三类文案按界面语言出(第二批 I1,见 lib/bridge/folderOverlayText)。
+        const text = folderOverlayText(lang, existing ? 'restore' : scope, existing?.name ?? null);
+        title.textContent = text.title;
         const desc = document.createElement('div');
         desc.style.cssText = 'font-size:13px;line-height:1.5;color:#536471;margin-bottom:16px;';
-        desc.textContent = existing
-          ? '浏览器重启后读权限已回落。点击下方按钮重新授予对上次文件夹的读取(仅读取,不修改),无需重选。'
-          : scope === 'active'
-            ? '选择本篇文章图片所在的文件夹,导入时优先从中读取相对路径图片(仅读取,不修改)。可随时更换为其他文章的文件夹。'
-            : '选择存放本地图片的默认文件夹,当前文章未单独连接时从中读取相对路径图片(仅读取,不修改)。重开浏览器后可能需要重新连接。';
+        desc.textContent = text.desc;
         const row = document.createElement('div');
         row.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;';
         const pick = document.createElement('button');
-        pick.textContent = existing ? '恢复访问' : '选择文件夹';
+        pick.textContent = text.pick;
         pick.style.cssText =
           'background:#0f1419;color:#fff;border:0;border-radius:9999px;padding:8px 18px;font-size:14px;font-weight:600;cursor:pointer;';
         const cancel = document.createElement('button');
-        cancel.textContent = '取消';
+        cancel.textContent = text.cancel;
         cancel.style.cssText =
           'background:transparent;color:#536471;border:1px solid #cfd9de;border-radius:9999px;padding:8px 16px;font-size:14px;cursor:pointer;';
         row.append(cancel, pick);
@@ -605,7 +601,7 @@ export default defineContentScript({
       if (isSetTitleRequest(message)) return setTitleInjector(message.title, message.conflict);
       // scope 用 messageScope 归一(旧消息缺字段时回落 persistent),不裸信任 message.scope。
       if (isConnectFolderRequest(message))
-        return connectFolder(messageScope(message), message.forcePick === true);
+        return connectFolder(messageScope(message), message.forcePick === true, messageLang(message));
       if (isClearFolderRequest(message)) return clearFolder(messageScope(message));
       if (isFolderStatusRequest(message)) return folderStatus(messageScope(message));
       return undefined; // 非本扩展关心的消息:不应答,交给其他监听器

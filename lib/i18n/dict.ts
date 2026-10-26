@@ -188,6 +188,13 @@ const zh = {
   backupRestoreAbortedNoSnapshot: '恢复已取消:导出当前数据失败,为安全起见未执行恢复',
   backupRestorePartial: '恢复中断:部分数据已写入(详情见控制台),面板即将刷新',
   diagExported: '诊断快照已导出',
+  // 2026-10-26 全面审查第二批阶段 B
+  probeNewArticle: '新文章(尚未保存)',
+  toastImages: '图片',
+  toastCover: '封面',
+  errImportBusy: 'X 页面上已有一次写入在进行,请稍后再试',
+  errNoEditor: '找不到可写入的编辑器,请刷新 X 页面后重试',
+  wipeFolderNotCleared: '本地图片文件夹授权需在打开 X 页面时清除,或到素材板 / 设置里手动断开',
   shortcutsHint: '请在 chrome://extensions/shortcuts 设置快捷键',
 } as const;
 
@@ -372,6 +379,13 @@ const en: Dict = {
   backupRestoreAbortedNoSnapshot: 'Restore cancelled: failed to export current data first, so restore was aborted for safety',
   backupRestorePartial: 'Restore interrupted — some data was written (see console). Reloading the panel…',
   diagExported: 'Diagnostics snapshot exported',
+  // 2026-10-26 full review, batch 2 stage B
+  probeNewArticle: 'New article (not saved yet)',
+  toastImages: 'images',
+  toastCover: 'cover',
+  errImportBusy: 'Another write is already running on this X page — try again shortly',
+  errNoEditor: "Couldn't find a writable editor — refresh the X page and retry",
+  wipeFolderNotCleared: 'Local image folder access can only be cleared while an X page is open — disconnect it from the assets card or Settings',
   shortcutsHint: 'Set shortcuts at chrome://extensions/shortcuts',
 };
 

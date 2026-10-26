@@ -2,6 +2,7 @@ import type { CSSProperties } from 'react';
 import { useI18n } from '@/lib/i18n/useI18n';
 import { useProbe, type ProbeStatus } from '@/lib/bridge/useProbe';
 import type { ProbeResult } from '@/lib/bridge/protocol';
+import { statusNote } from '@/lib/bridge/probeView';
 import type { Dict } from '@/lib/i18n/dict';
 
 const wrap: CSSProperties = {
@@ -66,7 +67,8 @@ function statusLabel(t: Dict, status: ProbeStatus, result: ProbeResult | null): 
     case 'timeout':
       return t.probeTimeout;
     case 'ready':
-      return result?.articleId ? `${t.probeArticle} #${result.articleId}` : t.probeNoArticle;
+      // 第二批 W3:按路由判定,新建文章页(无 id)显示「新文章(尚未保存)」而非「未在文章编辑页」。
+      return result ? statusNote(t, result) : t.probeNoArticle;
   }
 }
 

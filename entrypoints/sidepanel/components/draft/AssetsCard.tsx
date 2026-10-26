@@ -4,8 +4,8 @@ import { useSettings } from '@/lib/settings/SettingsProvider';
 import { useWorkspace } from '@/lib/workspace/WorkspaceProvider';
 import { parseMarkdown } from '@/lib/markdown/parser';
 import { classifyImageSource, type ImageBlock, type ImageSourceKind } from '@/lib/bridge/protocol';
-import { extractCover } from '@/lib/markdown/frontmatter';
 import { clearFolder, connectFolder, getFolderStatus } from '@/lib/bridge/importArticle';
+import { pickCoverSource, usesLocalImage } from '@/lib/workspace/importPlan';
 
 const card: CSSProperties = {
   margin: '10px 18px 0',
@@ -40,7 +40,7 @@ function folderErrText(t: ReturnType<typeof useI18n>['t'], error: string): strin
  * 已连接,提示「将用默认文件夹」——与导入时 active>persistent 的读取优先级一致。
  */
 function LocalFolderRow() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const { opts, setOpt } = useSettings();
   const { showToast } = useWorkspace();
 
@@ -65,7 +65,7 @@ function LocalFolderRow() {
   // forcePick=true=「更换」强制重选;false=「连接 / 恢复」,存量文件夹仅权限回落时一键复用。
   const doConnect = async (forcePick: boolean) => {
     showToast(t.folderGuideToast);
-    const res = await connectFolder('active', forcePick);
+    const res = await connectFolder('active', forcePick, lang); // 第二批 I1:X 页浮层按界面语言出文案
     if (res.ok && res.connected) {
       setOpt('activeFolder', true);
       setOpt('activeFolderName', res.folderName);
@@ -168,21 +168,20 @@ export function AssetsCard() {
   // 传 obsidianImg:关时 ![[x]] 不算图片块,素材计数与实际写入一致。
   // review B6-UI:用 useMemo 缓存解析——组件每次渲染都重跑 parseMarkdown 会在长文卡顿;
   // 且靠 App 层 ErrorBoundary 兜底 parser 抛错(不连累整树)。仅 md/obsidianImg 变化时重算。
-  const imgs = useMemo(
-    () => parseMarkdown(md, { obsidianImg: opts.obsidianImg }).filter((b): b is ImageBlock => b.kind === 'image'),
-    [md, opts.obsidianImg],
-  );
+  const blocks = useMemo(() => parseMarkdown(md, { obsidianImg: opts.obsidianImg }), [md, opts.obsidianImg]);
+  const imgs = useMemo(() => blocks.filter((b): b is ImageBlock => b.kind === 'image'), [blocks]);
   if (!md.trim() || (imgs.length === 0 && !opts.setCover)) return null;
 
-  // 是否含本地图(相对路径):有才展示「本篇图片文件夹」入口 + 就绪判定才涉及文件夹连接。
-  const hasLocal = imgs.some((im) => classifyImageSource(im.source) === 'local');
+  // 是否涉及本地图(正文本地图或本地封面):有才展示「本篇图片文件夹」入口 + 就绪判定才涉及文件夹连接。
+  // 与写入流程同一谓词(第二批 W6,lib/workspace/importPlan):此前只看正文图,`cover: ./c.png` 时不显示入口。
+  const cover = pickCoverSource(md, blocks, opts.setCover);
+  const hasLocal = usesLocalImage(blocks, cover?.source ?? null);
   // 本地图就绪 = active(本篇)或 persistent(默认)任一已连接——与导入时 resolveLocalImageAcrossScopes 逐文件兜底一致。
   const folderReady = opts.activeFolder || opts.folder;
 
   const kindLabel: Record<ImageSourceKind, string> = { local: t.kindLocal, remote: t.kindRemote, data: t.kindData };
-  // 与 extractCover 一致(仅 frontmatter、支持 Cover/封面),避免预览标签与实际行为不符。
-  const fmCover = extractCover(md) !== null;
-  const coverSource = opts.setCover ? (fmCover ? t.coverFm : imgs.length ? t.coverFirst : t.coverNone) : t.coverNone;
+  // 与写入流程同源(pickCoverSource:frontmatter cover > 正文首图),避免预览标签与实际行为不符。
+  const coverSource = !cover ? t.coverNone : cover.bodyIndex === null ? t.coverFm : t.coverFirst;
 
   return (
     <div style={card}>
