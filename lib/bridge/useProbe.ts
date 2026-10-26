@@ -69,6 +69,31 @@ export function classifyProbeResult(result: ProbeResult): ProbeStatus {
   return 'ready';
 }
 
+/** Provider 内部状态:settled = 是否已有过一次结论(首次探测完成前为 false)。 */
+export interface ProbeCore {
+  status: ProbeStatus;
+  result: ProbeResult | null;
+  loading: boolean;
+  settled: boolean;
+}
+
+/**
+ * 开始一轮探测时的状态(第二批 W5):**首次**(尚无结论)显示 probing;已有结论时保留上次的 status / result,
+ * 只置 loading(刷新按钮转圈)。此前每轮都先置 probing → `connected` 短暂为 false → 「未检测到 X 文章编辑页」
+ * 横幅闪现、写入按钮禁用一拍。保留旧结论不影响写入安全:startImport 写入前会即时重探并钉死目标。
+ */
+export function beginProbe(prev: ProbeCore): ProbeCore {
+  return prev.settled ? { ...prev, loading: true } : { status: 'probing', result: null, loading: true, settled: false };
+}
+
+/**
+ * 标签页事件是否属于本侧边栏所在窗口(第二批 W5):每个窗口一个侧边栏实例,另一个窗口切标签不该让本窗口
+ * 重探。任一方窗口 id 未知(本窗口 id 尚未取到 / 事件不带)时照旧处理,不漏探。
+ */
+export function isOwnWindowEvent(eventWindowId: number | undefined, myWindowId: number | null): boolean {
+  return eventWindowId === undefined || myWindowId === null || eventWindowId === myWindowId;
+}
+
 const ProbeContext = createContext<ProbeState | null>(null);
 
 interface ProbeProviderProps {
@@ -80,19 +105,17 @@ interface ProbeProviderProps {
  * 挂载时自动探一次。所有消费者(StatusBar、useConnection)共享同一份状态。
  */
 export function ProbeProvider({ children }: ProbeProviderProps) {
-  const [status, setStatus] = useState<ProbeStatus>('probing');
-  const [result, setResult] = useState<ProbeResult | null>(null);
+  const [core, setCore] = useState<ProbeCore>({ status: 'probing', result: null, loading: true, settled: false });
   // 探测序号:防止「刷新中又刷新」时,上一轮迟到的结果覆盖新一轮已落地的状态。
   const seqRef = useRef(0);
 
   const runProbe = useCallback(async () => {
     const seq = ++seqRef.current;
-    setStatus('probing');
+    setCore(beginProbe);
 
     const settle = (nextStatus: ProbeStatus, nextResult: ProbeResult | null) => {
       if (seq !== seqRef.current) return; // 已有更新的一轮探测,本轮结果作废
-      setStatus(nextStatus);
-      setResult(nextResult);
+      setCore({ status: nextStatus, result: nextResult, loading: false, settled: true });
     };
 
     const tabId = await resolveTargetXTab();
@@ -140,19 +163,31 @@ export function ProbeProvider({ children }: ProbeProviderProps) {
   // 400ms 防抖:SPA 导航 / 加载会连发多个事件,合并成一次探测。
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // 第二批 W5:只认本侧边栏所在窗口的标签事件(取不到窗口 id 时照旧全收)。
+    let myWindowId: number | null = null;
+    void browser.windows
+      ?.getCurrent()
+      .then((w) => {
+        myWindowId = w.id ?? null;
+      })
+      .catch(() => {
+        /* 取不到:保持 null(不过滤) */
+      });
     const schedule = () => {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => void runProbe(), 400);
     };
-    const onActivated = () => schedule();
+    const onActivated = (info: { windowId?: number }) => {
+      if (isOwnWindowEvent(info.windowId, myWindowId)) schedule();
+    };
     const onUpdated = (
       _tabId: number,
       changeInfo: { url?: string; status?: string },
-      tab: { active?: boolean },
+      tab: { active?: boolean; windowId?: number },
     ) => {
       // 仅「当前活动标签」的 URL 变化 或 加载完成 才重探——跟随当前标签,后台标签不影响显示。
       // changeInfo.url 仅在有该页 host 权限(X 页)时出现;非 X 页只能靠 status==='complete'。
-      if (!tab.active) return;
+      if (!tab.active || !isOwnWindowEvent(tab.windowId, myWindowId)) return;
       if (changeInfo.url || changeInfo.status === 'complete') schedule();
     };
     browser.tabs.onActivated.addListener(onActivated);
@@ -165,8 +200,8 @@ export function ProbeProvider({ children }: ProbeProviderProps) {
   }, [runProbe]);
 
   const value = useMemo<ProbeState>(
-    () => ({ status, result, loading: status === 'probing', refresh: runProbe }),
-    [status, result, runProbe],
+    () => ({ status: core.status, result: core.result, loading: core.loading, refresh: runProbe }),
+    [core, runProbe],
   );
 
   // 保持本文件为 .ts(不引入 JSX),用 createElement 挂 Provider。

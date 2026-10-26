@@ -4,6 +4,7 @@ import { useWorkspace } from '@/lib/workspace/WorkspaceProvider';
 import { useConnection } from '@/lib/bridge/useConnection';
 import { useProbe } from '@/lib/bridge/useProbe';
 import { Celebration } from './Celebration';
+import { reportTone } from '@/lib/workspace/runRecord';
 
 const barTrack: CSSProperties = {
   height: 4,
@@ -84,7 +85,7 @@ export function Footer() {
                 padding: '7px 11px',
                 borderRadius: 'var(--btnR)',
                 font: '500 11.5px var(--fUI)',
-                color: lastRunSnapshot.deg > 0 || lastRunSnapshot.fail > 0 || (lastRunSnapshot.imageFailures?.length ?? 0) > 0 ? 'var(--dgr)' : 'var(--ink2)',
+                color: reportTone(lastRunSnapshot) !== 'ok' ? 'var(--dgr)' : 'var(--ink2)', // 与报告卡标题栏同一判定(第二批 W7)
                 cursor: 'pointer',
               }}
             >

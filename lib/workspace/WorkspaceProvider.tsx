@@ -12,24 +12,15 @@ import { useI18n } from '@/lib/i18n/useI18n';
 import { useSettings } from '@/lib/settings/SettingsProvider';
 import { useConnection } from '@/lib/bridge/useConnection';
 import { useProbe } from '@/lib/bridge/useProbe';
-import { getFolderStatus, importToXTab, probeXTabContent, setTitleOnXTab } from '@/lib/bridge/importArticle';
+import { clearFolder, getFolderStatus, importToXTab, probeXTabContent, setTitleOnXTab } from '@/lib/bridge/importArticle';
 import {
   countDeniedRemote,
   queryRemoteImagePermissions,
   relabelPermissionFailures,
   requestRemoteImagePermissions,
 } from '@/lib/bridge/imagePermissions';
-import {
-  ARTICLE_SWITCHED_ERROR,
-  BAD_RESULT_ERROR,
-  classifyImageSource,
-  NOT_ARTICLE_EDITOR_ERROR,
-  type ImageBlock,
-  type ImageFailure,
-  type ImportMode,
-  type SetTitleResponse,
-} from '@/lib/bridge/protocol';
-import { extractCover, extractTitle, parseMarkdownWithoutTitle } from '@/lib/markdown/frontmatter';
+import { ARTICLE_SWITCHED_ERROR, type ImageFailure, type ImportMode, type SetTitleResponse } from '@/lib/bridge/protocol';
+import { extractTitle, parseMarkdownWithoutTitle } from '@/lib/markdown/frontmatter';
 import { parseMarkdown } from '@/lib/markdown/parser';
 import { sampleEn, sampleZh } from '@/lib/markdown/sample';
 import { DRAFT_KEY, removeDraft, saveDraft } from '@/lib/storage/draftStore';
@@ -40,9 +31,10 @@ import { createEchoQueue } from '@/lib/storage/echoQueue';
 import { validateHistory } from '@/lib/storage/schema';
 import { downloadText } from '@/lib/ui/download';
 import { decideDraftChange } from '@/lib/workspace/draftSync';
-import { buildRunRecord, type LastRunSnapshot, type RunParseOpts } from '@/lib/workspace/runRecord';
+import { importErrorText, titleResultText } from '@/lib/workspace/errorText';
+import { pickCoverSource, usesLocalImage } from '@/lib/workspace/importPlan';
+import { buildRunRecord, pruneHistory, type LastRunSnapshot, type RunParseOpts } from '@/lib/workspace/runRecord';
 import type { Tab } from '@/entrypoints/sidepanel/types';
-import type { Dict } from '@/lib/i18n/dict';
 
 type Mode = 'edit' | 'preview';
 
@@ -126,31 +118,6 @@ interface Timers {
   celebrate?: ReturnType<typeof setTimeout>;
   clearArm?: ReturnType<typeof setTimeout>;
   histArm?: ReturnType<typeof setTimeout>;
-}
-
-/** 把注入引擎的英文错误短语归类为可读中文/英文文案。 */
-function importErrorText(error: string, t: Dict): string {
-  if (error === 'disconnected') return t.errDisconnected;
-  if (error === 'no-injector') return t.errNoInjector;
-  if (error === 'timeout') return t.errTimeout;
-  if (error === BAD_RESULT_ERROR) return t.errBadResult; // B9:injector 回传形状不合规
-  if (error === NOT_ARTICLE_EDITOR_ERROR) return t.errNotArticleEditor; // B3:injector 拒写非文章编辑页
-  // 其他 injector 层错误:统一「写入失败」并附上原始短语,便于诊断。
-  return `${t.errWriteFail}: ${error}`;
-}
-
-/** 把标题设置结果归类为可读文案。applied:false 属正常(keep 命中已有标题)。 */
-function titleResultText(res: SetTitleResponse, t: Dict): string {
-  if (res.ok) return res.applied ? t.titleSet : t.titleKept;
-  // 标题框未找到单列一类。
-  if (res.error.includes('not found')) return t.titleFieldMissing;
-  // 通道层错误(未连接/未就绪/超时)复用与正文一致的本地化,不把英文诊断码泄漏给用户。
-  if (res.error === 'disconnected') return `${t.titleFail}: ${t.errDisconnected}`;
-  if (res.error === 'no-injector') return `${t.titleFail}: ${t.errNoInjector}`;
-  if (res.error === 'timeout') return `${t.titleFail}: ${t.errTimeout}`;
-  if (res.error === BAD_RESULT_ERROR) return `${t.titleFail}: ${t.errBadResult}`;
-  if (res.error === NOT_ARTICLE_EDITOR_ERROR) return `${t.titleFail}: ${t.errNotArticleEditor}`;
-  return `${t.titleFail}: ${res.error}`;
 }
 
 interface WorkspaceProviderProps {
@@ -320,6 +287,13 @@ export function WorkspaceProvider({
     },
     [markPersist],
   );
+
+  // 第二批 W8:「记录保留上限」改小(或备份恢复后 reload 带回超限历史)时立即裁剪——此前只在下一次导入
+  // 收尾时裁剪,与设置说明「超出后自动清理最旧记录」不符。pruneHistory 未超限时返回原数组,不触发写入。
+  useEffect(() => {
+    const pruned = pruneHistory(historyRef.current, opts.histLimit);
+    if (pruned !== historyRef.current) commitHistory(pruned);
+  }, [opts.histLimit, history, commitHistory]);
 
   // flush 触发点:防抖到点之外,面板隐藏/卸载/失焦(用户点回 X 页面)都立即落盘——
   // 侧边栏被关闭时卸载事件不保证给足异步 IPC 时间,所以尽量在还活着的时机就写完。
@@ -561,11 +535,9 @@ export function WorkspaceProvider({
       setLastRunSnapshot(snapshot);
     }
 
-    const limit = opts.histLimit === 'inf' ? Infinity : Number(opts.histLimit);
     // 读 historyRef.current(最新值)而非闭包 history:标题 ask 弹窗挂起期间用户可能已在记录页
     // 删改历史,用陈旧闭包 commit 会复活已删条目并写回 storage(review P1)。
-    const nextHistory = [item, ...historyRef.current];
-    commitHistory(nextHistory.length > limit ? nextHistory.slice(0, limit) : nextHistory);
+    commitHistory(pruneHistory([item, ...historyRef.current], opts.histLimit));
 
     if (opts.confetti) {
       setCelebrating(true);
@@ -636,34 +608,24 @@ export function WorkspaceProvider({
 
         // 封面来源:frontmatter cover > 正文首图。首图取自**已解析 blocks 的首个 ImageBlock**——
         // 与实际上传/移除同源,避免用 images() 全文正则误选到内联图 / 代码块内的图(review #1)。
-        let coverSource: string | null = null;
+        // 来源判定与素材板共用 pickCoverSource(第二批 W6)。
+        const cover = pickCoverSource(md, blocks, opts.setCover);
+        const coverSource = cover?.source ?? null;
         // 正文首图被抽走当封面时置真:引擎看到的图片序列比用户文档少第一张,回传的失败明细
         // index 需 +1 还原成「文档里的第 N 张图」,否则报告指错图(review 批次三)。
         let coverRemovedBodyImage = false;
-        if (opts.setCover) {
-          const fmCover = extractCover(md);
-          if (fmCover) {
-            coverSource = fmCover;
-          } else {
-            const firstImgIdx = blocks.findIndex((b) => b.kind === 'image');
-            if (firstImgIdx >= 0) {
-              coverSource = (blocks[firstImgIdx] as ImageBlock).source;
-              // coverKeep=remove:直接删掉这个作封面的图片块,避免封面在正文重复(删的正是
-              // 拿去当封面的同一块,不再有「选 A 删 B」的错位)。
-              if (opts.coverKeep === 'remove') {
-                blocks = blocks.filter((_, i) => i !== firstImgIdx);
-                coverRemovedBodyImage = true;
-              }
-            }
-          }
+        // coverKeep=remove:直接删掉这个作封面的图片块,避免封面在正文重复(删的正是拿去当封面的同一块,
+        // 不再有「选 A 删 B」的错位)。
+        if (cover?.bodyIndex != null && opts.coverKeep === 'remove') {
+          const idx = cover.bodyIndex;
+          blocks = blocks.filter((_, i) => i !== idx);
+          coverRemovedBodyImage = true;
         }
 
         // 本次导入是否涉及本地图——谓词与 content 的 usesLocalImage 完全一致(blocks 里的
-        // local 图,或本地路径封面)。涉及则 content 会在导入结束后清 vault handle(B5),
-        // 成功收尾时需同步校准文件夹 UI 并提示用户(真机回归 T2)。
-        const usesLocalImage =
-          blocks.some((b) => b.kind === 'image' && classifyImageSource(b.source) === 'local') ||
-          (coverSource !== null && classifyImageSource(coverSource) === 'local');
+        // local 图,或本地路径封面),素材板同用(第二批 W6)。涉及则 content 会在导入结束后清 vault
+        // handle(B5),成功收尾时需同步校准文件夹 UI 并提示用户(真机回归 T2)。
+        const usesLocal = usesLocalImage(blocks, coverSource);
 
         // 远程图 / 封面 host 权限:首次点击时必须在用户手势内、任何其它 await 之前(上面全同步)。
         // 传**已解析的 blocks**(B3-4 / P1-7):权限申请的图片来源与实际上传的来源同一份,
@@ -735,9 +697,9 @@ export function WorkspaceProvider({
           // 图片上传结果:有图片时如实附上「成功/总数」,失败图已被引擎降级为原文。
           const totalImg = res.imageOk + res.imageFail;
           if (totalImg > 0) {
-            toastMsg = `${toastMsg} · ${en ? 'images' : '图片'} ${res.imageOk}/${totalImg}`;
+            toastMsg = `${toastMsg} · ${t.toastImages} ${res.imageOk}/${totalImg}`;
           }
-          if (res.coverSet) toastMsg = `${toastMsg} · ${en ? 'cover' : '封面'}`;
+          if (res.coverSet) toastMsg = `${toastMsg} · ${t.toastCover}`;
           // 标题流程:正文已成功,再设置标题。标题失败不推翻正文成功结论(部分成功)。
           if (extracted) {
             // 标题 ask 询问弹窗 × B1 钉 tabId 的整合:三处 setTitleOnXTab **全部复用 pinnedTabId**,
@@ -761,7 +723,7 @@ export function WorkspaceProvider({
           // B5 的 UI 同步:content 已在导入尾声清掉用过的 vault handle,这里(a)就地重新校准
           // 素材板/设置的文件夹状态(否则要等组件重新挂载才刷新,UI 撒谎),(b)若确有文件夹
           // 曾处于连接态,toast 里明确告知已断开——安全清理是既定代价,但不能默默变化。
-          if (usesLocalImage) {
+          if (usesLocal) {
             if (opts.activeFolder || opts.folder) toastMsg = `${toastMsg} · ${t.folderAutoCleared}`;
             void recalibrateFolders();
           }
@@ -793,7 +755,7 @@ export function WorkspaceProvider({
           // B5 的失败路径同步(review 修复):content 对「涉本地图的导入」**无论成败**都会清
           // vault handle,此前只有成功分支校准文件夹 UI——失败后素材板仍显示「已连接」,
           // 下次导入本地图静默找不到文件。失败也就地校准,UI 不撒谎。
-          if (usesLocalImage) void recalibrateFolders();
+          if (usesLocal) void recalibrateFolders();
         }
       } catch (err) {
         // 解析异常(如超深嵌套导致栈溢出)等意外:兜底提示,不留残局。
@@ -925,19 +887,30 @@ export function WorkspaceProvider({
     setMdState('');
     historyRef.current = [];
     setHistory([]);
+    const hadFolder = opts.folder || opts.activeFolder;
     try {
       await removeDraft();
       await removeHistory();
       await removeOptions();
       await removePrefs();
-      location.reload();
+      // 第二批 W9:本地图片文件夹授权(handle)存在 x.com 的 IndexedDB,只能经 X 页面的 content 清除——当前
+      // 标签是 X 页时两级都清;不是则清不到,如实提示(否则 reload 后设置页 / 素材板挂载校准又把「已连接」写回,
+      // 「清除所有数据」名不副实)。放在本地数据删完**之后**:清除请求最长要等超时,不能拖住数据删除。
+      const folderResults = await Promise.all([clearFolder('active'), clearFolder('persistent')]);
+      const folderLeft = hadFolder && folderResults.some((r) => !r.ok);
+      if (folderLeft) {
+        showToast(t.wipeFolderNotCleared, 'error');
+        setTimeout(() => location.reload(), 3200); // 留时间读完提示再 reload
+      } else {
+        location.reload();
+      }
     } catch (err) {
       // 任一删除失败:不 reload(用户能看到提示),如实报错——此前静默吞掉,用户点了
       // 「确认清除」却毫无反馈、数据可能只删了一半(review 修复)。
       console.error('[MarkFlow] wipeAll failed:', err);
       showToast(t.errWipeFail, 'error');
     }
-  }, [showToast, t.errWipeFail]);
+  }, [showToast, t.errWipeFail, t.wipeFolderNotCleared, opts.folder, opts.activeFolder]);
 
   const value = useMemo<WorkspaceValue>(
     () => ({

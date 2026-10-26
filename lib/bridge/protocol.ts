@@ -389,7 +389,8 @@ export type RuntimeRequest =
   | { type: typeof SET_TITLE_REQUEST_TYPE; title: string; conflict: TitleConflict }
   // forcePick=true 强制重新 showDirectoryPicker 选文件夹(「更换」);缺省/false 时若存量 handle
   // 仅权限回落(浏览器重启)则一键 requestPermission 复用,免重选(「连接 / 恢复」)。
-  | { type: typeof CONNECT_FOLDER_TYPE; scope: VaultScope; forcePick?: boolean }
+  // lang(第二批 I1):X 页授权浮层的文案语言,缺省按中文(见 messageLang)。
+  | { type: typeof CONNECT_FOLDER_TYPE; scope: VaultScope; forcePick?: boolean; lang?: 'zh' | 'en' }
   | { type: typeof CLEAR_FOLDER_TYPE; scope: VaultScope }
   | { type: typeof FOLDER_STATUS_TYPE; scope: VaultScope };
 
@@ -486,6 +487,14 @@ function messageType(msg: unknown): string | undefined {
 export function messageScope(msg: unknown): VaultScope {
   const s = (msg as { scope?: unknown } | null)?.scope;
   return s === 'active' ? 'active' : 'persistent';
+}
+
+/**
+ * 读取 connect-folder 请求的界面语言并归一(第二批 I1):仅 'en' 认作英文,缺省 / 非法一律回落 'zh'
+ * ——旧侧边栏不带该字段时浮层保持原有中文文案。
+ */
+export function messageLang(msg: unknown): 'zh' | 'en' {
+  return (msg as { lang?: unknown } | null)?.lang === 'en' ? 'en' : 'zh';
 }
 
 /**

@@ -2,6 +2,7 @@ import { useMemo, type CSSProperties } from 'react';
 import { useI18n } from '@/lib/i18n/useI18n';
 import { useWorkspace } from '@/lib/workspace/WorkspaceProvider';
 import { capability } from '@/lib/markdown/capability';
+import { reportTone } from '@/lib/workspace/runRecord';
 import type { Dict } from '@/lib/i18n/dict';
 import type { ImageFailReason } from '@/lib/bridge/protocol';
 
@@ -65,13 +66,20 @@ export function ReportCard() {
   if (!reportVisible || !lastRunSnapshot) return null;
 
   const summary = `${lastRunSnapshot.ok} ${t.rOk} · ${lastRunSnapshot.deg} ${t.rDeg} · ${lastRunSnapshot.fail} ${t.rFail}`;
+  // 第二批 W7:标题栏按结果三态着色 / 换图标(此前绿色对勾写死,全部失败也显示成功);与底栏入口同一判定。
+  const tone = reportTone(lastRunSnapshot);
+  const toneVar = tone === 'fail' ? 'var(--dgr)' : tone === 'warn' ? 'var(--warn)' : 'var(--ok)';
 
   return (
     <div style={card}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 13px', background: 'color-mix(in oklab,var(--ok),transparent 92%)' }}>
-        <svg width="13" height="13" viewBox="0 0 16 16">
-          <circle cx="8" cy="8" r="7" fill="none" stroke="var(--ok)" strokeWidth="1.4" />
-          <path d="M4.8 8.2L7 10.4L11.2 5.8" fill="none" stroke="var(--ok)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 13px', background: `color-mix(in oklab,${toneVar},transparent 92%)` }}>
+        <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="8" cy="8" r="7" fill="none" stroke={toneVar} strokeWidth="1.4" />
+          {tone === 'ok' && (
+            <path d="M4.8 8.2L7 10.4L11.2 5.8" fill="none" stroke={toneVar} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          )}
+          {tone === 'warn' && <path d="M8 4.4V8.8M8 11.2V11.4" fill="none" stroke={toneVar} strokeWidth="1.6" strokeLinecap="round" />}
+          {tone === 'fail' && <path d="M5.6 5.6L10.4 10.4M10.4 5.6L5.6 10.4" fill="none" stroke={toneVar} strokeWidth="1.6" strokeLinecap="round" />}
         </svg>
         <span style={{ font: '600 11.5px var(--fUI)', color: 'var(--ink)' }}>{t.reportTitle}</span>
         <span style={{ flex: 1 }} />

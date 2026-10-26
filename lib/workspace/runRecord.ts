@@ -71,3 +71,23 @@ export function buildRunRecord(input: RunInput): { item: HistoryItem; snapshot: 
   const hasAnomaly = deg > 0 || fail > 0 || (imageFailures?.length ?? 0) > 0;
   return { item, snapshot: { md, parseOpts, ok, deg, fail, imageFailures }, hasAnomaly };
 }
+
+/**
+ * 报告卡标题栏的语气(第二批 W7):有失败 → 'fail';无失败但有降级或失败明细(orphan / 错位提示等不计数但
+ * 需用户介入)→ 'warn';否则 'ok'。此前标题栏的绿色对勾写死,全部失败时也显示成功。底栏「查看报告」入口的
+ * 异常色同用此函数(两处判定一致)。
+ */
+export function reportTone(snapshot: Pick<LastRunSnapshot, 'deg' | 'fail' | 'imageFailures'>): 'ok' | 'warn' | 'fail' {
+  if (snapshot.fail > 0) return 'fail';
+  if (snapshot.deg > 0 || (snapshot.imageFailures?.length ?? 0) > 0) return 'warn';
+  return 'ok';
+}
+
+/**
+ * 按「记录保留上限」裁剪历史(第二批 W8):保留列表头(最新)的 limit 条。未超限 / 不限时返回**同一引用**,
+ * 调用方据此判断是否需要写回(不触发无谓的 storage 写入)。
+ */
+export function pruneHistory<T>(list: T[], histLimit: '50' | '200' | 'inf'): T[] {
+  const limit = histLimit === 'inf' ? Infinity : Number(histLimit);
+  return list.length > limit ? list.slice(0, limit) : list;
+}

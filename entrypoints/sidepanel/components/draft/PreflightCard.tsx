@@ -3,6 +3,7 @@ import { useI18n } from '@/lib/i18n/useI18n';
 import { useWorkspace } from '@/lib/workspace/WorkspaceProvider';
 import { useProbe, type ProbeStatus } from '@/lib/bridge/useProbe';
 import type { ProbeResult } from '@/lib/bridge/protocol';
+import { pageNote, pageState } from '@/lib/bridge/probeView';
 import type { Dict } from '@/lib/i18n/dict';
 
 const card: CSSProperties = {
@@ -21,12 +22,12 @@ interface PreflightItem {
 
 /** status === 'ready' 时,把探针结果拆成四项真实预检行(目标页面/编辑器/Draft 实例/上传通道)。 */
 function buildItems(t: Dict, result: ProbeResult): PreflightItem[] {
-  const hasArticle = result.articleId !== null;
+  // 第二批 W3:按路由判定——新建文章页 articleId 为 null 但可写,此前被标成 ✕「未在文章编辑页」。
   return [
     {
       label: t.ckPage,
-      ok: hasArticle,
-      note: hasArticle ? `${t.ckPageOk} #${result.articleId}` : t.probeNoArticle,
+      ok: pageState(result) !== 'not-article',
+      note: pageNote(t, result),
     },
     { label: t.pbEditor, ok: result.hasEditor, note: result.hasEditor ? t.stReady : t.ckFail },
     { label: t.pbDraft, ok: result.hasDraftNode, note: result.hasDraftNode ? t.stReady : t.ckFail },

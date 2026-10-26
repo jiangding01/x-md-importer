@@ -120,7 +120,7 @@ export function settingsConfig({ en, folderConnected, folderName, wipeArm }: Con
       rows: [
         { k: 'histLimit', t: 'select', label: T('记录保留上限', 'History limit'), desc: T('超出后自动清理最旧记录。', 'Oldest records pruned beyond limit.'), opts: [o('50', '50', '50'), o('200', '200', '200'), o('inf', '不限', 'Unlimited')] },
         { k: 'backup', t: 'action', label: T('备份与恢复', 'Backup & restore'), desc: T('导出/导入全部设置与记录(JSON,本地文件)。', 'Export/import all settings & history (local JSON).'), actLabel: T('导出', 'Export') },
-        { k: 'wipe', t: 'action', danger: true, label: T('清除所有数据', 'Erase all data'), desc: T('删除全部草稿、记录与设置,不可恢复。', 'Deletes drafts, history & settings. Irreversible.'), actLabel: wipeArm ? T('确认清除?', 'Confirm?') : T('清除', 'Erase') },
+        { k: 'wipe', t: 'action', danger: true, label: T('清除所有数据', 'Erase all data'), desc: T('删除全部草稿、记录与设置,并断开本地图片文件夹授权(需当前标签是 X 页面),不可恢复。', 'Deletes drafts, history & settings, and disconnects local image folders (needs an X tab open). Irreversible.'), actLabel: wipeArm ? T('确认清除?', 'Confirm?') : T('清除', 'Erase') },
       ],
     },
     {

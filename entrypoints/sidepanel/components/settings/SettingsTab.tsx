@@ -127,7 +127,7 @@ export function SettingsTab() {
     }
 
     showToast(t.folderGuideToast);
-    const res = await connectFolder('persistent');
+    const res = await connectFolder('persistent', false, lang); // 第二批 I1:X 页浮层按界面语言出文案
     if (res.ok && res.connected) {
       setOpt('folder', true);
       setOpt('folderName', res.folderName);

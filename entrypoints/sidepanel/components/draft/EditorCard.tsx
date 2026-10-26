@@ -3,6 +3,7 @@ import { useI18n } from '@/lib/i18n/useI18n';
 import { useSettings } from '@/lib/settings/SettingsProvider';
 import { useWorkspace } from '@/lib/workspace/WorkspaceProvider';
 import { Preview } from '@/lib/markdown/Preview';
+import { isFileDrag } from '@/lib/ui/drag';
 
 const toolbar: CSSProperties = {
   display: 'flex',
@@ -76,7 +77,9 @@ export function EditorCard({ onImport }: { onImport: () => void }) {
     });
   };
 
+  // 第二批 W4:只有拖入文件才拦截默认行为 / 显示遮罩;拖文字(网页拖入、框内拖动选中文字)交给 textarea 原生处理。
   const onDragOver = (e: DragEvent) => {
+    if (!isFileDrag(e.dataTransfer?.types)) return;
     e.preventDefault();
     if (!dragging) setDragging(true);
   };
@@ -84,8 +87,9 @@ export function EditorCard({ onImport }: { onImport: () => void }) {
   // 不是文件(files 为空)或读取失败,遮罩会永久卡住。readFile 自身对空 file 直接 no-op,
   // 这里的清除与它互不冲突,只是把「拖拽态收起」从异步回调里提前到同步事件处理。
   const onDrop = (e: DragEvent) => {
-    e.preventDefault();
     setDragging(false);
+    if (!isFileDrag(e.dataTransfer?.types)) return;
+    e.preventDefault();
     readFile(e.dataTransfer.files?.[0]);
   };
   // P2-24:dragLeave 在容器内滑过子元素(工具栏/文本框)时也会触发,若不判断 relatedTarget

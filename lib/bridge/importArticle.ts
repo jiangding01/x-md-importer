@@ -187,11 +187,16 @@ async function sendFolderRequest(request: RuntimeRequest): Promise<FolderRespons
  * @param scope 'active'=素材板「当前文章」文件夹(优先级高);'persistent'=设置默认文件夹(兜底)。
  * @param forcePick true=「更换」强制重新选择文件夹;缺省/false=「连接 / 恢复」,存量 handle 仅
  *                  权限回落(浏览器重启)时一键 requestPermission 复用,免重选。
+ * @param lang 界面语言(第二批 I1):X 页授权浮层按它出文案。
  * @returns 连接成功回 `{ok:true, connected:true, folderName}`;用户取消回
  *          `{ok:false, error:'cancelled'}`;定位不到 X tab 时回 `{ok:false, error:'disconnected'}`。
  */
-export async function connectFolder(scope: VaultScope, forcePick = false): Promise<FolderResponse> {
-  return sendFolderRequest({ type: CONNECT_FOLDER_TYPE, scope, forcePick });
+export async function connectFolder(
+  scope: VaultScope,
+  forcePick = false,
+  lang: 'zh' | 'en' = 'zh',
+): Promise<FolderResponse> {
+  return sendFolderRequest({ type: CONNECT_FOLDER_TYPE, scope, forcePick, lang });
 }
 
 /** 清除指定作用域已连接的本地图片文件夹。 */
