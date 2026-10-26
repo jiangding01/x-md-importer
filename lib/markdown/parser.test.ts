@@ -5,7 +5,8 @@ import {
   stripFirstImageLine,
   forEachContentLine,
   inlinePlainText,
-  parseMarkdownWithHeadings,
+  parseMarkdownWithMeta,
+  isUnclosedFence,
 } from './parser';
 import { extractTitle } from './frontmatter';
 import type {
@@ -686,10 +687,13 @@ describe('代码围栏', () => {
     expect(asAtomic(blocks[0]).entityType).toBe('MARKDOWN');
   });
 
-  it('未闭合围栏降级为普通段落文本', () => {
+  it('未闭合围栏(第二批 P2):按 CommonMark 到文末都是代码,补齐闭栏', () => {
     const blocks = parseMarkdown('```js\ncode');
-    expect(asText(blocks[0]).type).toBe('unstyled');
-    expect(blocks.some((b) => b.kind === 'atomic')).toBe(false);
+    expect(blocks).toHaveLength(1);
+    const b = asAtomic(blocks[0]);
+    if (b.entityType !== 'MARKDOWN') throw new Error('期望 MARKDOWN');
+    expect(b.data.markdown).toBe('```js\ncode\n```');
+    expect(isUnclosedFence(b)).toBe(true);
   });
 
   it('info 归一:HTML 实体空格转义后只取第一词', () => {
@@ -1285,13 +1289,13 @@ describe('forEachContentLine', () => {
     expect(visited).toEqual(['a', 'b']);
   });
 
-  it('未闭合围栏的开栏行按普通内容访问', () => {
-    const lines = ['```', 'x'];
+  it('未闭合围栏(第二批 P2):开栏行到文末整段跳过(与解析一致,都是代码)', () => {
+    const lines = ['正文', '```', 'x'];
     const visited: string[] = [];
     forEachContentLine(lines, (line) => {
       visited.push(line);
     });
-    expect(visited).toEqual(['```', 'x']);
+    expect(visited).toEqual(['正文']);
   });
 
   // B3-3(P1-6):frontmatter 跳过是**显式开关**,默认不跳——语义不隐式变更,
@@ -1980,10 +1984,10 @@ describe('P5 引用块内的围栏代码原样保留', () => {
   });
 });
 
-describe('P4 parseMarkdownWithHeadings:标题上报带块下标', () => {
+describe('P4 parseMarkdownWithMeta:标题上报带块下标', () => {
   it('blockIndex 指向产出序列中对应的标题块,块序列与 parseMarkdown 一致', () => {
     const md = '前言\n\n# A\n\n段\n\nB\n===\n\n- x\n### C';
-    const { blocks, headings } = parseMarkdownWithHeadings(md);
+    const { blocks, headings } = parseMarkdownWithMeta(md);
     expect(blocks).toEqual(parseMarkdown(md));
     expect(headings.map((h) => [h.raw, h.blockIndex])).toEqual([
       ['A', 1],
@@ -1994,7 +1998,123 @@ describe('P4 parseMarkdownWithHeadings:标题上报带块下标', () => {
   });
 
   it('解析开关只作用于本次调用(P7:不残留模块级开关)', () => {
-    parseMarkdownWithHeadings('![[a.png]]', { obsidianImg: false });
-    expect(parseMarkdownWithHeadings('![[a.png]]').blocks[0]?.kind).toBe('image');
+    parseMarkdownWithMeta('![[a.png]]', { obsidianImg: false });
+    expect(parseMarkdownWithMeta('![[a.png]]').blocks[0]?.kind).toBe('image');
+  });
+});
+
+// ===========================================================================
+// 2026-10-26 全面审查第二批阶段 A(docs/review/修复方案-2026-10-26-第二批.md)
+// ===========================================================================
+
+describe('第二批 P2 未闭合围栏:到文末都是代码', () => {
+  it('审查复现:代码里的 `# 注释` / `*args` / `- x` 原样进代码块,不成标题 / 列表', () => {
+    const md = '正文\n\n```python\n# 注释\ndef f(*args, **kw): pass\n- x';
+    const blocks = parseMarkdown(md);
+    expect(shapeOf(blocks)).toEqual(['unstyled:正文', 'MARKDOWN']);
+    const b = asAtomic(blocks[1]);
+    if (b.entityType !== 'MARKDOWN') throw new Error('期望 MARKDOWN');
+    expect(b.data.markdown).toBe('```python\n# 注释\ndef f(*args, **kw): pass\n- x\n```');
+    expect(extractTitle(md)).toBeNull();
+  });
+
+  it('正文中段的未闭合围栏:其后全部进同一个代码块(内容逐字保留)', () => {
+    const blocks = parseMarkdown('前言\n\n~~~\na\n\n# h\n正文 *x*');
+    expect(shapeOf(blocks)).toEqual(['unstyled:前言', 'MARKDOWN']);
+    const b = asAtomic(blocks[1]);
+    if (b.entityType === 'MARKDOWN') expect(b.data.markdown).toBe('~~~\na\n\n# h\n正文 *x*\n~~~');
+  });
+
+  it('已闭合围栏不打标记;列表内缩进的未闭合围栏维持原行为(按文本)', () => {
+    expect(isUnclosedFence(parseMarkdown('```\nx\n```')[0]!)).toBe(false);
+    expect(shapeOf(parseMarkdown('- a\n  ```\n  x'))).toEqual(['unordered-list-item:a', 'unstyled:```\nx']);
+  });
+
+  it('文末孤立的开栏行(其后无内容)不产空代码块,按原逻辑作文本(check 审查)', () => {
+    expect(shapeOf(parseMarkdown('正文\n\n```'))).toEqual(['unstyled:正文', 'unstyled:```']);
+    expect(shapeOf(parseMarkdown('正文\n```js\n\n'))).toEqual(['unstyled:正文', 'unstyled:```js']);
+  });
+
+  it('大量未闭合开栏行线性完成(原 P10 块级 O(n²) 随之消失)', () => {
+    const md = '```js\n'.repeat(20000);
+    const t0 = performance.now();
+    const blocks = parseMarkdown(md);
+    expect(performance.now() - t0).toBeLessThan(500);
+    expect(blocks).toHaveLength(1);
+  });
+});
+
+describe('第二批 P3 HTML 注释块不写入', () => {
+  it('审查复现:注释里的 `# TODO` / `- 说明` 不进正文,文章标题取真标题', () => {
+    const md = '<!--\n# TODO: 替换成项目名\n- 说明\n-->\n\n# 真正的标题\n\n正文';
+    expect(shapeOf(parseMarkdown(md))).toEqual(['header-one:真正的标题', 'unstyled:正文']);
+    expect(extractTitle(md)).toEqual({ title: '真正的标题', source: 'h1' });
+  });
+
+  it('单行注释;注释可打断段落;`-->` 之后同行的正文照常写入', () => {
+    expect(shapeOf(parseMarkdown('<!-- x -->\n正文'))).toEqual(['unstyled:正文']);
+    expect(shapeOf(parseMarkdown('前文\n<!-- x -->\n后文'))).toEqual(['unstyled:前文', 'unstyled:后文']);
+    expect(shapeOf(parseMarkdown('<!-- a\nb --> 尾巴 *斜*'))).toEqual(['unstyled:尾巴 斜']);
+  });
+
+  it('未闭合注释不吞后文:按文本写入(避免整篇静默丢失)', () => {
+    expect(shapeOf(parseMarkdown('<!-- 未闭合\n正文'))).toEqual(['unstyled:<!-- 未闭合\n正文']);
+  });
+
+  it('围栏代码里的 `<!--` 不受影响;行内注释维持字面量', () => {
+    const b = asAtomic(parseMarkdown('```\n<!-- x -->\n```')[0]);
+    if (b.entityType === 'MARKDOWN') expect(b.data.markdown).toBe('```\n<!-- x -->\n```');
+    expect(shapeOf(parseMarkdown('正文 <!-- x --> 续'))).toEqual(['unstyled:正文 <!-- x --> 续']);
+  });
+
+  it('parseMarkdownWithMeta 报告丢弃的注释块数;forEachContentLine 跳过注释区间', () => {
+    expect(parseMarkdownWithMeta('<!-- a -->\n\n<!--\nb\n-->\n正文').htmlComments).toBe(2);
+    const seen: number[] = [];
+    forEachContentLine('<!--\n# x\n-->\n正文'.split('\n'), (_l, i) => {
+      seen.push(i);
+    });
+    expect(seen).toEqual([3]);
+  });
+});
+
+describe('第二批 P8 强调符不跨进链接目标', () => {
+  it('`**注意 [链接](https://a.com/a**b) 结束**`:链接保留、URL 不变、整段加粗', () => {
+    const b = inlineOf('**注意 [链接](https://a.com/a**b) 结束**');
+    expect(b.text).toBe('注意 链接 结束');
+    expect(b.links.map((l) => [sliceRange(b.text, l), l.url])).toEqual([['链接', 'https://a.com/a**b']]);
+    expect(stylesOf(b, 'BOLD').map((r) => sliceRange(b.text, r))).toEqual(['注意 链接 结束']);
+  });
+
+  it('`*[Python](…/Python_*)*`:链接保留,斜体包住链接文字', () => {
+    const b = inlineOf('*[Python](https://en.wikipedia.org/wiki/Python_*)*');
+    expect(b.text).toBe('Python');
+    expect(b.links[0]?.url).toBe('https://en.wikipedia.org/wiki/Python_*');
+    expect(stylesOf(b, 'ITALIC').map((r) => sliceRange(b.text, r))).toEqual(['Python']);
+  });
+
+  it('`_参见 [文档](https://a.com/my_doc)_`:斜体不被 URL 里的 `_` 截断', () => {
+    const b = inlineOf('_参见 [文档](https://a.com/my_doc)_');
+    expect(b.text).toBe('参见 文档');
+    expect(stylesOf(b, 'ITALIC').map((r) => sliceRange(b.text, r))).toEqual(['参见 文档']);
+    expect(b.links[0]?.url).toBe('https://a.com/my_doc');
+  });
+
+  it('链接文字内的强调照常;未成链接的 `[` 不跳过', () => {
+    const b = inlineOf('[**粗**](https://u.com) 与 *a [b c*');
+    expect(stylesOf(b, 'BOLD').map((r) => sliceRange(b.text, r))).toEqual(['粗']);
+    expect(stylesOf(b, 'ITALIC').map((r) => sliceRange(b.text, r))).toEqual(['a [b c']);
+  });
+});
+
+describe('第二批 P9 链接 title 里的 `)` 不截断 URL', () => {
+  it('双引号 / 单引号 title', () => {
+    for (const md of ['[a](https://a.com "title with ) paren")', "[a](https://a.com 'x ) y')"]) {
+      const b = inlineOf(md);
+      expect([md, b.text, b.links.map((l) => l.url)]).toEqual([md, 'a', ['https://a.com']]);
+    }
+  });
+
+  it('URL 自身的括号配对不变', () => {
+    expect(inlineOf('[w](https://en.wikipedia.org/wiki/A_(b))').links[0]?.url).toBe('https://en.wikipedia.org/wiki/A_(b)');
   });
 });

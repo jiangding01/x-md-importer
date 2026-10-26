@@ -457,24 +457,21 @@ describe('P3 标题判定与解析同源(定点)', () => {
   });
 });
 
-// L1(独立审查):未闭合的开栏行 / `$$` 起行下方紧跟 `===` 时,正文按 setext 渲染成标题「```」/「$$」,
-// 但它显然不是作者意图的文章标题——标题抽取跳过它、继续找下一个(正文解析不改)。
-describe('L1 setext 标题文本为开栏行 / `$$` 时不作文章标题', () => {
-  for (const [md, rest] of [
-    ['```\n===\n# 真标题\n正文', '```\n===\n正文'],
-    ['$$\n===\n# 真标题', '$$\n==='],
-    ['~~~\n===\n# 真标题', '~~~\n==='],
-  ] as const) {
-    it(`${JSON.stringify(md)} → 标题「真标题」,去掉的是 \`# 真标题\` 块`, () => {
-      expect(extractTitle(md)).toEqual({ title: '真标题', source: 'h1' });
-      expect(strip(md)).toEqual(parseMarkdown(rest));
+// L1(独立审查):未闭合的 `$$` 起行下方紧跟 `===` 时,正文按 setext 渲染成标题「$$」,但它显然不是作者
+// 意图的文章标题——标题抽取跳过它、继续找下一个。未闭合**围栏**自第二批 P2 起到文末都是代码,不再有此形态。
+describe('L1 setext 标题文本为 `$$` 时不作文章标题;未闭合围栏到文末都是代码(第二批 P2)', () => {
+  it('`$$\\n===\\n# 真标题` → 标题「真标题」,去掉的是 `# 真标题` 块', () => {
+    const md = '$$\n===\n# 真标题';
+    expect(extractTitle(md)).toEqual({ title: '真标题', source: 'h1' });
+    expect(strip(md)).toEqual(parseMarkdown('$$\n==='));
+  });
+
+  for (const md of ['```\n===\n# 真标题\n正文', '~~~\n===\n# 真标题']) {
+    it(`${JSON.stringify(md)} → 全部是代码,没有文章标题`, () => {
+      expect(extractTitle(md)).toBeNull();
+      expect(shapeOf(parseMarkdown(md))).toEqual(['MARKDOWN']);
     });
   }
-
-  it('正文解析不变:未闭合开栏行 + `===` 仍是 header-one', () => {
-    const h = parseMarkdown('```\n===\n# 真标题')[0];
-    expect(h?.kind === 'text' ? [h.type, h.text] : null).toEqual(['header-one', '```']);
-  });
 });
 
 describe('P3/P4 不变量:去掉的标题块与 extractTitle 一致(行级模糊)', () => {
@@ -557,5 +554,28 @@ describe('P6 extractCover 整值判定', () => {
 
   it('纯路径按原样作为路径', () => {
     expect(cover('a.png')).toBe('a.png');
+  });
+});
+
+describe('第二批 P7 frontmatter 引号值按 YAML 解码转义', () => {
+  const title = (v: string) => extractTitle(`---\ntitle: ${v}\n---\n正文`)?.title;
+  it('单引号 `\'\'` → `\'`', () => {
+    expect(title("'It''s fine'")).toBe("It's fine");
+  });
+  it('双引号转义:\\" \\\\ \\u', () => {
+    expect(title('"He said \\"hi\\""')).toBe('He said "hi"');
+    expect(title('"C:\\\\path"')).toBe('C:\\path');
+    expect(title('"\\u4e2d文"')).toBe('中文');
+  });
+  it('未知转义保留原样;无引号值不解码', () => {
+    expect(title('"a\\qb"')).toBe('a\\qb');
+    expect(title('a\\"b')).toBe('a\\"b');
+  });
+  it('解码出的控制字符(换行 / NUL 等)换成空格,不进标题(check 审查)', () => {
+    expect(title('"a\\nb\\x00c"')).toBe('a b c');
+  });
+  it('cover 共用同一解码', () => {
+    expect(extractCover('---\ncover: "a\\"b.png"\n---\n正文')).toBe('a"b.png');
+    expect(extractCover("---\ncover: 'it''s.png'\n---\n正文")).toBe("it's.png");
   });
 });
