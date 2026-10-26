@@ -1,8 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseMarkdown,
-  isImageLine,
-  stripFirstImageLine,
   forEachContentLine,
   inlinePlainText,
   parseMarkdownWithMeta,
@@ -99,11 +97,8 @@ describe('块级映射', () => {
     expect(asText(parseMarkdown('# 标题 #')[0]).text).toBe('标题');
   });
 
-  it('H4 空标题不产生 BOLD 区间', () => {
-    // '#### ' 内容为空,inline.text.length 为 0 → 不 push BOLD
-    const empty = asText(parseMarkdown('####  ')[0]);
-    expect(empty.text).toBe('');
-    expect(empty.inlineStyleRanges).toEqual([]);
+  it('H4 空标题不产出块(第三批 P12:此前产出无 BOLD 的空段落)', () => {
+    expect(parseMarkdown('####  ')).toEqual([]);
   });
 
   it('引用逐行独立成 blockquote 块', () => {
@@ -911,7 +906,6 @@ describe('带链接图片行:一行多张 / 尾随内容不认作独占行图片
     const b = asText(blocks[0]);
     expect(b.text).toContain('https://pbs.twimg.com/1.jpg');
     expect(b.text).toContain('https://pbs.twimg.com/2.jpg');
-    expect(isImageLine(md)).toBe(false);
   });
 
   it('链接图后跟裸图 `[![a](i.png)](http://l) ![b](y.png)` → 不是 image 块,b 不丢', () => {
@@ -921,7 +915,6 @@ describe('带链接图片行:一行多张 / 尾随内容不认作独占行图片
     const b = asText(blocks[0]);
     expect(b.text).toContain('i.png');
     expect(b.text).toContain('![b](y.png)');
-    expect(isImageLine(md)).toBe(false);
   });
 
   it('链接图后跟括号注释 `[![a](i.png)](http://l)(注:见原文)` → 不是 image 块,注释不丢', () => {
@@ -930,7 +923,6 @@ describe('带链接图片行:一行多张 / 尾随内容不认作独占行图片
     expect(blocks.some((b) => b.kind === 'image')).toBe(false);
     const b = asText(blocks[0]);
     expect(b.text).toContain('(注:见原文)');
-    expect(isImageLine(md)).toBe(false);
   });
 
   it('单张带 title 带链接 `[![alt](src "title")](https://link)` 仍识别为 image', () => {
@@ -947,29 +939,11 @@ describe('带链接图片行:一行多张 / 尾随内容不认作独占行图片
     const b = asImage(blocks[0]);
     expect(b.source).toBe('i.png');
     expect(b.alt).toBe('a');
-    expect(isImageLine('[![a](i.png)](http://l/f(1))')).toBe(true);
   });
 
   it('内层图片 URL 含括号 `[![a](http://h/f(1).png)](http://l)` 识别正确', () => {
     const b = asImage(parseMarkdown('[![a](http://h/f(1).png)](http://l)')[0]);
     expect(b.source).toBe('http://h/f(1).png');
-  });
-});
-
-describe('isImageLine', () => {
-  it('裸/带链接/Obsidian 图片行均返回 true', () => {
-    expect(isImageLine('![](x.png)')).toBe(true);
-    expect(isImageLine('[![](i.png)](l)')).toBe(true);
-    expect(isImageLine('![[x.png]]')).toBe(true);
-  });
-
-  it('前后空白被 trim 后仍识别', () => {
-    expect(isImageLine('   ![](x.png)   ')).toBe(true);
-  });
-
-  it('普通文本与空 src 返回 false', () => {
-    expect(isImageLine('普通文本')).toBe(false);
-    expect(isImageLine('![]()')).toBe(false);
   });
 });
 
@@ -1349,30 +1323,6 @@ describe('forEachContentLine', () => {
       { skipFrontmatter: true },
     );
     expect(visited).toEqual(['# 标题', '正文']);
-  });
-});
-
-describe('stripFirstImageLine', () => {
-  it('删除正文第一张独占行图片', () => {
-    const md = '开头\n![](a.png)\n结尾';
-    expect(stripFirstImageLine(md)).toBe('开头\n结尾');
-  });
-
-  it('无图片时原样返回', () => {
-    const md = '只有文字\n没有图片';
-    expect(stripFirstImageLine(md)).toBe(md);
-  });
-
-  it('不删除代码块内部的图片行', () => {
-    const md = '```\n![](inside.png)\n```\n![](real.png)';
-    const result = stripFirstImageLine(md);
-    expect(result).toContain('![](inside.png)');
-    expect(result).not.toContain('![](real.png)');
-  });
-
-  it('删除带链接图片行', () => {
-    const md = '[![](i.png)](l)\n正文';
-    expect(stripFirstImageLine(md)).toBe('正文');
   });
 });
 
@@ -1774,10 +1724,6 @@ describe('P7 forEachContentLine 不继承残留解析开关', () => {
       expect([residue, visit({ obsidianImg: false })]).toEqual([residue, ['- a', '![[x.png]]', '# 真标题']]);
     }
   });
-
-  it('stripFirstImageLine 接受解析开关(签名与 forEachContentLine 对齐)', () => {
-    expect(stripFirstImageLine('正文\n![](a.png)', { obsidianImg: false })).toBe('正文');
-  });
 });
 
 describe('P5 列表续行里序号非 1 的有序行', () => {
@@ -2116,5 +2062,45 @@ describe('第二批 P9 链接 title 里的 `)` 不截断 URL', () => {
 
   it('URL 自身的括号配对不变', () => {
     expect(inlineOf('[w](https://en.wikipedia.org/wiki/A_(b))').links[0]?.url).toBe('https://en.wikipedia.org/wiki/A_(b)');
+  });
+});
+
+// ===========================================================================
+// 2026-10-26 全面审查第三批阶段 A(docs/review/修复方案-2026-10-26-第三批.md)
+// ===========================================================================
+
+describe('第三批 P6 列表项内的非列表块不清空列表层级', () => {
+  const depthOf = (md: string, text: string) => {
+    const b = parseMarkdown(md).find((x) => x.kind === 'text' && x.text === text);
+    return b && b.kind === 'text' ? (b.depth ?? 0) : undefined;
+  };
+  it('列表内缩进的代码块 / 图片之后,子项仍按嵌套层级计', () => {
+    expect(depthOf('- a\n  ```js\n  x\n  ```\n  - b', 'b')).toBe(1);
+    expect(depthOf('- a\n  ![](x.png)\n  - b', 'b')).toBe(1);
+  });
+  it('顶格的块照旧结束列表:之后的列表从 0 起算', () => {
+    expect(depthOf('- a\n  - a2\n\n```\nx\n```\n\n  - b', 'b')).toBe(0);
+    expect(depthOf('- a\n\n正文\n\n  - b', 'b')).toBe(0);
+  });
+});
+
+describe('第三批 P12 空 ATX 标题不产出块', () => {
+  it('`#`、`# #`、`#### ####`、`##   ` 都是空标题,不产出块', () => {
+    for (const md of ['#', '# #', '#### ####', '##   ']) {
+      expect([md, parseMarkdown(md)]).toEqual([md, []]);
+    }
+  });
+  it('空标题可打断段落;`#标题`(无空格)仍是段落;`# 标题 #`、`# C#` 照常', () => {
+    expect(shapeOf(parseMarkdown('正文\n#\n后文'))).toEqual(['unstyled:正文', 'unstyled:后文']);
+    expect(shapeOf(parseMarkdown('#标题'))).toEqual(['unstyled:#标题']);
+    expect(shapeOf(parseMarkdown('# 标题 #'))).toEqual(['header-one:标题']);
+    expect(shapeOf(parseMarkdown('# C#'))).toEqual(['header-one:C#']);
+  });
+});
+
+describe('第三批 O5 parseMarkdown 不残留模块级开关', () => {
+  it('parseMarkdown 带非默认开关后,不传开关的 inlinePlainText 仍按默认值解析', () => {
+    parseMarkdown('x', { wikilink: false });
+    expect(inlinePlainText('[[a]]')).toBe('a');
   });
 });

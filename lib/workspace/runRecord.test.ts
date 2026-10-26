@@ -6,6 +6,7 @@ import type { ImageFailure } from '../bridge/protocol';
 const base = (over: Partial<RunInput> = {}): RunInput => ({
   md: '# 标题\n\n正文',
   parseOpts: { obsidianImg: true, wikilink: true, taskList: 'symbol' },
+  adjust: {},
   en: false,
   blockCount: 2,
   imageFail: 0,
@@ -89,5 +90,20 @@ describe('pruneHistory(W8:上限立即生效)', () => {
     const out = pruneHistory(many, '50');
     expect(out).toHaveLength(50);
     expect(out[0]?.id).toBe('0');
+  });
+});
+
+// 第三批 P11:降级计数(deg)与报告快照按实际写入口径——h1Handle=remove 去掉的标题块、coverKeep=remove
+// 去掉的封面首图不再计入。
+describe('buildRunRecord · adjust(第三批 P11)', () => {
+  const md = '# 标题\n\n![a](a.png)\n\n| a |\n|---|\n| 1 |';
+  it('adjust 原样进入报告快照', () => {
+    const adjust = { removeTitle: true, removeCoverImage: true };
+    expect(buildRunRecord(base({ md, adjust })).snapshot.adjust).toEqual(adjust);
+  });
+  it('被移除标题里的降级项(脚注)不再计入 deg', () => {
+    const md2 = '# 标题[^1]\n\n正文';
+    expect(buildRunRecord(base({ md: md2 })).snapshot.deg).toBe(1);
+    expect(buildRunRecord(base({ md: md2, adjust: { removeTitle: true } })).snapshot.deg).toBe(0);
   });
 });

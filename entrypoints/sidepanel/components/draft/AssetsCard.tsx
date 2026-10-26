@@ -6,6 +6,7 @@ import { parseMarkdown } from '@/lib/markdown/parser';
 import { classifyImageSource, type ImageBlock, type ImageSourceKind } from '@/lib/bridge/protocol';
 import { clearFolder, connectFolder, getFolderStatus } from '@/lib/bridge/importArticle';
 import { pickCoverSource, usesLocalImage } from '@/lib/workspace/importPlan';
+import { folderErrText } from '@/lib/ui/folderErrText';
 
 const card: CSSProperties = {
   margin: '10px 18px 0',
@@ -23,14 +24,6 @@ function chip(colorVar: string): CSSProperties {
     color: `var(--${colorVar})`,
     background: `color-mix(in oklab,var(--${colorVar}),transparent 90%)`,
   };
-}
-
-/** 文件夹操作错误码 → 可读文案(与 SettingsTab 一致,不把英文诊断码弹给用户)。 */
-function folderErrText(t: ReturnType<typeof useI18n>['t'], error: string): string {
-  if (error === 'disconnected') return t.folderNeedXToast;
-  if (error === 'permission-denied') return t.folderDeniedToast;
-  if (error === 'timeout') return t.folderTimeoutToast;
-  return t.folderFailToast;
 }
 
 /**

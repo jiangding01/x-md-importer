@@ -20,6 +20,7 @@ import {
   requestRemoteImagePermissions,
 } from '@/lib/bridge/imagePermissions';
 import { ARTICLE_SWITCHED_ERROR, type ImageFailure, type ImportMode, type SetTitleResponse } from '@/lib/bridge/protocol';
+import type { CapabilityAdjust } from '@/lib/markdown/capability';
 import { extractTitle, parseMarkdownWithoutTitle } from '@/lib/markdown/frontmatter';
 import { parseMarkdown } from '@/lib/markdown/parser';
 import { sampleEn, sampleZh } from '@/lib/markdown/sample';
@@ -30,8 +31,9 @@ import { removePrefs } from '@/lib/storage/prefs';
 import { createEchoQueue } from '@/lib/storage/echoQueue';
 import { validateHistory } from '@/lib/storage/schema';
 import { downloadText } from '@/lib/ui/download';
-import { decideDraftChange } from '@/lib/workspace/draftSync';
+import { decideDraftChange, draftRetryDelay } from '@/lib/workspace/draftSync';
 import { importErrorText, titleResultText } from '@/lib/workspace/errorText';
+import { decideHistoryChange, historySignature } from '@/lib/workspace/historySync';
 import { pickCoverSource, usesLocalImage } from '@/lib/workspace/importPlan';
 import { buildRunRecord, pruneHistory, type LastRunSnapshot, type RunParseOpts } from '@/lib/workspace/runRecord';
 import type { Tab } from '@/entrypoints/sidepanel/types';
@@ -86,7 +88,6 @@ interface WorkspaceValue {
   overwriteAppend: () => void;
   overwriteConfirm: () => void;
   overwriteCancel: () => void;
-  editorHasContent: boolean;
   // 标题冲突询问(titleConflict='ask' 且编辑器已有标题时,写入后按需弹出)
   askTitleOverwrite: boolean;
   pendingTitle: string | null; // 待写入的新标题(弹窗内显示)
@@ -133,8 +134,7 @@ export function WorkspaceProvider({
 }: WorkspaceProviderProps) {
   const { t, lang } = useI18n();
   const { opts, setOpt } = useSettings();
-  // review #6:editorHasContent 改为真实探针派生值(hasContent),不再是写死的 mock。
-  const { connected, hasContent: editorHasContent } = useConnection();
+  const { connected } = useConnection();
   // 写入成功后需重探,让 hasContent 反映「编辑器现在有内容了」(探针默认只挂载探一次)。
   const { refresh: refreshProbe } = useProbe();
   const en = lang === 'en';
@@ -163,6 +163,9 @@ export function WorkspaceProvider({
   // 期间用户若在「记录」页删改历史,闭包捕获的 history 会陈旧——finishImport 改读 ref 避免用旧值
   // commit 覆盖 storage、复活已删条目。所有写入都经 commitHistory 同步此 ref。
   const historyRef = useRef<HistoryItem[]>(initialHistory);
+  // 第三批 H1:历史写入的回声队列与「最近一次确认与 storage 一致的签名」,口径同草稿的 draftEchoes / lastPersisted。
+  const [historyEchoes] = useState(() => createEchoQueue<string>(8));
+  const lastPersistedHistory = useRef(historySignature(initialHistory));
   const [histClearArm, setHistClearArm] = useState(false);
   // 载入待确认动作:非 null 时弹 LoadConfirmDialog,存的是「确认后要执行的覆盖动作」。
   // review B3:载入(历史/文件)与清空同等破坏力(经 setMd 立即覆盖 storage、不可逆),
@@ -214,6 +217,9 @@ export function WorkspaceProvider({
   const lastPersisted = useRef(initialMd);
   const pendingSince = useRef(0);
   const persistTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // 第三批 O7:连续写入失败次数。>0 时由退避重试定时器负责落盘(draftRetryDelay),键入只更新 pending,
+  // 不再每次按键都整篇重写一次;任一次成功即复位。
+  const draftFailCount = useRef(0);
 
   const flushDraft = useCallback(async (): Promise<boolean> => {
     if (persistTimer.current) {
@@ -229,6 +235,14 @@ export function WorkspaceProvider({
       await saveDraft(v);
       lastPersisted.current = v;
       markPersist('draft', true);
+      if (draftFailCount.current > 0) {
+        draftFailCount.current = 0;
+        // O7:退避期间键入不排定时器(见 schedulePersist);重试成功时若又有新编辑,恢复常规防抖落盘。
+        if (pendingDraft.current !== null && !persistTimer.current) {
+          pendingSince.current = Date.now();
+          persistTimer.current = setTimeout(() => void flushDraft(), 250);
+        }
+      }
       return true;
     } catch (err) {
       if (expectEcho) draftEchoes.drop(v); // 写入失败不会有回声
@@ -236,6 +250,10 @@ export function WorkspaceProvider({
       // 失败值放回 pending(除非期间已有更新的编辑),下次 flush 触发时重试,不静默丢。
       if (pendingDraft.current === null) pendingDraft.current = v;
       markPersist('draft', false);
+      // O7:按退避间隔自动重试(此前失败后只能等下一次键入 / 失焦才再试,停手后就不再重试)。
+      draftFailCount.current += 1;
+      if (persistTimer.current) clearTimeout(persistTimer.current);
+      persistTimer.current = setTimeout(() => void flushDraft(), draftRetryDelay(draftFailCount.current));
       return false;
     }
   }, [markPersist, draftEchoes]);
@@ -244,6 +262,8 @@ export function WorkspaceProvider({
     (v: string) => {
       if (pendingDraft.current === null) pendingSince.current = Date.now();
       pendingDraft.current = v;
+      // O7:写入失败中 → 交给已排好的退避重试,重试时写入最新的 pending。
+      if (draftFailCount.current > 0) return;
       if (persistTimer.current) clearTimeout(persistTimer.current);
       // max-wait:pending 已积压超 2s → 立即落盘,不再顺延。
       if (Date.now() - pendingSince.current >= 2000) {
@@ -276,16 +296,24 @@ export function WorkspaceProvider({
     (next: HistoryItem[]) => {
       historyRef.current = next; // 同步镜像,供挂起后的 finishImport 读最新值
       setHistory(next);
+      // H1:登记回声;与已落盘签名相同的写入 Chrome 不发 onChanged,不登记(否则滞留在队列里)。
+      const sig = historySignature(next);
+      const expectEcho = sig !== lastPersistedHistory.current;
+      if (expectEcho) historyEchoes.push(sig);
       // 写失败必须可见(P0-1):按来源记账,亮/清常驻错误条(见 persistFail 注释)。
       saveHistory(next).then(
-        () => markPersist('history', true),
+        () => {
+          lastPersistedHistory.current = sig;
+          markPersist('history', true);
+        },
         (err) => {
+          if (expectEcho) historyEchoes.drop(sig); // 写入失败不会有回声
           console.error('[MarkFlow] history persist failed:', err);
           markPersist('history', false);
         },
       );
     },
-    [markPersist],
+    [markPersist, historyEchoes],
   );
 
   // 第二批 W8:「记录保留上限」改小(或备份恢复后 reload 带回超限历史)时立即裁剪——此前只在下一次导入
@@ -352,17 +380,20 @@ export function WorkspaceProvider({
       }
       const histChange = changes[HISTORY_KEY];
       // 同上:undefined = 另一窗口 wipeAll 删除了 key,按空历史采纳。
-      if (histChange && histChange.newValue === undefined && historyRef.current.length > 0) {
-        historyRef.current = [];
-        setHistory([]);
+      if (histChange && histChange.newValue === undefined) {
+        lastPersistedHistory.current = '';
+        if (historyRef.current.length > 0) {
+          historyRef.current = [];
+          setHistory([]);
+        }
       }
       if (histChange && Array.isArray(histChange.newValue)) {
         const incoming = validateHistory(histChange.newValue);
-        const cur = historyRef.current;
-        // echo 判定:长度 + id 序列一致即本窗口刚写入的回声(条目不可变,只有增删)。
-        const same =
-          incoming.length === cur.length && incoming.every((it, i) => it.id === cur[i]?.id);
-        if (!same) {
+        // 判定见 decideHistoryChange(第三批 H1):自写回声(含连续两次写入时迟到的前一次回声)→ 不采纳,
+        // 此前只比「与当前是否相同」,迟到回声会让列表短暂回退。
+        const decision = decideHistoryChange({ incoming, current: historyRef.current, echoes: historyEchoes });
+        if (decision !== 'echo') lastPersistedHistory.current = historySignature(incoming);
+        if (decision === 'adopt') {
           historyRef.current = incoming;
           setHistory(incoming);
         }
@@ -370,7 +401,7 @@ export function WorkspaceProvider({
     };
     chrome.storage.onChanged.addListener(handler);
     return () => chrome.storage.onChanged.removeListener(handler);
-  }, [showToast, t.draftSynced, draftEchoes]);
+  }, [showToast, t.draftSynced, draftEchoes, historyEchoes]);
 
   const playSound = useCallback(() => {
     if (!opts.sound || opts.soundStyle === 'mute') return;
@@ -507,7 +538,7 @@ export function WorkspaceProvider({
   // 写入,报告与历史就记下旧开关。口径见 lib/workspace/runRecord.ts。
   // toastMsg:成功收尾提示,默认「已写入」;标题/空替换场景由 startImport 组合后传入。
   const finishImport = useCallback((
-    run: { md: string; parseOpts: RunParseOpts },
+    run: { md: string; parseOpts: RunParseOpts; adjust: CapabilityAdjust },
     toastMsg: string = t.writtenToast,
     imageFail = 0,
     blockCount = 0,
@@ -516,6 +547,7 @@ export function WorkspaceProvider({
     const { item, snapshot, hasAnomaly } = buildRunRecord({
       md: run.md,
       parseOpts: run.parseOpts,
+      adjust: run.adjust,
       en,
       blockCount,
       imageFail,
@@ -601,10 +633,8 @@ export function WorkspaceProvider({
         // 决定 `![[a.png]]\n标题\n===` 是否构成单行 setext),不继承上一次 parseMarkdown 的残留开关。
         const parseOpts = { obsidianImg: opts.obsidianImg, wikilink: opts.wikilink, taskList: opts.taskList };
         const extracted = opts.setTitle ? extractTitle(md, parseOpts) : null;
-        let blocks =
-          extracted?.source === 'h1' && opts.h1Handle === 'remove'
-            ? parseMarkdownWithoutTitle(md, parseOpts)
-            : parseMarkdown(md, parseOpts);
+        const removeTitle = extracted?.source === 'h1' && opts.h1Handle === 'remove';
+        let blocks = removeTitle ? parseMarkdownWithoutTitle(md, parseOpts) : parseMarkdown(md, parseOpts);
 
         // 封面来源:frontmatter cover > 正文首图。首图取自**已解析 blocks 的首个 ImageBlock**——
         // 与实际上传/移除同源,避免用 images() 全文正则误选到内联图 / 代码块内的图(review #1)。
@@ -737,7 +767,14 @@ export function WorkspaceProvider({
           // 只改被拒 origin 的这一类:已授权 origin 的同类失败(真网络故障)与 http 4xx/超时/
           // 非图片等明确原因保持原样(见 relabelPermissionFailures)。
           if (imageFailures) imageFailures = relabelPermissionFailures(imageFailures, perm.deniedOrigins);
-          finishImport({ md, parseOpts }, toastMsg, res.imageFail, res.blockCount, imageFailures);
+          finishImport(
+            // 第三批 P11:报告按实际写入计数(去掉被移除的标题块 / 作封面的正文首图),与上面同一判定。
+            { md, parseOpts, adjust: { removeTitle, removeCoverImage: coverRemovedBodyImage } },
+            toastMsg,
+            res.imageFail,
+            res.blockCount,
+            imageFailures,
+          );
         } else {
           // 失败:不写成功记录,以可读中文/英文提示错误(复位在 finally 统一处理)。
           // B2-2:提交后失败(committed)或通道超时(injector 可能仍在后台完成提交,content
@@ -951,7 +988,6 @@ export function WorkspaceProvider({
       pendingTitle,
       titleOverwriteConfirm,
       titleOverwriteKeep,
-      editorHasContent,
       reportVisible,
       closeReport: () => setReportVisible(false),
       // 无快照时不置位:ReportCard 本就以 lastRunSnapshot 为渲染前提,这里再守一道避免空开。
@@ -976,7 +1012,7 @@ export function WorkspaceProvider({
       capOpen, checkVisible, runCheck, closeCheck, importing, stagePct, stageLabel,
       writeX, askOverwrite, overwriteAppend, overwriteConfirm, overwriteCancel,
       askTitleOverwrite, pendingTitle, titleOverwriteConfirm, titleOverwriteKeep,
-      editorHasContent, reportVisible, lastRunSnapshot, celebrating, history, histQ, loadHistoryItem, copyHistoryItem,
+      reportVisible, lastRunSnapshot, celebrating, history, histQ, loadHistoryItem, copyHistoryItem,
       deleteHistoryItem, clearHistory, histClearArm, wipeAll,
     ],
   );

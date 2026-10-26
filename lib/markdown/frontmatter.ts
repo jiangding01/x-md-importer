@@ -219,9 +219,14 @@ function fromH1(md: string, opts: ParseOptions): string | null {
  * `opts` 须与 extractTitle 传同一份,去掉的才是抽出的那个标题。
  */
 export function parseMarkdownWithoutTitle(md: string, opts: ParseOptions = {}): ImportBlock[] {
-  const { blocks, headings } = parseMarkdownWithMeta(md, opts);
+  return parseMarkdownWithoutTitleMeta(md, opts).blocks;
+}
+
+/** 同 parseMarkdownWithoutTitle,另带回被丢弃的 HTML 注释块数(能力面板按「实际写入」计数用,第三批 P11)。 */
+export function parseMarkdownWithoutTitleMeta(md: string, opts: ParseOptions = {}): { blocks: ImportBlock[]; htmlComments: number } {
+  const { blocks, headings, htmlComments } = parseMarkdownWithMeta(md, opts);
   const h = pickTitleHeading(headings);
-  return h ? blocks.filter((_, i) => i !== h.blockIndex) : blocks;
+  return { blocks: h ? blocks.filter((_, i) => i !== h.blockIndex) : blocks, htmlComments };
 }
 
 /**

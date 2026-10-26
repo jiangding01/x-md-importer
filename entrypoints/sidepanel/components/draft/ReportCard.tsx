@@ -59,7 +59,7 @@ export function ReportCard() {
   // review B6-UI:useMemo 缓存 capability 解析(须在 return 之前,遵守 Hooks 规则);
   // 解析抛错由 App 层 ErrorBoundary 兜底。
   const items = useMemo(
-    () => (lastRunSnapshot ? capability(lastRunSnapshot.md, en, lastRunSnapshot.parseOpts) : []),
+    () => (lastRunSnapshot ? capability(lastRunSnapshot.md, en, lastRunSnapshot.parseOpts, lastRunSnapshot.adjust) : []),
     [lastRunSnapshot, en],
   );
 

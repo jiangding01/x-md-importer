@@ -77,7 +77,8 @@ export const RE_OBSIDIAN_IMAGE_LINE = /^!\[\[([^\]]+)\]\]$/;
  * 缩进代码块的领域(用户粘贴的缩进日志/代码不该被拆成标题)。
  * **注意**:divider / setext / 块级公式**不**随之放宽,它们的顶格约束是有意的(见各自注释)。
  */
-const RE_HEADING = /^ {0,3}(#{1,6})\s+(.*)$/;
+// 第三批 P12:`#` 后可以直接行尾(空标题,CommonMark),故内容组可选。
+const RE_HEADING = /^ {0,3}(#{1,6})(?:\s+(.*))?$/;
 const RE_BLOCKQUOTE = /^ {0,3}>/;
 /** HTML 注释块的起行(第二批 P3):0-3 空格缩进后以 `<!--` 开头(CommonMark HTML 块类型 2)。 */
 const RE_HTML_COMMENT_OPEN = /^ {0,3}<!--/;
@@ -211,12 +212,6 @@ function findMathClose(lines: string[], from: number, open: 'bare' | 'content'):
 // 主入口
 // ---------------------------------------------------------------------------
 
-/** 是否为独占一行的图片(裸 `![](x)` / 带链接 `[![](x)](y)` / Obsidian `![[x]]`)。 */
-export function isImageLine(line: string): boolean {
-  const t = line.trim();
-  return matchImageLine(t) !== null || matchLinkedImageLine(t) !== null || RE_OBSIDIAN_IMAGE_LINE.test(t);
-}
-
 /**
  * setext 标题下划线的级别:`===` → 1、`---` → 2;不是下划线返回 null。
  * 仅解析主循环内部使用:标题抽取(frontmatter.pickTitleHeading)不再自行判定 setext,而是取
@@ -298,8 +293,8 @@ export interface ContentLineOptions extends ParseOptions {
  * 整个围栏块(开栏行 … 闭栏行)被跳过,内部的 `# x` / `![]()` 等不会被 visitor 看到。
  * visitor 返回 true 时提前停止遍历。
  *
- * 抽出此 helper 是为消除「三处 fence 追踪各写一份、语义漂移」:stripFirstImageLine 用它的围栏
- * 判定(标题抽取 P4 起改用 parseMarkdownWithMeta 一次解析取标题,onHeading 选项仍保留)。
+ * 抽出此 helper 是为消除「三处 fence 追踪各写一份、语义漂移」(标题抽取 P4 起改用 parseMarkdownWithMeta
+ * 一次解析取标题,onHeading 选项仍保留;第三批 O8 删掉了只剩测试在用的 stripFirstImageLine)。
  *
  * `skipFrontmatter`(B3-3 / P1-6):从 frontmatterBodyStart 起扫,文首 YAML 块整块不交给
  * visitor——`# 注释` 是合法 YAML 注释(Obsidian 模板常见),否则会被当成内容行。**默认关闭**:
@@ -333,30 +328,6 @@ export function forEachContentLine(
 }
 
 /**
- * 删除正文中「第一张独占行图片」(裸 / 带链接皆可)——供封面取自正文首图且设为
- * 「从正文移除」时使用,避免封面图在正文重复。跳过围栏代码块(与解析一致)。
- * `opts` 为解析开关(P7,透传 forEachContentLine,围栏判定随之与实际解析一致)。
- */
-export function stripFirstImageLine(md: string, opts: ParseOptions = {}): string {
-  const lines = md.split(/\r?\n/);
-  let target = -1;
-  forEachContentLine(
-    lines,
-    (line, index) => {
-      if (isImageLine(line)) {
-        target = index;
-        return true;
-      }
-    },
-    // 只取解析开关:调用方若传入更宽的对象(如带 skipFrontmatter),不得改变本函数的遍历范围。
-    { obsidianImg: opts.obsidianImg, wikilink: opts.wikilink, taskList: opts.taskList },
-  );
-  if (target < 0) return md;
-  lines.splice(target, 1);
-  return lines.join('\n');
-}
-
-/**
  * 解析开关(默认与 defaultOptions 一致):
  *  - obsidianImg:识别 `![[x]]` 内嵌图片(默认 true;关时当普通文本处理);
  *  - wikilink:行内 `[[x]]` / `[[x|别名]]` 转纯文本(默认 true;关时保持字面 `[[x]]`)。
@@ -369,15 +340,15 @@ export interface ParseOptions {
 }
 
 // 解析开关:parseMarkdown **同步执行**(内部无 await)、JS 单线程不会重入,故用模块级标志
-// 在入口一次性设置,免去给 walkInline / isBlockBoundary 逐层穿参。由 parseMarkdown 写(不还原),
-// 以及 withParseOptions 临时写入并还原;块级/行内解析只读。
+// 在入口一次性设置,免去给 walkInline / isBlockBoundary 逐层穿参。一律经 withParseOptions 临时写入并还原
+// (第三批 O5 起 parseMarkdown 也是);块级/行内解析只读。
 let optObsidianImg = true;
 let optWikilink = true;
 let optTaskList: 'symbol' | 'plain' = 'symbol';
 
 /**
  * 在给定解析开关下同步执行 fn,结束(含抛错)后还原模块级开关(P7)。未传的开关**显式**取默认值,
- * 不继承上一次 parseMarkdown 残留的状态——forEachContentLine(→ 标题抽取 / stripFirstImageLine)
+ * 不继承上一次 parseMarkdown 残留的状态——forEachContentLine
  * 与 inlinePlainText 都经此设置,结果只取决于调用方自己的 opts。
  */
 function withParseOptions<T>(opts: ParseOptions, fn: () => T): T {
@@ -443,10 +414,8 @@ export function parseMarkdownWithMeta(
 
 /** 解析 Markdown 文本为按文档顺序排列的写入块序列。 */
 export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[] {
-  optObsidianImg = opts.obsidianImg ?? true;
-  optWikilink = opts.wikilink ?? true;
-  optTaskList = opts.taskList ?? 'symbol';
-  return parseLines(md.split(/\r?\n/));
+  // 第三批 O5:经 withParseOptions 设置并还原模块级开关(此前写入后不还原),与 parseMarkdownWithMeta 一致。
+  return withParseOptions(opts, () => parseLines(md.split(/\r?\n/)));
 }
 
 /** parseLines 的上报钩子,仅 forEachContentLine 使用(不另导出直接调 parseLines 的入口)。 */
@@ -475,6 +444,10 @@ function parseLines(lines: string[], hooks: ParseHooks = {}): ImportBlock[] {
   // 最近一个列表项的内容列(标记 + 分隔空白之后的列宽);离开列表时与缩进栈一起清空。
   // 用于列表语境下的缩进围栏(A4)与松散列表下缩进段落的剥离(A3)。
   let listContentCol: number | null = null;
+  // 第三批 P6:上一轮(产出了块的那一轮)是否在列表项内部——起行缩进 ≥ 当时的列表内容列(列表内的缩进
+  // 围栏、缩进图片行、松散列表的缩进续段等)。这类块不结束列表,其后的子项层级照常累计。
+  let prevInList = false;
+  let lastRound = { count: 0, cols: 0, ctxCol: null as number | null };
 
   /**
    * 列表项命中后向下吸收续行(A3):非空、非块边界、非新列表项(含更深的子项)、非围栏、非表格起始
@@ -516,14 +489,20 @@ function parseLines(lines: string[], hooks: ParseHooks = {}): ImportBlock[] {
     // 放在轮首统一判定(而非在十余处 push 点各写一遍),对所有 continue 分支都成立。
     // 空行不产出块,故「项与项之间空一行」的松散列表层级得以保持。
     const prevBlock = blocks[blocks.length - 1];
+    if (blocks.length > lastRound.count) {
+      prevInList = lastRound.ctxCol !== null && lastRound.cols >= lastRound.ctxCol;
+    }
     if (
-      !prevBlock ||
-      prevBlock.kind !== 'text' ||
-      (prevBlock.type !== 'unordered-list-item' && prevBlock.type !== 'ordered-list-item')
+      !prevInList &&
+      (!prevBlock ||
+        prevBlock.kind !== 'text' ||
+        (prevBlock.type !== 'unordered-list-item' && prevBlock.type !== 'ordered-list-item'))
     ) {
       listIndents.length = 0;
       listContentCol = null;
     }
+    // 记本轮起行缩进与(清栈后的)列表内容列,下一轮若发现本轮产出了块,据此判定它是否在列表项内部。
+    lastRound = { count: blocks.length, cols: leadingCols(line), ctxCol: listContentCol };
 
     // 1. 围栏代码块:优先保护,内部所有内容(含 --- / > / 行内标记)一律不解析。
     //    列表语境下允许更深的缩进(A4,见 fenceMaxIndent)。
@@ -707,6 +686,11 @@ function parseLines(lines: string[], hooks: ParseHooks = {}): ImportBlock[] {
     if (heading) {
       const level = (heading[1] ?? '').length;
       const content = stripAtxClosing(heading[2] ?? ''); // 去掉可选的 ATX 闭合 ###
+      // 第三批 P12:空标题(`#`、`# #`、`#### ####`)不产出块——写进 X 只是一个空的标题块;标题抽取本就跳过空标题。
+      if (content === '') {
+        i += 1;
+        continue;
+      }
       const inline = walkInline(content);
       let type: TextBlockType;
       let demoted = false;
@@ -835,7 +819,8 @@ function parseLines(lines: string[], hooks: ParseHooks = {}): ImportBlock[] {
 
 /** 去掉 ATX 标题可选的闭合井号序列(`# 标题 ##` → `标题`;`# C#` 不动,闭合序列前须有空白)。 */
 function stripAtxClosing(content: string): string {
-  return content.replace(/\s+#+\s*$/, '').trim();
+  const t = content.replace(/\s+#+\s*$/, '').trim();
+  return /^#+$/.test(t) ? '' : t; // 第三批 P12:整段只有闭合井号(`# #`)即空标题
 }
 
 /**
