@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**:2026-10-26 · 分支 `claude/happy-ride-bjd4qg`(基于 main `782d306`)· **v0.5.0 尚未打 tag——真机回归通过后打在 main `782d306`,不要打在之后的 main HEAD(第三批进 0.5.1,打错即 tag 漂移)**。本轮全面审查(`docs/review/全面审查-2026-10-26.md`)的修复按用户决定并入 0.5.0:**第一批**(P1/P4/P5、W1/W2/W10,PR #36、#37)与**第二批**(阶段 A 解析 PR #38、阶段 B 界面 / 文案 / 文档 PR #39)均已合入 main。**第三批**方案见 `docs/review/修复方案-2026-10-26-第三批.md`(用户已定:先打 v0.5.0、第三批进 0.5.1;P12 空标题不产出块;ESLint 放阶段 C 单独 PR)。**第三批阶段 A**(P6 / P11 / P12 / H1 / O5 / O7 / O8)已合入 main(PR #40);**阶段 B 的 I2 / I4** 本分支实施(待真机回归 QA T32),I5 / I6 / I7 等用户用 `docs/qa/真机取证脚本-第三批阶段B.md` 取证后再定;阶段 C 方案已定(O9 / O1 / O2 / O4 做,O3 / O6 不做,见方案 §3),阶段 C(C1–C4)已全部合入 main(PR #42–#45,O3 / O6 按方案不做)。均记入 CHANGELOG `[Unreleased]`,计划随 0.5.1 发布。单测 851。**真机回归**:0.5.0 用 `782d306` 构建跑 `docs/qa/真机回归执行清单-v0.5.0.md`;0.5.1 用 main 构建跑 `docs/qa/真机回归执行清单-v0.5.1.md`(A 必测 6 / B 应测 3 / C 可选 2,附 I4–I7 取证),发版步骤见其 §7。逐项明细见 CHANGELOG [0.5.0] / [Unreleased];更早的历史见 §11 与 git log。
+**最后更新**:2026-10-26 · main `c3375e8` · **v0.5.0 尚未打 tag**。2026-10-26 全面审查(`docs/review/全面审查-2026-10-26.md`)三批修复的代码已**全部合入 main**(PR #36–#46):第一、二批并入 0.5.0(合入点 `782d306`),第三批(阶段 A、I2 / I4、阶段 C1–C4)进 0.5.1、记入 CHANGELOG `[Unreleased]`;剩 I5 / I6 / I7 等真机取证。单测 851。**接下来全是用户侧真机工作**:① `782d306` 构建跑 `docs/qa/真机回归执行清单-v0.5.0.md` → 通过后在 **`782d306`** 打 `v0.5.0`(不要打在之后的 main HEAD,否则 tag 漂移);② main 构建跑 `docs/qa/真机回归执行清单-v0.5.1.md` → 按其 §7 改版本号、打 `v0.5.1`;③ 同场跑 `docs/qa/真机取证脚本-第三批阶段B.md` 的 S1–S7,结果交回再定 I5 / I6 / I7 修法。
 
 ---
 
@@ -26,14 +26,15 @@
   - ✅ **本地图按需授权**（分支 `feat/session-vault-folder`，真机验证）：两级文件夹 `active`（素材板「本篇图片文件夹」）+ `persistent`（设置默认），读取优先级 active > persistent > 降级；素材板就地连接/更换/清除本篇专用文件夹；浏览器重启权限回落后「一键恢复」复用存量 handle（`requestPermission`，免重选文件夹）。
   - ✅ **探针自动重探**（PR #10，真机验证）：监听标签页事件自动更新连接状态,免手动刷新;tab 定位改为跟随当前活动标签。
   - ✅ **设置面板诚实化**（PR #15/#16/#17，批次 A/B）：盘点发现近 2/3 开关「改了不生效」→ 删 14 个无意义/不可行项 + 置灰未接项;`obsidianImg`/`wikilink`/`scrollTop` 接真实实现;修 stale-closure（切开关不改 md 即时生效）+ 探针刷新后自动重探。
-- **本次刚做(v0.5.0 定版)**:两轮上线前审查的修复合集。① 8 月审查(`docs/review/上线前全面审查-2026-08-18.md`)五批修复——存储写失败可见、草稿/历史多窗口同步、tabId+articleId 双钥钉死、committed 区分、marker 剥离保文本、解析 12 项、备份恢复安全化、Toast 分型、对比度等;② 10 月发版前复审(`docs/review/发版前审查-2026-10-22.md`)阶段 0～3——pnpm pin 修复、A1 同行多张带链接图片(P0)、B1 图片阶段 settle 谓词等待(P0)、B3 `/compose/articles` 写入闸门、去 `tabs` 权限改 host_permissions、`minimum_chrome_version` 116、manifest `_locales` 国际化、A2 强调符 flanking、B2 超时晚到 MEDIA 追回 + orphan 审计、C2 设置多窗口同步、C9 本地图文件名索引、B9 回传校验、B10 SSRF 补漏、字体只打 latin woff2(1.11MB→约 640KB)。单测 307→646。版本号 0.5.0、CHANGELOG 定版、README / 隐私政策 / NOTICE / QA T16～T21 已同步。〔v0.4.0〕数学块 `$$` → X 原生 LaTeX 块(真机验证)。 〔打 tag 前复审修复(2026-10-23,本分支)〕对 PR #33 的五路审查 → 对抗性核实 → 方案评审后,修复核实属实的 #33 引入回归与旧问题:本地图同名多处报 `local-ambiguous`(不再静默选错图)、删除末轮 FIFO(无法归属的晚到图如实上报 `orphan-media` / `media-order-uncertain`)、权限被拒 toast 只计确实未授权的域名并剔除被拦主机、ask 拒绝权限后确认覆盖不二次弹窗、`isBlockedHost` 补漏、标题抽取改取解析主循环上报的标题(P3)并隔离解析开关(P7)、`findClosing` 记忆化(P1/P2)、列表续行 `2024.`(P5)、frontmatter `cover` 整行判定(P6)。P4(列表下 4 空格缩进的围栏 / 引用 / 标题、Tab 制表位)推迟 0.5.1,见 backlog。
-- **还没做(发版前)**:① 本分支 `/check` 审查 → 修复 → 复审通过后提交、开 PR,由用户合并(PR #32 / #33 已合入 main);② 真机回归 `docs/qa/真机回归测试-审查修复五批.md` T1～T15 + T16～T22(B1/B2/B3/权限弹窗/去 tabs 探针/字体是代码无法自证项;其中 T17 已按「无静默错位」改写,T19 补 ask 拒绝后确认不二次弹窗与已授权 / 被拒混合,T22 为本地图同名歧义);③ 把 `docs/privacy-policy.md` 发布到公开地址(仓库私有,审核员打不开),补联系邮箱;④ 打 `v0.5.0` tag → release 工作流出 zip → 商店上传,后台填权限理由与隐私 URL。发版后待办见 `docs/review/backlog-2026-10-22.md`。
+- **本次刚做(2026-10-26 全面审查 + 三批修复)**:四路审查 → 31 项问题 + 9 条优化。第一批(`$$` 不吞正文、去标题按块、引用里的代码、草稿保存回声、报告记实际开关)与第二批(未闭合围栏 / HTML 注释 / frontmatter 转义 / 强调与链接、侧边栏状态与文案、隐私政策订正)并入 0.5.0;第三批进 0.5.1——解析边角(P6 / P11 / P12)、历史保存回声(H1)、草稿写失败退避重试(O7)、空稿不留 `x`(I2)、滚动到顶部滚对容器(I4)、ESLint 进 CI(C1)、一次解析共享(C2:写入 131 → 40 ms、按键 54 → 30 ms 且延后)、预览改为「写进 X 的样子」并去掉 react-markdown(C3:侧边栏 JS 450 → 294 KB)、设置 / 偏好共用同步 hook(C4)。单测 738 → 851。详见 §11。
+- **v0.5.0 定版内容**:两轮上线前审查的修复合集。① 8 月审查(`docs/review/上线前全面审查-2026-08-18.md`)五批修复——存储写失败可见、草稿/历史多窗口同步、tabId+articleId 双钥钉死、committed 区分、marker 剥离保文本、解析 12 项、备份恢复安全化、Toast 分型、对比度等;② 10 月发版前复审(`docs/review/发版前审查-2026-10-22.md`)阶段 0～3——pnpm pin 修复、A1 同行多张带链接图片(P0)、B1 图片阶段 settle 谓词等待(P0)、B3 `/compose/articles` 写入闸门、去 `tabs` 权限改 host_permissions、`minimum_chrome_version` 116、manifest `_locales` 国际化、A2 强调符 flanking、B2 超时晚到 MEDIA 追回 + orphan 审计、C2 设置多窗口同步、C9 本地图文件名索引、B9 回传校验、B10 SSRF 补漏、字体只打 latin woff2(1.11MB→约 640KB)。单测 307→646。版本号 0.5.0、CHANGELOG 定版、README / 隐私政策 / NOTICE / QA T16～T21 已同步。〔v0.4.0〕数学块 `$$` → X 原生 LaTeX 块(真机验证)。 〔打 tag 前复审修复(2026-10-23,本分支)〕对 PR #33 的五路审查 → 对抗性核实 → 方案评审后,修复核实属实的 #33 引入回归与旧问题:本地图同名多处报 `local-ambiguous`(不再静默选错图)、删除末轮 FIFO(无法归属的晚到图如实上报 `orphan-media` / `media-order-uncertain`)、权限被拒 toast 只计确实未授权的域名并剔除被拦主机、ask 拒绝权限后确认覆盖不二次弹窗、`isBlockedHost` 补漏、标题抽取改取解析主循环上报的标题(P3)并隔离解析开关(P7)、`findClosing` 记忆化(P1/P2)、列表续行 `2024.`(P5)、frontmatter `cover` 整行判定(P6)。P4(列表下 4 空格缩进的围栏 / 引用 / 标题、Tab 制表位)推迟 0.5.1,见 backlog。
+- **还没做(发版前,均为用户侧)**:① 0.5.0 真机回归(`docs/qa/真机回归执行清单-v0.5.0.md`,用 `782d306` 构建)→ 在 `782d306` 打 `v0.5.0` → release 工作流出 zip;② 把 `docs/privacy-policy.md` 发布到公开地址(仓库私有,审核员打不开)并补联系邮箱;③ 商店上传,后台填权限理由与隐私 URL;④ 0.5.1 真机回归(`docs/qa/真机回归执行清单-v0.5.1.md`,用 main 构建)→ 改版本号与 CHANGELOG → 打 `v0.5.1`;⑤ I5 / I6 / I7 真机取证(`docs/qa/真机取证脚本-第三批阶段B.md`)。发版后待办见 `docs/review/backlog-2026-10-22.md`。
 - **明确不做(产品决策)**：**行内数学 `$…$`** 与 **行内图片**——X 的 LaTeX / 媒体都是**块级** Insert 项,无行内原生承载,与「行内代码」同策略:保留原文、能力面板如实告知。不再列为候选,勿再评估。
 - **真机验证(本轮,已通过)**：setext 标题两种下划线均成标题且不多出分割线 · 任务列表 ☐/☑ 正确、加粗精确落在文字上未被符号带偏 · `[x]无空格` 原样保留 · 全角空格列表项正常 · emoji/CJK 后的加粗 offset 精确 · 远程图上传 + 封面设置成功（含带查询参数的 `pbs.twimg.com` URL）· 推文嵌入 / 表格 / 代码块 / 分割线均原生。
   - 期间一次图片上传失败经排查为**该 Wikimedia URL 本身不可达**，非代码问题；降级链路如实把 markdown 原文写回正文、未丢内容，行为符合设计。样例已改用 `pbs.twimg.com`。
 - **真机结论(本轮)**：**X 忽略 Draft `ContentBlock.depth`**——嵌套列表渲染成扁平列表,有序列表还会被连续重编号。能力面板「多级列表」据此从暂定的 `special` 落为 `warn`、文案改为确定的「X 不支持列表层级 · 已扁平化(内容不丢)」。**depth 保留照写**:语义正确、零成本,X 日后支持即自动生效。
 - **已排除（固有限制）**：`postMessage`→MessageChannel「私有通道」（MAIN world 下 File 对页面脚本不可隐藏，见 §8）；**自动填图片 ALT/Description**——实测 ALT 不在 Draft MEDIA entity data（`data` 只有 `mediaItems`）、走 X 后端 `media/edit`,无法「借 Draft 直写」;程序化打开「Edit media」弹窗永久 loading(内部元素不渲染)、Save 只回 Crop tab 不关窗。三路(直写/UI 弹窗/私有接口)皆不通,**自动 alt 已搁置**、代码已回退(分支 `feat/image-alt-text`),`altCaption` 开关为演示占位。详见 §11。
-- **下一步**:真机回归 → 打 tag 上架;之后按 backlog 迭代,远期「文章 → Markdown 反向导出」。
+- **下一步**:用户真机回归(0.5.0 → 0.5.1)并交回 I5–I7 取证结果 → 打 tag 上架 → 据取证定 I5 / I6 / I7 修法;之后按 backlog 迭代,远期「文章 → Markdown 反向导出」。
 - **怎么跑**：`pnpm install && pnpm build` → Chrome 加载 `.output/chrome-mv3`。详见 §7。
 
 ---
@@ -72,7 +73,7 @@ entrypoints/
     App.tsx / types.ts / styles/global.css
     components/
       Header StatusBar Tabs Toast
-      draft/    DraftTab EditorCard DraftRow AssetsCard CapabilityPanel PreflightCard ReportCard OverwriteDialog Footer Celebration
+      draft/    DraftTab EditorCard DraftPreview DraftRow AssetsCard CapabilityPanel PreflightCard ReportCard OverwriteDialog Footer Celebration
       history/  HistoryTab
       settings/ SettingsTab
 lib/
@@ -83,17 +84,22 @@ lib/
   bridge/importArticle.ts       # sidepanel→content 写入/标题发送入口（importToXTab / setTitleOnXTab）
   bridge/locateXTab.ts          # ⭐统一「定位目标 X 标签页」（useProbe 与 importArticle 共用）
   markdown/parser.ts            # ⭐Markdown → ImportBlock[]（递归下降行内解析，跳过 frontmatter）
-  markdown/frontmatter.ts       # ⭐extractTitle（frontmatter title > 首个 H1，跳代码块）+ stripFirstH1
-  markdown/capability.ts        # 能力映射分析 + firstTitle
+  markdown/frontmatter.ts       # ⭐extractTitle（frontmatter title > 首个 H1）+ analyzeDraft / blocksWithoutTitle（一次解析，C2）
+  markdown/capability.ts        # 能力映射 capability / capabilityFromAnalysis + firstTitle / titleText
   markdown/BlockPreview.tsx      # 预览:按解析产出渲染「写进 X 的样子」(第三批 C3)
   markdown/sample.ts
-  workspace/WorkspaceProvider.tsx  # ⭐草稿/记录/tab + 真实导入流程（parseMarkdown → importToXTab → 标题 → 报告）
+  workspace/WorkspaceProvider.tsx  # ⭐草稿/记录/tab + 真实导入流程（analyzeDraft → importToXTab → 标题 → 报告）
+  workspace/DraftAnalysis.tsx   # 草稿页共享的一次延后解析（useDeferredValue，挂在 DraftTab 内，C2）
+  workspace/runRecord.ts / draftSync.ts / historySync.ts / importPlan.ts / errorText.ts  # 导入收尾、同步判定等纯函数
+  storage/echoQueue.ts / syncedObject.ts  # 自写回声队列；设置 / 偏好共用的多窗口同步 hook（C4）
+  bridge/editorLocator.ts / sampleResidue.ts  # 正文编辑器定位（injector 与 content 共用，I4）；空稿取样残留判定（I2）
   theme/ i18n/ prefs/ settings/ storage/   # UI 基础设施（Phase A/B/C，稳定）
 docs/
   技术方案设计.md               # 事实基座
   research/xposter-analysis.md  # 竞品 xPoster 源码深析（注入引擎实现范本，M2 图片上传直接参考 §3）
   research/m0/ research/screenshots/
-  qa/                           # Phase D 设计稿↔实现对照测试
+  qa/                           # Phase D 设计稿↔实现对照测试 + 真机回归文档 / 执行清单(v0.5.0、v0.5.1)/ 取证脚本
+eslint.config.js                # 只开 React hooks 两条规则(C1),`pnpm lint`,CI 同跑
 ```
 
 > 注：`lib/workspace/importService.ts`（旧 mock 假进度）已在 M1 删除。
@@ -155,7 +161,8 @@ background（开侧栏）                          injector.ts（MAIN world，�
   - **上架合规**:去 `tabs`、host_permissions 仅 x.com/twitter.com、`unlimitedStorage`、Chrome ≥116、manifest `_locales`(en/zh_CN)、设置页版本读 manifest、生产不打 `console.info`、隐私政策 / NOTICE、字体瘦身(约 640KB,wxt 构建报告 637.58 kB)。
   - 单测 307(v0.4.0 tag)→ 370(PR #31)→ 488(8 月五批)→ 646(10 月三阶段)→ **738**(打 tag 前复审修复)。
 
-`pnpm compile` / `pnpm test`(738)/ `pnpm build` 全绿(2026-10-23 复审修复批:`pnpm test` 738 通过;compile / build 以提交前 `/check` 为准)。
+- 🟡 **0.5.1 · 2026-10-26 全面审查第三批**(**代码侧全绿,待真机回归**,`docs/qa/真机回归执行清单-v0.5.1.md`):解析边角 P6 / P11 / P12、历史回声 H1、草稿写失败退避重试 O7、空稿不留 `x`(I2)、滚动到顶部滚对容器(I4)、ESLint(C1)、一次解析共享(C2)、预览改为写入同一份块序列并去掉 react-markdown(C3)、设置 / 偏好共用同步 hook(C4)。明细见 CHANGELOG `[Unreleased]`。
+- 单测:738(10-23 复审修复)→ 818(10-26 第一、二批,并入 0.5.0)→ **851**(第三批)。`pnpm lint` / `compile` / `test` / `build` 全绿(main `c3375e8`)。
 
 ---
 
@@ -202,7 +209,7 @@ pnpm build              # → .output/chrome-mv3
 
 - **真机验证注入功能**：必须在真实 Chrome + 登录 X + 打开文章编辑页（`x.com/compose/articles/edit/...`）。改了 content/injector 后 **务必刷新 X 页面**（扩展更新不会自动换掉已注入的旧 content script）。
 - **纯 UI 预览**（不装扩展、测不了注入）：静态服务器托管 `.output/chrome-mv3` 打开 `sidepanel.html`，窗口宽 ~404px；chrome.storage 不可用时自动回退 localStorage。
-- **开发**：`pnpm dev`（HMR）。**类型检查**：`pnpm compile`（用项目本地 `./node_modules/.bin/tsc`）。
+- **开发**：`pnpm dev`（HMR）。**提交前自检**（与 CI 同序）：`pnpm compile`（tsc）→ `pnpm lint`（React hooks 规则）→ `pnpm test` → `pnpm build`。依赖安装用 `pnpm install --frozen-lockfile`，别重生成 lockfile。
 
 ---
 
@@ -283,11 +290,13 @@ pnpm build              # → .output/chrome-mv3
 - [x] ~~**数学块 `$$`**~~ ✅ 本轮实现并真机验证：真机 dump 确认 X 原生 `LATEX` atomic 块（`data:{}`、公式在块 `text`、逐字符挂 entity），parser 识别块级 `$$…$$` → injector 直写 → 能力面板标 native。真机导入 `$$\nE = mc^2\n$$` 后 X 原生渲染出 LaTeX 公式块。
 - [ ] 行内数学 `$…$`：X 的 LaTeX 是块级 Insert 项，无行内原生承载，暂只如实告知（与行内代码/行内图片同策略）。
 
-**v0.5.0 发版前**:真机回归(QA 文档 T1～T21)→ 隐私政策发布到公开地址 → 打 tag 上架。见 §0「还没做」。
+**v0.5.0 发版前**:真机回归(`docs/qa/真机回归执行清单-v0.5.0.md`,对应全量文档 T1～T30)→ 在 `782d306` 打 tag → 隐私政策发布到公开地址 → 上架。见 §0「还没做」。
+
+**v0.5.1**:真机回归(`docs/qa/真机回归执行清单-v0.5.1.md`,对应 T31～T35 + 冒烟 + 0.5.0 抽样)→ 按其 §7 改版本号、CHANGELOG、打 tag。待办:I5 / I6 / I7 等取证结果(`docs/qa/真机取证脚本-第三批阶段B.md`)再定修法。
 
 **发版后待办**:见 [`docs/review/backlog-2026-10-22.md`](./docs/review/backlog-2026-10-22.md)——审查推迟项(A8/A11/A19～A21、B6/B12/B13/B15、C10～C24/C27/C28/C32/C37、D8)与本轮 code review advisory;另有 8 月方案遗留的设计层项(信息架构流水线化、mdast 重构、arm 共享 hook)。
 
-**2026-10-26 全面审查**:见 [`docs/review/全面审查-2026-10-26.md`](./docs/review/全面审查-2026-10-26.md)(31 项新问题,其中 3 项需真机确认;另 9 条优化,均不在上面的 backlog 里);第一批 P1/P4/P5/W1/W2/W10 修复方案见 [`docs/review/修复方案-2026-10-26.md`](./docs/review/修复方案-2026-10-26.md)(已合入 main:PR #36、#37);第二批(P2/P3/P7/P8/P9、W3–W9/W11、I1/I3、D1)方案见 [`docs/review/修复方案-2026-10-26-第二批.md`](./docs/review/修复方案-2026-10-26-第二批.md)(已合入 main:PR #38、#39);第三批(剩余解析边角、历史回声、需真机取证的注入项、优化项)方案见 [`docs/review/修复方案-2026-10-26-第三批.md`](./docs/review/修复方案-2026-10-26-第三批.md)(阶段 A 已实施,进 0.5.1;阶段 B / C 待后续)。
+**2026-10-26 全面审查**:见 [`docs/review/全面审查-2026-10-26.md`](./docs/review/全面审查-2026-10-26.md)(31 项新问题,其中 3 项需真机确认;另 9 条优化,均不在上面的 backlog 里);第一批 P1/P4/P5/W1/W2/W10 修复方案见 [`docs/review/修复方案-2026-10-26.md`](./docs/review/修复方案-2026-10-26.md)(已合入 main:PR #36、#37);第二批(P2/P3/P7/P8/P9、W3–W9/W11、I1/I3、D1)方案见 [`docs/review/修复方案-2026-10-26-第二批.md`](./docs/review/修复方案-2026-10-26-第二批.md)(已合入 main:PR #38、#39);第三批(剩余解析边角、历史回声、需真机取证的注入项、优化项)方案见 [`docs/review/修复方案-2026-10-26-第三批.md`](./docs/review/修复方案-2026-10-26-第三批.md)(阶段 A、阶段 B 的 I2 / I4、阶段 C1–C4 已合入 main,进 0.5.1;I5 / I6 / I7 待真机取证;O3 / O6 按方案不做)。
 
 **远期**：文章 → Markdown 反向导出（xposter 有范本，§8.1 导出器）。
 
@@ -307,39 +316,25 @@ pnpm build              # → .output/chrome-mv3
 
 ## 11. 最近一次会话小结
 
-**2026-10-26 · 第二十次会话(续)· 第三批阶段 C4 + Actions 额度事故**:
-- PR #44 的 CI 两次秒挂:job 没分配到 runner(`runner_id: 0`、无日志),同时段 main 上的运行也一样——仓库 Actions 额度 / 账单问题,非代码。按规则重跑一次确认、在 PR 留言;用户处理额度后重跑全绿再合并。**教训**:「2–3 秒失败 + 无步骤 + 无日志」先查 runner 分配与额度,别去改代码。
-- C4:`useSyncedObject` + 纯函数 `decideSyncedChange` / `stableJson` 单测;审查期 React 脚本模拟双实例(B 跟随 A、快速连改时迟到回声不回退、key 删除回落默认)——新旧代码都绿,去掉回声判定的变异版本变红(脚本须把两次写入落盘分在不同 `act` 里,否则 React 合并渲染、回退看不见)。
-
-**2026-10-26 · 第二十次会话(续)· 第三批阶段 C3**:
-- 预览改为渲染 `analysis.blocks`;纯函数(`inlineSegments` / `safeHref` / `groupBlocks` / `parseTableMarkdown`)与无 hooks 的 `BlockList` 在 node 下用 `renderToStaticMarkup` 单测;全格式样例渲染截图人工检查。check 审查补一处:代码块正文首行形似表格分隔行时被误渲染成表格——`parseTableMarkdown` 先认围栏。删 react-markdown / remark-gfm,侧边栏 JS 450 → 294 KB。
-- 与方案的出入:图片保持原有占位框而不加载远程图(预览不发请求,与此前一致);hooks 外壳放 `entrypoints/sidepanel/components/draft/DraftPreview.tsx`,`lib/markdown` 只留纯渲染,测试不必加载侧边栏状态层。
-
-**2026-10-26 · 第二十次会话(续)· 第三批阶段 C2**:
-- `analyzeDraft` / `blocksWithoutTitle` / `capabilityFromAnalysis` / `titleText`;写入路径 4 遍(含报告卡 5 遍)→ 1 遍,草稿页每次按键 2 遍 → 1 遍且延后。验证:仓内等价测试(语料 + 1500 组随机 × 3 种开关)、新旧差分 24 万组零差异、160 KB 基准(写入 131 → 40 ms,按键 54 → 30 ms)、审查期 React 脚本(两个面板随草稿更新且一次改动只解析一次;原有 8 例回归通过)。
-- 与方案的出入:Provider 挂在 DraftTab 而非 WorkspaceProvider(切到记录 / 设置时不解析,与此前一致);报告快照也带上 analysis,报告卡不再重解析。
-
-**2026-10-26 · 第二十次会话(续)· 第三批阶段 C 方案 + C1**:
-- 方案(think skill):实测 160 KB 文档每次按键能力面板与素材板各全文解析一次(约 30 + 30 ms),写入流程 4 遍解析只在点写入时发生;去掉 react-markdown + remark-gfm 侧边栏 JS 450 → 289 KB。据此 O1 扩到按键路径、O2 做、O4 收窄到 Settings / Prefs、O3 / O6 不做;用户按推荐批准。
-- C1:ESLint 只开 hooks 两条规则;首次运行抓到 `copyHistoryItem` 依赖写错(`t.errWriteFail` 应为 `t.errCopyFail`;因 `t.copiedToast` 随语言一起变,回调照样随语言重建,未造成可见问题——事后复核更正,起初误判为可见 bug)与 `startImport` 多余依赖 `en`。依赖版本按「发布满 14 天」锁定(caret 会解析到 7–10 天前的新版,改为显式指定版本)。
-
-**2026-10-26 · 第二十次会话(续)· 第三批阶段 B 的 I2 / I4**:
-- 阶段 A 合入(PR #40)后给出真机取证脚本(`docs/qa/真机取证脚本-第三批阶段B.md`,E1–E4 与 injector 同口径,Chromium 下用模拟页面 / 模拟 Draft 状态跑通四段);用户决定 I2 / I4 先修、取证结果稍后给。
-- I2 / I4 的可判定部分抽为 `lib/bridge/editorLocator`、`lib/bridge/sampleResidue` 加单测;注入层行为只能真机验证(QA T32)。check 审查补一处:定位不到编辑器时不再执行 `insertText`。
-
-**2026-10-26 · 第二十次会话(续)· 第三批阶段 A**:
-- **决定**(用户按推荐):第一、二批真机回归后先打 v0.5.0(打在 main `782d306`),第三批进 0.5.1、记入 CHANGELOG `[Unreleased]`;P12 空标题不产出块;ESLint(O9)放阶段 C 单独 PR。
-- **实施**:P6 / P11 / P12 / H1 / O5 / O7 / O8。纯逻辑抽到 `lib/`(`historySync`、`draftRetryDelay`、`folderErrText`、`CapabilityAdjust`)加单测;新旧差分 4 万组随机输入,差异只出现在空标题(P12)与列表内缩进块(P6)两类,逐条抽看均为预期改进。审查期 React 测试脚本(不入库)验证 H1 / O7:同样断言在 main 上红、本分支绿。
-- **check 审查抓到一处**:O7 初版在「重试写入进行中又有键入、重试成功」时,新编辑没有定时器、滞留到下次键入或失焦——重试成功后若有待写值即恢复常规防抖;用去掉该修复的变体确认测试会红。另把 P6 的列表语境记录挪到清栈之后(行为不变,语义更直)。
-
-**2026-10-26 · 第二十次会话 · 全面审查 + 第一批修复(阶段 1:解析层)**:
-- **审查**:解析层 / 侧边栏·存储 / 注入链路 / 文档四路(两路由 subagent 并行,结论逐条由主控复现或对照源码核实)→ 31 项新问题(其中 3 项需真机确认)+ 9 条优化,全部不在 10-22 backlog 里,存 `docs/review/全面审查-2026-10-26.md`。
-- **第一批**(用户决定并入 0.5.0,W10 顺带修):阶段 1 做 P1 / P4 / P5,阶段 2 做 W1 / W2 / W10,各一个 PR。提交前用 Waza `check` skill 审查,有问题修完再提。
-- **阶段 1 的 check 审查抓到一处**:P1 初版让 `$$ a+b` 这类带内容的起行只以空行为界,会把中间的列表 / 引用 / 标题吞进公式(`$$100 涨\n- 项\n$$`)——收紧为只看段落续行,补测试。另用「旧提交独立 worktree + 2 万组随机输入」做新旧差分:不含 `$$` / 引用的输入零差异。
-- **教训**:随机差分里「有差异的样本」要逐条看,不能只数数——这次的问题正是从样本里看出来的。
-- **第二批阶段 A**:用户选定 P2 / P3 / W9 均按推荐方案。check 审查抓到四处并修:P8 链接跳过让病态输入慢约 3 倍(加 `scan.link` 缓存)、文末孤立 ``` 会产空代码块、YAML 解码可能把换行 / NUL 带进标题、能力面板把列表 / 引用里的 `<!--` 误计为未闭合注释。与方案的偏差:未闭合 HTML 注释回退为文本(不吞到文末),理由见 §8。
-- **第二批阶段 B**:各项判定抽成 `lib/` 纯函数加单测(probeView / drag / importPlan / errorText / folderOverlayText / reportTone / pruneHistory / beginProbe);另用审查期的 React 测试脚本(不入库)端到端验证 W5(重探期间 connected 不掉)、W8(改上限立即裁剪并写回)、W9(两级清除 + 提示 + 延迟 reload)。check 审查改一处:清除数据时文件夹清除挪到本地数据删完之后(清除请求最长等超时,不能拖住删除)。
-- **阶段 2**:W1 / W2 抽成纯函数(`buildRunRecord`、`echoQueue` + `decideDraftChange`)加单测;另用审查时的 React 测试脚本(linkedom + 假 chrome.storage,不入库)做端到端反证——同样两条断言在旧代码上红、新代码上绿。W10 的实现与方案有一处出入:方案写「快照照存」,实际按 B4-6「快照与报告卡同生命周期」改为草稿已变时两者都不置回(历史照写)。
+**2026-10-26 · 第二十次会话 · 全面审查 + 三批修复(PR #36–#46)**:
+- **审查**:解析层 / 侧边栏·存储 / 注入链路 / 文档四路(两路 subagent 并行,结论逐条由主控复现或对照源码核实)→ 31 项新问题(3 项需真机)+ 9 条优化,存 `docs/review/全面审查-2026-10-26.md`;各批方案见 `docs/review/修复方案-2026-10-26*.md`(含实施记录与偏差)。
+- **流程**(用户授权):每批先出方案 → 用户定待定项 → 实施 → Waza `check` 审查并修 → 提交、开 PR、CI 绿后自动合并 → 分支重置到 main。
+- **第一批**(并入 0.5.0,PR #36、#37):P1 / P4 / P5、W1 / W2 / W10。check 抓到 P1 初版会把列表 / 引用 / 标题吞进公式,收紧为只看段落续行。
+- **第二批**(并入 0.5.0,PR #38、#39):P2 / P3 / P7 / P8 / P9、W3–W9 / W11、I1 / I3、D1。check 抓到四处(P8 病态输入慢 3 倍、文末孤立围栏产空代码块、YAML 控制字符进标题、注释残留误计)及清除数据的顺序问题。
+- **第三批**(进 0.5.1):
+  - 用户决定:先回归打 v0.5.0(打在 `782d306`),第三批进 0.5.1;P12 空标题不产出块;ESLint 单独 PR。
+  - 阶段 A(PR #40):P6 / P11 / P12 / H1 / O5 / O7 / O8。check 抓到 O7 初版「重试写入进行中又有键入」时新编辑滞留。
+  - 阶段 B(PR #41):给出 I4–I7 真机取证脚本(只读,与 injector 同口径);I2 / I4 先修。check 补:定位不到编辑器时不再 `insertText`。I5 / I6 / I7 等取证。
+  - 阶段 C(think skill 出方案,PR #42–#45):实测后 O1 扩到按键路径、O2 做、O4 收窄到 Settings / Prefs、O3 / O6 不做。C1 ESLint(依赖按「发布满 14 天」锁版本);C2 一次解析(新旧差分 24 万组零差异);C3 预览改为块序列渲染(check 抓到代码块首行形似分隔行被当表格);C4 `useSyncedObject`。
+  - PR #46:0.5.1 真机回归执行清单(预期值按代码实算)。
+- **验证手段**:纯逻辑抽到 `lib/` 加单测;新旧差分(旧提交独立副本 + 万级随机输入);审查期 React 测试脚本(linkedom + 串行化假 chrome.storage,不入库)做端到端反证,并用「去掉修复的变异版本必须变红」确认脚本有效。
+- **事故**:PR #44 期间仓库 Actions 额度用尽,所有 job 2–3 秒失败(`runner_id: 0`、无日志)。按规则重跑一次确认、PR 留言,用户处理额度后重跑全绿再合并。
+- **教训**:
+  - 随机差分里「有差异的样本」要逐条看,不能只数数(P1 的问题就是从样本里看出来的)。
+  - 测试脚本先在旧代码 / 变异版本上跑,确认它真的会红;React 测试里状态更新要分开 `act`,否则合并渲染会把回退藏起来(H1、C4 都踩过)。
+  - 「2–3 秒失败 + 无步骤 + 无日志」先查 runner 分配与 Actions 额度,别去改代码。
+  - lint 报的依赖缺失不等于可见 bug:C1 的 `copyHistoryItem` 起初误报为「切语言后提示仍是旧语言」,复核发现同数组的 `t.copiedToast` 会随语言变化、回调照样重建,已在各文档更正。
+  - 回归清单里的设置项名称、面板条目与预期数值要对着代码 / 界面文案核,不凭记忆写。
 
 **2026-10-23 · 第十九次会话 · 打 tag 前对 PR #33 的复审修复**:
 - **起点**:PR #32 / #33 合入 main 后、打 tag 前,对 `b3dac9a..0ec9b15` 做五路审查 → 两路对抗性核实 → 两路方案评审,只收核实属实的问题(方案 `docs/review/修复方案-2026-10-23.md`,证伪项与推迟项见其第 3 节)。分支 `fix/pre-tag-review-2026-10-23`,版本号仍 0.5.0,改动并入 CHANGELOG `[0.5.0]`。
