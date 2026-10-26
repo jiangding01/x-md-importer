@@ -1,4 +1,5 @@
 import { BAD_RESULT_ERROR, NOT_ARTICLE_EDITOR_ERROR, type SetTitleResponse } from '@/lib/bridge/protocol';
+import { SAMPLE_RESIDUE_SUFFIX } from '@/lib/bridge/sampleResidue';
 import type { Dict } from '@/lib/i18n/dict';
 
 /**
@@ -15,6 +16,10 @@ export function importErrorText(error: string, t: Dict): string {
   if (error === BAD_RESULT_ERROR) return t.errBadResult; // B9:injector 回传形状不合规
   if (error === NOT_ARTICLE_EDITOR_ERROR) return t.errNotArticleEditor; // B3:injector 拒写非文章编辑页
   if (error === 'import already in progress') return t.errImportBusy;
+  // 第三批 I2:取样失败且撤回不了插入的 'x' → 如实告知,请用户手动删除。
+  if (error.startsWith('sample character:') && error.endsWith(SAMPLE_RESIDUE_SUFFIX)) {
+    return `${t.errNoEditor} · ${t.errSampleResidue}`;
+  }
   if (error === 'draft state node not found' || error.startsWith('sample character:')) return t.errNoEditor;
   // 其他 injector 层错误:统一「写入失败」并附上原始短语,便于诊断。
   return `${t.errWriteFail}: ${error}`;
