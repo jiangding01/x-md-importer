@@ -79,6 +79,8 @@ export const RE_OBSIDIAN_IMAGE_LINE = /^!\[\[([^\]]+)\]\]$/;
  */
 const RE_HEADING = /^ {0,3}(#{1,6})\s+(.*)$/;
 const RE_BLOCKQUOTE = /^ {0,3}>/;
+/** HTML 注释块的起行(第二批 P3):0-3 空格缩进后以 `<!--` 开头(CommonMark HTML 块类型 2)。 */
+const RE_HTML_COMMENT_OPEN = /^ {0,3}<!--/;
 /**
  * 列表项:组1 = 前导缩进(决定嵌套层级)、组2 = 标记后的内容。
  * 允许前导空白是嵌套列表的入口——此前要求顶格,缩进行落到段落分支、
@@ -267,7 +269,7 @@ export type HeadingVisitor = (
   blockIndex: number,
 ) => void;
 
-/** parseMarkdownWithHeadings 上报的单个标题(字段语义同 HeadingVisitor)。 */
+/** parseMarkdownWithMeta 上报的单个标题(字段语义同 HeadingVisitor)。 */
 export interface HeadingInfo {
   start: number;
   end: number;
@@ -297,7 +299,7 @@ export interface ContentLineOptions extends ParseOptions {
  * visitor 返回 true 时提前停止遍历。
  *
  * 抽出此 helper 是为消除「三处 fence 追踪各写一份、语义漂移」:stripFirstImageLine 用它的围栏
- * 判定(标题抽取 P4 起改用 parseMarkdownWithHeadings 一次解析取标题,onHeading 选项仍保留)。
+ * 判定(标题抽取 P4 起改用 parseMarkdownWithMeta 一次解析取标题,onHeading 选项仍保留)。
  *
  * `skipFrontmatter`(B3-3 / P1-6):从 frontmatterBodyStart 起扫,文首 YAML 块整块不交给
  * visitor——`# 注释` 是合法 YAML 注释(Obsidian 模板常见),否则会被当成内容行。**默认关闭**:
@@ -397,27 +399,46 @@ function withParseOptions<T>(opts: ParseOptions, fn: () => T): T {
  */
 const demotedHeadings = new WeakSet<ImportBlock>();
 
+/**
+ * 第二批 P2:「未闭合围栏 → 到文末的代码块」的旁路标记(同 demotedHeadings,不进协议、不随序列化外泄),
+ * 供能力面板如实告警。
+ */
+const unclosedFences = new WeakSet<ImportBlock>();
+
+/** 该块是否为未闭合围栏按 CommonMark 延伸到文末产出的代码块(仅对原块对象成立)。 */
+export function isUnclosedFence(block: ImportBlock): boolean {
+  return unclosedFences.has(block);
+}
+
 /** 该块是否为 parseMarkdown 产出的「四级及以下标题 → 粗体段落」降级块(仅对原块对象成立)。 */
 export function isDemotedHeading(block: ImportBlock): boolean {
   return demotedHeadings.has(block);
 }
 
 /**
- * 一次解析同时拿到写入块与全部标题(P4):标题抽取与「去掉标题块」都基于**同一次**解析的产出,
- * 标题块按 `blockIndex` 精确定位——不再像旧 stripFirstH1 那样删 md 源行再重解析(删行会让相邻行
- * 重新拼接:首行变 `---` 被当 frontmatter、上下两段合并、正文被吸进列表项)。
+ * 一次解析同时拿到写入块、全部标题与被丢弃的 HTML 注释块数(P4;第二批 P3 加 htmlComments):标题抽取与
+ * 「去掉标题块」都基于**同一次**解析的产出,标题块按 `blockIndex` 精确定位——不再像旧 stripFirstH1 那样
+ * 删 md 源行再重解析(删行会让相邻行重新拼接:首行变 `---` 被当 frontmatter、上下两段合并、正文被吸进
+ * 列表项)。能力面板取 htmlComments 如实告知「注释不写入」。
  * 走 withParseOptions(P7):结束后还原模块级开关,不残留给后续调用。
  */
-export function parseMarkdownWithHeadings(md: string, opts: ParseOptions = {}): { blocks: ImportBlock[]; headings: HeadingInfo[] } {
+export function parseMarkdownWithMeta(
+  md: string,
+  opts: ParseOptions = {},
+): { blocks: ImportBlock[]; headings: HeadingInfo[]; htmlComments: number } {
   const headings: HeadingInfo[] = [];
+  let htmlComments = 0;
   const blocks = withParseOptions(opts, () =>
     parseLines(md.split(/\r?\n/), {
       onHeading: (start, end, level, kind, raw, blockIndex) => {
         headings.push({ start, end, level, kind, raw, blockIndex });
       },
+      onHtmlComment: () => {
+        htmlComments += 1;
+      },
     }),
   );
-  return { blocks, headings };
+  return { blocks, headings, htmlComments };
 }
 
 /** 解析 Markdown 文本为按文档顺序排列的写入块序列。 */
@@ -430,10 +451,13 @@ export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[
 
 /** parseLines 的上报钩子,仅 forEachContentLine 使用(不另导出直接调 parseLines 的入口)。 */
 interface ParseHooks {
-  /** 每产出一个已闭合围栏块即上报其开/闭栏行下标。 */
+  /** 每产出一个围栏代码块(含按 CommonMark 到文末的未闭合围栏)/ 丢弃一个 HTML 注释块,即上报其起止行下标——
+   * 这些区间内的行不是正文,forEachContentLine 整段跳过。 */
   onFence?: (open: number, close: number) => void;
   /** 每产出一个标题块即上报(P3),见 HeadingVisitor。 */
   onHeading?: HeadingVisitor;
+  /** 每丢弃一个 HTML 注释块即上报其起止行(第二批 P3;区间同时经 onFence 上报供 forEachContentLine 跳过)。 */
+  onHtmlComment?: (start: number, end: number) => void;
 }
 
 /**
@@ -524,7 +548,23 @@ function parseLines(lines: string[], hooks: ParseHooks = {}): ImportBlock[] {
         i = j + 1;
         continue;
       }
-      // 未闭合:视为普通文本,继续走后续块级逻辑处理本行(不 continue)
+      // 第二批 P2:顶层(不在列表项内容里)的未闭合围栏按 CommonMark **到文末都是代码**——此前回退为普通
+      // 文本,代码被当 Markdown 解析:`# 注释` 成标题(还被抽成文章标题)、`*args` 的星号被吃掉、`- x` 成列表项。
+      // 宁可多包成代码也不改写内容(与 P5「引用内围栏按容器结束闭合」同一原则);能力面板据 isUnclosedFence 告警。
+      // 列表内缩进的未闭合围栏(A4 语境)维持原行为:列表容器何时结束另有规则,不在本次范围。
+      const topLevel = listContentCol === null || fence.indent < listContentCol;
+      const body = topLevel ? lines.slice(i + 1).map((l) => stripIndentCols(l, fence.indent)) : [];
+      while (body.length > 0 && (body[body.length - 1] ?? '').trim() === '') body.pop(); // 文末空行不进代码
+      // 开栏后一行内容都没有(文末孤立的 ```):不产空代码块,回落文本(与 P5 引用内同口径)。
+      if (topLevel && body.length > 0) {
+        const block: ImportBlock = { kind: 'atomic', entityType: 'MARKDOWN', data: { markdown: fenceMarkdown(line, body, null) } };
+        unclosedFences.add(block);
+        blocks.push(block);
+        hooks.onFence?.(i, lines.length - 1);
+        i = lines.length;
+        continue;
+      }
+      // 列表内未闭合 / 文末孤立开栏:视为普通文本,继续走后续块级逻辑处理本行(不 continue)
     }
 
     // 1.5 块级数学公式 `$$…$$` → LATEX atomic(真机 dump 确认 X 原生渲染,公式写进块 text)。
@@ -561,6 +601,31 @@ function parseLines(lines: string[], hooks: ParseHooks = {}): ImportBlock[] {
         }
       }
       // 未闭合 / 空公式:回退,本行按普通文本继续走后续逻辑(不 continue)。
+    }
+
+    // 1.6 HTML 注释块(第二批 P3,CommonMark HTML 块类型 2):块首 `<!--` 起,到含 `-->` 的行止,整段**不写入**
+    //      ——注释是作者备注,GitHub / Obsidian / Typora 渲染时都不显示,X 又不支持 HTML,写进去只会把备注原样
+    //      暴露在文章里;此前逐行按 Markdown 解析,注释里的 `# TODO` 还会被抽成文章标题。`-->` 之后同一行的正文
+    //      照常写入。**未闭合不按 CommonMark 吞到文末**:注释不写入,吞到文末等于整篇后文静默丢失(与 P2 围栏不同,
+    //      围栏至少把内容按代码写进去)——回退为普通文本,能力面板告警。
+    if (RE_HTML_COMMENT_OPEN.test(line)) {
+      const startAt = line.indexOf('<!--');
+      let j = i;
+      let endAt = -1;
+      while (j < lines.length) {
+        endAt = (lines[j] ?? '').indexOf('-->', j === i ? startAt + 2 : 0);
+        if (endAt >= 0) break;
+        j += 1;
+      }
+      if (endAt >= 0) {
+        hooks.onHtmlComment?.(i, j);
+        hooks.onFence?.(i, j);
+        const rest = (lines[j] ?? '').slice(endAt + 3).trim();
+        if (rest !== '') blocks.push(textBlock('unstyled', walkInline(rest)));
+        i = j + 1;
+        continue;
+      }
+      // 未闭合:回退,本行按普通文本继续(不 continue)
     }
 
     // 2. 分割线
@@ -952,6 +1017,7 @@ function isBlockBoundary(line: string, interrupting = false): boolean {
   if (matchFenceOpen(line)) return true;
   if (RE_DIVIDER.test(line)) return true;
   if (matchMathOpen(line) !== null) return true;
+  if (RE_HTML_COMMENT_OPEN.test(line)) return true; // 第二批 P3:HTML 注释块可打断段落(CommonMark 类型 2)
   if (RE_TWEET.test(line.trim())) return true; // trim 与主循环的推文分支同源(B3-2)
   if (matchImageLine(line.trim()) !== null) return true;
   if (matchLinkedImageLine(line.trim()) !== null) return true;
@@ -1156,9 +1222,13 @@ const MAX_INLINE_DEPTH = 100;
  *  - closeMemo:定界符 → 按起点记忆的 findClosing 结果(CLOSE_UNKNOWN = 未算),见 findClosing;
  *  - runStart / runEnd(p):p 所在同字符连续串的串首 / 串尾(开区间)。首次查询时整串回填,
  *    之后串内任一位置 O(1)——canOpen / canClose 不再对长串逐位重扫。
+ *  - link(p):起点 p 的 matchLink 结果(按起点缓存)。walkInline 与 findClosing(第二批 P8 跳过完整链接)
+ *    共用——matchLink 自身 O(n)(backlog A21),不缓存时 findClosing 在每个 `[` 重算一遍,`[a` 重复串
+ *    的病态输入会比改前慢约 3 倍(check 审查 B)。
  */
 interface InlineScan {
   closeMemo: Map<string, Int32Array>;
+  link: (p: number) => ReturnType<typeof matchLink>;
   runStart: (p: number) => number;
   runEnd: (p: number) => number;
 }
@@ -1184,8 +1254,17 @@ function createInlineScan(src: string): InlineScan {
     }
     return { s: starts, e: ends };
   };
+  const linkMemo = new Map<number, ReturnType<typeof matchLink>>();
   return {
     closeMemo: new Map(),
+    link: (p) => {
+      let r = linkMemo.get(p);
+      if (r === undefined) {
+        r = matchLink(src, p);
+        linkMemo.set(p, r);
+      }
+      return r;
+    },
     runStart: (p) => ensure(p).s[p] ?? p,
     runEnd: (p) => ensure(p).e[p] ?? p + 1,
   };
@@ -1287,7 +1366,7 @@ function walkInline(src: string, depth = 0): InlineResult {
 
     // 链接 [text](url);紧跟在 ! 之后的 [ 属于图片语法,按普通文本保留(M1 边界)
     if (ch === '[' && src[i - 1] !== '!') {
-      const link = matchLink(src, i);
+      const link = scan.link(i);
       if (link) {
         if (depth < MAX_INLINE_DEPTH) {
           // normalizeUrl 返回 null 表示 scheme 不在白名单(如 javascript:)→ 降级为纯文本:
@@ -1432,6 +1511,15 @@ function matchLink(src: string, start: number): { textRaw: string; url: string; 
       j += 2;
       continue;
     }
+    // 第二批 P9:空白后的 `"…"` / `'…'` 是链接 title,其中的 `)` 不参与括号配对(此前
+    // `[a](u "x ) y")` 在 title 内截断,` y")` 漏进正文)。找不到闭合引号按普通字符继续。
+    if ((ch === '"' || ch === "'") && /\s/.test(src[j - 1] ?? '')) {
+      const q = findQuoteClose(src, j + 1, ch);
+      if (q >= 0) {
+        j = q + 1;
+        continue;
+      }
+    }
     if (ch === '(') {
       pdepth += 1;
     } else if (ch === ')') {
@@ -1445,12 +1533,24 @@ function matchLink(src: string, start: number): { textRaw: string; url: string; 
   return { textRaw: src.slice(start + 1, close), url: src.slice(urlStart, j), end: j + 1 };
 }
 
+/** 从 from 起找未被 `\` 转义的 quote 字符下标;找不到 -1(链接 title 扫描用,P9)。 */
+function findQuoteClose(src: string, from: number, quote: string): number {
+  for (let k = from; k < src.length; k += 1) {
+    if (src[k] === '\\') {
+      k += 1;
+      continue;
+    }
+    if (src[k] === quote) return k;
+  }
+  return -1;
+}
+
 /** findClosing 记忆表里「该起点尚未计算」的标记(结果本身只会是 ≥ -1 的下标)。 */
 const CLOSE_UNKNOWN = -2;
 
 /**
  * 从 start 处向后寻找闭合定界符 delim,返回其起始下标(找不到 -1)。delim 恒由同一字符组成
- * (`*` / `_` / `**` / `***` / `~~`)。扫描时跳过行内代码(代码优先)与反斜杠转义对(A12);
+ * (`*` / `_` / `**` / `***` / `~~`)。扫描时跳过行内代码(代码优先)、完整链接(第二批 P8)与反斜杠转义对(A12);
  * 对单字符定界符(* / _)跳过更长的同字符连续段(避免把 ** 中的星号误判为 * 的闭合)。前一字符是
  * 空白的候选不能闭合(canClose,A2),跳过继续找:`**a ** b**` 的中间 `**` 不闭合,整段 `a ** b`
  * 加粗(CommonMark)。
@@ -1493,6 +1593,15 @@ function findClosing(src: string, start: number, delim: string, scan: InlineScan
       const cs = matchCodeSpan(src, i);
       i = cs ? cs.end : i + 1;
       continue;
+    }
+    // 第二批 P8:完整链接 / 图片(`[…](…)`)整体跳过——CommonMark 中链接与代码 span 的结合优先于强调,
+    // 此前 `**a [b](u/x**y) c**` 的闭符被 URL 里的 `**` 截走、链接丢失。跳转只取决于位置,记忆化不变量不变。
+    if (ch === '[') {
+      const lk = scan.link(i);
+      if (lk) {
+        i = lk.end;
+        continue;
+      }
     }
     if (ch !== dch) {
       i += 1;

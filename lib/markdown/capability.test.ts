@@ -431,3 +431,17 @@ describe('firstTitle · 解析开关透传(P7)', () => {
     }
   });
 });
+
+describe('第二批 P2 / P3 能力面板如实告知', () => {
+  const item = (md: string, label: RegExp) => capability(md, false).find((c) => label.test(c.label));
+  it('未闭合代码围栏 → warn 1', () => {
+    expect(item('正文\n\n```js\nx', /未闭合代码围栏/)).toMatchObject({ count: 1, badge: 'warn' });
+    expect(item('```js\nx\n```', /未闭合代码围栏/)).toBeUndefined();
+  });
+  it('HTML 注释块 → special 计数(不写入,不算降级);未闭合注释 → warn', () => {
+    expect(item('<!-- a -->\n\n<!--\nb\n-->\n正文', /HTML 注释$/)).toMatchObject({ count: 2, badge: 'special' });
+    expect(item('<!-- 未闭合\n正文', /HTML 注释未闭合/)).toMatchObject({ count: 1, badge: 'warn' });
+    // 列表项 / 引用里以 `<!--` 开头的正文不是未闭合注释(check 审查)
+    expect(item('- <!-- x -->\n\n> <!-- y -->', /HTML 注释未闭合/)).toBeUndefined();
+  });
+});

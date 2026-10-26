@@ -9,7 +9,7 @@
  */
 
 import { extractTitle } from './frontmatter';
-import { isDemotedHeading, parseMarkdown, type ParseOptions } from './parser';
+import { isDemotedHeading, isUnclosedFence, parseMarkdownWithMeta, type ParseOptions } from './parser';
 
 export type CapBadge = 'native' | 'special' | 'image' | 'warn';
 
@@ -26,7 +26,8 @@ export interface CapItem {
  * 「UI 撒谎」(计数与真实写入不一致)。调用方拿不到 opts 时不传,退回 parseMarkdown 的默认值。
  */
 export function capability(md: string, en: boolean, parseOpts?: ParseOptions): CapItem[] {
-  const blocks = parseMarkdown(md, parseOpts);
+  // 第二批 P3:注释块不产出块,其个数只能取解析元数据(与写入同一次解析口径)。
+  const { blocks, htmlComments } = parseMarkdownWithMeta(md, parseOpts);
 
   let headers = 0; // header-one(源 H1/H2)
   let subheaders = 0; // header-two(源 H3)
@@ -48,6 +49,8 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions): C
   let htmlBlocks = 0; // 以 `<字母` 开头、被当普通段落写入的 HTML 块
   let mathBlocks = 0; // 原生 LATEX atomic 块(块级公式 $$…$$,parser 已识别)
   let mathResidue = 0; // 文本块内残留的 $$ 起行(未闭合公式的开头,已降级为普通文本)
+  let unclosedFenceBlocks = 0; // 第二批 P2:未闭合围栏按 CommonMark 延伸到文末的代码块
+  let commentResidue = 0; // 第二批 P3:未闭合的 HTML 注释(回退为文本写入)
 
   const RE_INLINE_CODE = /`[^`]+`/g;
   const RE_INLINE_IMAGE = /!\[[^\]]*\]\([^)]*\)/g;
@@ -71,6 +74,7 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions): C
         // MARKDOWN atomic 承载「代码块」与「表格」两类:以围栏开头者为代码块,否则表格。
         if (/^(`{3,}|~{3,})/.test(b.data.markdown)) codeBlocks += 1;
         else tables += 1;
+        if (isUnclosedFence(b)) unclosedFenceBlocks += 1;
       }
       continue;
     }
@@ -98,6 +102,9 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions): C
     // **未闭合多行公式的开头**(裸 `$$` 行)——如实标降级。`$$100` 这类行内双美元其后非空、
     // 不匹配裸行正则,天然不误计(旧 `/^\$\$/m` 会误报,已随本批收窄)。
     if (RE_MATH_RESIDUE.test(b.text)) mathResidue += 1;
+    // 解析器只在注释找不到 `-->` 时才把 `<!--` 起头的行留在文本块里(否则整段丢弃),据此计未闭合注释。
+    // 只看普通段落:列表项 / 引用里以 `<!--` 开头的正文不是未闭合注释块(check 审查)。
+    if (b.type === 'unstyled' && /^\s*<!--/.test(b.text)) commentResidue += 1;
   }
 
 
@@ -198,6 +205,24 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions): C
     htmlBlocks,
     'warn',
     en ? "X doesn't support HTML · kept as-is" : 'X 不支持 HTML · 保留原文',
+  );
+  add(
+    en ? 'HTML comments' : 'HTML 注释',
+    htmlComments,
+    'special',
+    en ? 'Author notes · not written to X' : '作者备注 · 不写入 X',
+  );
+  add(
+    en ? 'Unclosed HTML comment' : 'HTML 注释未闭合',
+    commentResidue,
+    'warn',
+    en ? 'No closing --> · written as text' : '缺少 --> · 按文本写入',
+  );
+  add(
+    en ? 'Unclosed code fence' : '未闭合代码围栏',
+    unclosedFenceBlocks,
+    'warn',
+    en ? 'No closing fence · everything after it is written as code' : '缺少闭合围栏 · 其后全部按代码写入',
   );
   add(
     en ? 'Math blocks' : '数学公式',

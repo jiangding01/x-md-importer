@@ -14,7 +14,7 @@ import {
   matchFenceOpen,
   matchImageLine,
   matchLinkedImageLine,
-  parseMarkdownWithHeadings,
+  parseMarkdownWithMeta,
   RE_OBSIDIAN_IMAGE_LINE,
   type HeadingInfo,
   type ParseOptions,
@@ -26,15 +26,30 @@ export interface ExtractedTitle {
   source: 'frontmatter' | 'h1';
 }
 
-/** 去掉值两端空白后,再剥掉成对的单/双引号(仅一层)。 */
+/** YAML 双引号值里的单字符转义(第二批 P7)。 */
+const YAML_DQ_ESCAPES: Record<string, string> = { '"': '"', '\\': '\\', '/': '/', n: '\n', t: '\t', r: '\r', '0': '\0' };
+
+/** 解码 YAML 双引号值的转义:单字符表 + `\xXX` / `\uXXXX`;未知转义原样保留(不抛错、不吞字符)。 */
+function decodeYamlDoubleQuoted(body: string): string {
+  return body.replace(/\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|.)/g, (m, e: string) => {
+    if (e.length > 1) return String.fromCharCode(parseInt(e.slice(1), 16));
+    return YAML_DQ_ESCAPES[e] ?? m;
+  });
+}
+
+/**
+ * 去掉值两端空白后,再剥掉成对的单/双引号(仅一层)并按 YAML 规则解码转义(第二批 P7):单引号值里
+ * `''` → `'`,双引号值里 `\"` `\\` `\n` `\uXXXX` 等;此前只剥引号,`'It''s fine'` 写进 X 的标题是
+ * `It''s fine`。无引号值原样返回(YAML 里无引号值不处理转义)。
+ */
 function stripQuotes(raw: string): string {
   const v = raw.trim();
   if (v.length >= 2) {
     const first = v[0];
     const last = v[v.length - 1];
-    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
-      return v.slice(1, -1).trim();
-    }
+    // 解码出的控制字符(`\n`、`\x00` …)换成空格:标题 / 封面路径都是单行值,换行、NUL 写进 X 标题框只会出错。
+    if (first === '"' && last === '"') return decodeYamlDoubleQuoted(v.slice(1, -1)).replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+    if (first === "'" && last === "'") return v.slice(1, -1).replace(/''/g, "'").trim();
   }
   return v;
 }
@@ -193,7 +208,7 @@ function pickTitleHeading(headings: HeadingInfo[]): (HeadingInfo & { title: stri
  * 保证「抽为标题的那个」与「从正文去掉的那个」是同一个块。
  */
 function fromH1(md: string, opts: ParseOptions): string | null {
-  return pickTitleHeading(parseMarkdownWithHeadings(md, opts).headings)?.title ?? null;
+  return pickTitleHeading(parseMarkdownWithMeta(md, opts).headings)?.title ?? null;
 }
 
 /**
@@ -204,7 +219,7 @@ function fromH1(md: string, opts: ParseOptions): string | null {
  * `opts` 须与 extractTitle 传同一份,去掉的才是抽出的那个标题。
  */
 export function parseMarkdownWithoutTitle(md: string, opts: ParseOptions = {}): ImportBlock[] {
-  const { blocks, headings } = parseMarkdownWithHeadings(md, opts);
+  const { blocks, headings } = parseMarkdownWithMeta(md, opts);
   const h = pickTitleHeading(headings);
   return h ? blocks.filter((_, i) => i !== h.blockIndex) : blocks;
 }
