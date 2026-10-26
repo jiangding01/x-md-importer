@@ -165,6 +165,46 @@ function matchMathOpen(line: string): 'single' | 'multi' | null {
   return null;
 }
 
+/**
+ * 「带内容的起行」(P1-B):`$$ a+b`——顶格 `$$` 之后非空、不以 `$$` 收尾、不再含 `$$`。
+ * 只在主循环块首、且段落续行内找到**裸** `$$` 闭合行时才成公式(见 findMathClose 的 'content' 口径);
+ * 不进 isBlockBoundary——段落中间的 `$$ a+b` 照旧被段落吸收,`$$100 涨到` 这类口语双美元也不打断段落。
+ * 返回起行里的公式片段;不符返回 null。
+ */
+function matchMathContentOpen(line: string): string | null {
+  if (!line.startsWith('$$')) return null;
+  const rest = line.slice(2);
+  if (rest.trim() === '' || rest.includes('$$')) return null;
+  return rest;
+}
+
+/**
+ * 多行公式的闭合行搜索(P1):从 `from` 起向下找,**遇空行即止**(返回 null = 未闭合)——LaTeX 数学
+ * 模式里空行即 `\par`、是错误,合法公式不含空行;此前无界搜索会跨空行、跨段落与下一段公式的起行
+ * 配对,把中间正文整段吞进 LATEX。按起行形态分两种口径:
+ *  - `'bare'`(裸 `$$` 起行):中间行不设限(公式里出现 `- b + c`、`a --- b` 这类行是正常的);
+ *    闭合行可裸(`$$`)也可带内容(`E=mc^2 $$`:去尾随空白后以 `$$` 结尾、本身不以 `$$` 开头、
+ *    末尾 `$$` 之前不再含 `$$`)→ `{ at, tail }`,tail 为闭合行去掉末尾 `$$` 的部分。
+ *  - `'content'`(带内容起行 `$$ a+b`,与口语 `$$100 涨` 同形):只认裸闭合,且中间行必须是
+ *    **段落续行**——遇任何块级起始行(列表 / 引用 / 标题 / 围栏 / 分割线 …)或 setext 下划线即止,
+ *    不把它们吞进公式(check 审查 A);也不放行带内容的闭合行(`$$100 涨\n下行 200$$` 正是口语形状)。
+ */
+function findMathClose(lines: string[], from: number, open: 'bare' | 'content'): { at: number; tail: string } | null {
+  for (let j = from; j < lines.length; j += 1) {
+    const l = lines[j] ?? '';
+    if (l.trim() === '') return null;
+    if (l.startsWith('$$') && l.slice(2).trim() === '') return { at: j, tail: '' };
+    if (open === 'content') {
+      if (isBlockBoundary(l, true) || setextUnderlineLevel(l) !== null) return null;
+      continue;
+    }
+    if (l.startsWith('$$')) continue; // `$$ b` 这类不是闭合行,继续找
+    const t = l.trimEnd();
+    if (t.endsWith('$$') && !t.slice(0, -2).includes('$$')) return { at: j, tail: t.slice(0, -2) };
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // 主入口
 // ---------------------------------------------------------------------------
@@ -177,8 +217,8 @@ export function isImageLine(line: string): boolean {
 
 /**
  * setext 标题下划线的级别:`===` → 1、`---` → 2;不是下划线返回 null。
- * 仅解析主循环内部使用:标题抽取(frontmatter.findFirstH1)不再自行判定 setext,而是取
- * parseLines 经 forEachContentLine.onHeading 上报的标题(P3,单一来源),杜绝「parser 认成标题、
+ * 仅解析主循环内部使用:标题抽取(frontmatter.pickTitleHeading)不再自行判定 setext,而是取
+ * parseLines 经 onHeading 上报的标题(P3,单一来源),杜绝「parser 认成标题、
  * extractTitle 抽不到」或反之的分裂(本项目已栽过多次「第二套实现漂移」,见 HANDOFF §8)。
  */
 function setextUnderlineLevel(line: string): 1 | 2 | null {
@@ -216,6 +256,7 @@ export function frontmatterBodyStart(lines: string[]): number {
  * 1 行;setext 覆盖正文各行 + 下划线行(单行 setext 即 end − start === 2)。`level` 按源写法
  * (ATX 的 `#` 数;setext `===` → 1、`---` → 2),不是映射后的块类型。`raw` 为标题文本源:ATX 取
  * `#` 之后的内容(**未**剥闭合井号),setext 取剥掉列表缩进后的段落文本(`- a\n\n  b\n===` → `b`)。
+ * `blockIndex` 为该标题块在本次解析产出序列中的下标(P4:按块去掉文章标题,不再改 md 文本重解析)。
  */
 export type HeadingVisitor = (
   start: number,
@@ -223,7 +264,18 @@ export type HeadingVisitor = (
   level: number,
   kind: 'atx' | 'setext',
   raw: string,
+  blockIndex: number,
 ) => void;
+
+/** parseMarkdownWithHeadings 上报的单个标题(字段语义同 HeadingVisitor)。 */
+export interface HeadingInfo {
+  start: number;
+  end: number;
+  level: number;
+  kind: 'atx' | 'setext';
+  raw: string;
+  blockIndex: number;
+}
 
 /**
  * forEachContentLine 的选项。解析开关(obsidianImg / wikilink / taskList,P7)与 parseMarkdown 同义:
@@ -245,7 +297,7 @@ export interface ContentLineOptions extends ParseOptions {
  * visitor 返回 true 时提前停止遍历。
  *
  * 抽出此 helper 是为消除「三处 fence 追踪各写一份、语义漂移」:stripFirstImageLine 用它的围栏
- * 判定;frontmatter.findFirstH1 用它的 onHeading(标题本身也取自解析主循环,P3)。
+ * 判定(标题抽取 P4 起改用 parseMarkdownWithHeadings 一次解析取标题,onHeading 选项仍保留)。
  *
  * `skipFrontmatter`(B3-3 / P1-6):从 frontmatterBodyStart 起扫,文首 YAML 块整块不交给
  * visitor——`# 注释` 是合法 YAML 注释(Obsidian 模板常见),否则会被当成内容行。**默认关闭**:
@@ -350,6 +402,24 @@ export function isDemotedHeading(block: ImportBlock): boolean {
   return demotedHeadings.has(block);
 }
 
+/**
+ * 一次解析同时拿到写入块与全部标题(P4):标题抽取与「去掉标题块」都基于**同一次**解析的产出,
+ * 标题块按 `blockIndex` 精确定位——不再像旧 stripFirstH1 那样删 md 源行再重解析(删行会让相邻行
+ * 重新拼接:首行变 `---` 被当 frontmatter、上下两段合并、正文被吸进列表项)。
+ * 走 withParseOptions(P7):结束后还原模块级开关,不残留给后续调用。
+ */
+export function parseMarkdownWithHeadings(md: string, opts: ParseOptions = {}): { blocks: ImportBlock[]; headings: HeadingInfo[] } {
+  const headings: HeadingInfo[] = [];
+  const blocks = withParseOptions(opts, () =>
+    parseLines(md.split(/\r?\n/), {
+      onHeading: (start, end, level, kind, raw, blockIndex) => {
+        headings.push({ start, end, level, kind, raw, blockIndex });
+      },
+    }),
+  );
+  return { blocks, headings };
+}
+
 /** 解析 Markdown 文本为按文档顺序排列的写入块序列。 */
 export function parseMarkdown(md: string, opts: ParseOptions = {}): ImportBlock[] {
   optObsidianImg = opts.obsidianImg ?? true;
@@ -445,20 +515,10 @@ function parseLines(lines: string[], hooks: ParseHooks = {}): ImportBlock[] {
         j += 1;
       }
       if (closed) {
-        // 规范化开栏首行的 info(语言):解码 HTML 实体 + 只取第一词——源 md 里 `plain&#x20;text` /
-        // `plain text` 会被 X 当成含空格/实体的语言名,渲染出难看的 `plain&#x20;text` 标签。
-        // 代码内容(i+1..j)与闭合围栏行原样保留,只重写开栏首行的语言部分。
-        const openLine = lines[i] ?? '';
-        // 与 matchFenceOpen 同一条正则(B3-6):缩进围栏在此若认不出,marker/lang 双双回退默认值,
-        // 语言标记被静默吞掉。规范化后的开栏行不带前导缩进(块内容原样保留)。
-        const fm = RE_FENCE_LINE.exec(openLine);
-        const marker = fm?.[2] ?? '```';
-        const lang = normalizeCodeInfo(fm?.[3] ?? '');
         // 内容行按开栏缩进量剥前导空白(CommonMark;不足的剥到尽量多,A4)——否则列表项下的
-        // 缩进代码块每行都背着列表缩进进 X。闭栏行与开栏行一样规范化为不带缩进。
+        // 缩进代码块每行都背着列表缩进进 X。
         const body = lines.slice(i + 1, j).map((l) => stripIndentCols(l, fence.indent));
-        const closeLine = (lines[j] ?? '').replace(/^[ \t]+/, '');
-        const markdown = [marker + lang, ...body, closeLine].join('\n');
+        const markdown = fenceMarkdown(lines[i] ?? '', body, lines[j] ?? '');
         blocks.push({ kind: 'atomic', entityType: 'MARKDOWN', data: { markdown } });
         hooks.onFence?.(i, j);
         i = j + 1;
@@ -469,9 +529,10 @@ function parseLines(lines: string[], hooks: ParseHooks = {}): ImportBlock[] {
 
     // 1.5 块级数学公式 `$$…$$` → LATEX atomic(真机 dump 确认 X 原生渲染,公式写进块 text)。
     //      放在围栏之后(围栏内的 `$$` 已被上面吃掉、不解析)、其余 atomic 之前(同级块元素)。
-    //      单行 `$$ x $$` 就地成块;多行则向下找裸 `$$` 闭合行(闭合行须顶格、去空白后恰为 `$$`)。
-    //      **找不到闭合 → 回退**当普通文本(不 continue,与未闭合围栏一致);`$$100 涨到` 这类
-    //      行内双美元被 matchMathOpen 判 null,天然不进这里。
+    //      单行 `$$ x $$` 就地成块;多行则在**同一段落内**向下找闭合行(findMathClose,遇空行即止,P1)。
+    //      三种组合:裸起行 + 裸闭合、裸起行 + 带内容闭合(`E=mc^2 $$`)、带内容起行(`$$ a+b`)+ 裸闭合;
+    //      「带内容 × 带内容」不放行(口语双美元防线)。**找不到闭合 → 回退**当普通文本(不 continue,
+    //      与未闭合围栏一致)。
     const mathOpen = matchMathOpen(line);
     if (mathOpen === 'single') {
       // `$$ 公式 $$`:剥首尾 `$$`,中间为公式原文(matchMathOpen 已确保中间非空)。
@@ -481,25 +542,21 @@ function parseLines(lines: string[], hooks: ParseHooks = {}): ImportBlock[] {
       i += 1;
       continue;
     }
-    if (mathOpen === 'multi') {
-      let j = i + 1;
-      let closed = false;
-      while (j < lines.length) {
-        // 闭合行:顶格 `$$`、去尾随空白后恰为 `$$`(不含额外内容)。
-        if ((lines[j] ?? '').startsWith('$$') && (lines[j] ?? '').slice(2).trim() === '') {
-          closed = true;
-          break;
-        }
-        j += 1;
-      }
-      if (closed) {
-        // 公式体 = 起行 `$$` 之后到闭合行之前的所有行(保留内部换行,原样交 X 渲染)。
-        // multi 形态的起行仅含 `$$`(matchMathOpen 保证其后仅空白),故公式体就是中间各行。
-        const inner = lines.slice(i + 1, j).join('\n').trim();
+    const contentHead = mathOpen === null ? matchMathContentOpen(line) : null;
+    if (mathOpen === 'multi' || contentHead !== null) {
+      const close = findMathClose(lines, i + 1, contentHead === null ? 'bare' : 'content');
+      if (close) {
+        // 公式体 = 起行内容(带内容起行时)+ 中间各行 + 闭合行内容(带内容闭合时),保留内部换行原样交 X 渲染。
+        const parts = [
+          ...(contentHead !== null ? [contentHead] : []),
+          ...lines.slice(i + 1, close.at),
+          ...(close.tail !== '' ? [close.tail] : []),
+        ];
+        const inner = parts.join('\n').trim();
         // 空公式(`$$\n$$`)不产 LATEX 块,回退当普通文本(不 continue)。
         if (inner !== '') {
           blocks.push({ kind: 'atomic', entityType: 'LATEX', data: {}, text: inner });
-          i = j + 1;
+          i = close.at + 1;
           continue;
         }
       }
@@ -602,14 +659,40 @@ function parseLines(lines: string[], hooks: ParseHooks = {}): ImportBlock[] {
       const hb = textBlock(type, inline);
       if (demoted) demotedHeadings.add(hb);
       blocks.push(hb);
-      hooks.onHeading?.(i, i + 1, level, 'atx', heading[2] ?? '');
+      hooks.onHeading?.(i, i + 1, level, 'atx', heading[2] ?? '', blocks.length - 1);
       i += 1;
       continue;
     }
 
     // 6. 引用:逐行独立成块(不合并多行)
     if (RE_BLOCKQUOTE.test(line)) {
-      const content = line.replace(/^ {0,3}>\s?/, ''); // 前导缩进与 RE_BLOCKQUOTE 同步剥掉(B3-6)
+      const content = stripQuotePrefix(line);
+      // P5:引用内的围栏代码 → MARKDOWN atomic,原样保留(此前逐行 walkInline,代码里的 `*`/`_` 被当
+      // 强调符吃掉)。只收**连续的引用行**:剥前缀后遇闭栏即闭合;引用先结束则按 CommonMark「容器结束
+      // 即闭合」到引用末行为止。X 的 atomic 块不能嵌进 blockquote,代码块会单独成块、不在引用竖线内。
+      const qFence = matchFenceOpen(content);
+      if (qFence) {
+        let j = i + 1;
+        let closeAt = -1;
+        while (j < lines.length && RE_BLOCKQUOTE.test(lines[j] ?? '')) {
+          if (matchFenceClose(stripQuotePrefix(lines[j] ?? ''), qFence)) {
+            closeAt = j;
+            break;
+          }
+          j += 1;
+        }
+        const bodyEnd = closeAt >= 0 ? closeAt : j; // 内容行半开区间 [i+1, bodyEnd)
+        // 引用随开栏结束、一行内容都没有:不产空代码块,回落下面的引用文字(与空公式同口径)。
+        if (closeAt >= 0 || bodyEnd > i + 1) {
+          const body = lines.slice(i + 1, bodyEnd).map((l) => stripIndentCols(stripQuotePrefix(l), qFence.indent));
+          const closeLine = closeAt >= 0 ? stripQuotePrefix(lines[closeAt] ?? '') : null;
+          blocks.push({ kind: 'atomic', entityType: 'MARKDOWN', data: { markdown: fenceMarkdown(content, body, closeLine) } });
+          const last = closeAt >= 0 ? closeAt : bodyEnd - 1;
+          hooks.onFence?.(i, last); // forEachContentLine 跳过整个区间(标题抽取 / 扫描不看代码内部)
+          i = last + 1;
+          continue;
+        }
+      }
       blocks.push(textBlock('blockquote', walkInline(content)));
       i += 1;
       continue;
@@ -673,7 +756,7 @@ function parseLines(lines: string[], hooks: ParseHooks = {}): ImportBlock[] {
     const setextLevel = k < lines.length ? setextUnderlineLevel(lines[k] ?? '') : null;
     if (setextLevel !== null) {
       blocks.push(textBlock('header-one', walkInline(paraText)));
-      hooks.onHeading?.(i, k + 1, setextLevel, 'setext', paraText);
+      hooks.onHeading?.(i, k + 1, setextLevel, 'setext', paraText, blocks.length - 1);
       i = k + 1;
       continue;
     }
@@ -693,7 +776,7 @@ function stripAtxClosing(content: string): string {
 /**
  * 一段标题内容的**纯文本**(A7):先剥 ATX 闭合井号(`atxClosing`,setext 标题传 false),
  * 再经 walkInline 去掉行内标记——`**粗** 标题` → `粗 标题`、`[链接](u) 标题` → `链接 标题`。
- * 与 parser 产出 header-one 块的 text **同一条路径**,frontmatter.findFirstH1(→ extractTitle /
+ * 与 parser 产出 header-one 块的 text **同一条路径**,frontmatter.pickTitleHeading(→ extractTitle /
  * capability.firstTitle)共用它,文章标题与正文标题不再分裂。
  * 行内开关(wikilink 等)固定按默认值解析并在返回前还原(withParseOptions)——标题**文本**口径
  * 维持既有行为,不继承上一次 parseMarkdown 残留的模块级状态。
@@ -987,7 +1070,7 @@ function scanParenClose(line: string, start: number): number | null {
  * 缩进上限按 fenceMaxIndent(自身缩进, listContentCol):顶层 0-3(B3-6),列表语境且缩进 ≥ 内容列时放宽(A4)。
  * 开栏正则 RE_FENCE_LINE 与主循环 info 规范化共用;闭栏缩进上限随 Fence.maxIndent 走——
  * 漏改任一处就会「语言标记丢失」或「闭栏认不出、整段吞进正文」。
- * 导出供 frontmatter.findFirstH1 判定「setext 标题文本是开栏行」(L1),不另写围栏正则。
+ * 导出供 frontmatter.pickTitleHeading 判定「setext 标题文本是开栏行」(L1),不另写围栏正则。
  */
 export function matchFenceOpen(line: string, listContentCol: number | null = null): Fence | null {
   const m = line.match(RE_FENCE_LINE);
@@ -1000,6 +1083,26 @@ export function matchFenceOpen(line: string, listContentCol: number | null = nul
   const char = marker[0] ?? '`';
   if (char === '`' && info.includes('`')) return null;
   return { char, len: marker.length, indent, maxIndent };
+}
+
+/**
+ * 拼 MARKDOWN entity 的围栏原文(顶层与引用内共用,P5)。开栏行规范化 info(语言):解码 HTML 实体 +
+ * 只取第一词——源 md 里 `plain&#x20;text` / `plain text` 会被 X 当成含空格/实体的语言名,渲染出难看的
+ * 标签;开栏与闭栏都不带前导缩进,内容行由调用方剥好缩进后原样传入。
+ * `closeLine` 为 null(引用结束即闭合)时用开栏 marker 补齐,保证 X 收到闭合的围栏。
+ */
+function fenceMarkdown(openLine: string, body: string[], closeLine: string | null): string {
+  // 与 matchFenceOpen 同一条正则(B3-6):缩进围栏在此若认不出,marker/lang 双双回退默认值,语言标记被静默吞掉。
+  const fm = RE_FENCE_LINE.exec(openLine);
+  const marker = fm?.[2] ?? '```';
+  const lang = normalizeCodeInfo(fm?.[3] ?? '');
+  const close = closeLine === null ? marker : closeLine.replace(/^[ \t]+/, '');
+  return [marker + lang, ...body, close].join('\n');
+}
+
+/** 剥掉引用前缀(0-3 空格缩进 + `>` + 至多一个空白),与 RE_BLOCKQUOTE 同步(B3-6)。 */
+function stripQuotePrefix(line: string): string {
+  return line.replace(/^ {0,3}>\s?/, '');
 }
 
 /** 识别闭栏:同字符、数量 ≥ 开栏、其后仅允许空白(`\s`:含全角空格 U+3000,CJK 输入法

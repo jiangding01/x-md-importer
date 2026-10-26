@@ -5,6 +5,7 @@ import {
   stripFirstImageLine,
   forEachContentLine,
   inlinePlainText,
+  parseMarkdownWithHeadings,
 } from './parser';
 import { extractTitle } from './frontmatter';
 import type {
@@ -1850,5 +1851,150 @@ describe('P1/P2 闭符扫描记忆化(性能,行为零差异由差分模糊在�
     const c = inlineOf('x**a*');
     expect(c.text).toBe('x*a');
     expect(stylesOf(c, 'ITALIC').map((r) => sliceRange(c.text, r))).toEqual(['a']);
+  });
+});
+
+// ===========================================================================
+// 2026-10-26 全面审查第一批(docs/review/修复方案-2026-10-26.md)
+// ===========================================================================
+
+/** 块的简写形态:文本块 `type:text`,LATEX `LATEX:公式`,其余 atomic `类型`,图片 `img:src`。 */
+const shapeOf = (blocks: ImportBlock[]): string[] =>
+  blocks.map((b) => {
+    if (b.kind === 'text') return `${b.type}:${b.text}`;
+    if (b.kind === 'image') return `img:${b.source}`;
+    return b.entityType === 'LATEX' ? `LATEX:${b.text}` : b.entityType;
+  });
+
+describe('P1 `$$` 公式不跨空行配对,认带内容的起行 / 闭合行', () => {
+  it('审查复现 1:`$$ a+b` 起行 + 裸闭合成公式,后面的正文段落不被吞', () => {
+    expect(shapeOf(parseMarkdown('$$ a+b\n$$\n\n正文段落\n\n$$\nc\n$$'))).toEqual([
+      'LATEX:a+b',
+      'unstyled:正文段落',
+      'LATEX:c',
+    ]);
+  });
+
+  it('审查复现 2:裸起行 + `E=mc^2 $$` 闭合行成公式,正文不被吞', () => {
+    expect(shapeOf(parseMarkdown('$$\nE=mc^2 $$\n\n正文\n\n$$\ny\n$$'))).toEqual([
+      'LATEX:E=mc^2',
+      'unstyled:正文',
+      'LATEX:y',
+    ]);
+  });
+
+  it('裸起行的闭合搜索遇空行即止:不与下一段的 `$$` 配对,正文保留', () => {
+    const blocks = parseMarkdown('$$\nx\n\n正文\n\n$$');
+    expect(blocks.some((b) => b.kind === 'atomic' && b.entityType === 'LATEX')).toBe(false);
+    expect(shapeOf(blocks)).toContain('unstyled:正文');
+  });
+
+  it('多行公式(含 aligned)照常:同一段落内的裸起行 + 裸闭合', () => {
+    expect(shapeOf(parseMarkdown('$$\na &= b \\\\\nc &= d\n$$'))).toEqual(['LATEX:a &= b \\\\\nc &= d']);
+  });
+
+  it('带内容的起行 + 多行体 + 裸闭合:起行内容并入公式首行', () => {
+    expect(shapeOf(parseMarkdown('$$ \\begin{aligned}\na &= b\n\\end{aligned}\n$$'))).toEqual([
+      'LATEX:\\begin{aligned}\na &= b\n\\end{aligned}',
+    ]);
+  });
+
+  it('带内容的起行 + 带内容的闭合行不放行(`$$100 … 200$$` 口语双美元防线)', () => {
+    const blocks = parseMarkdown('$$100 涨到\n下一行 200$$');
+    expect(blocks.some((b) => b.kind === 'atomic' && b.entityType === 'LATEX')).toBe(false);
+  });
+
+  it('带内容的起行未闭合(或闭合在空行之后)→ 原样保留为文本', () => {
+    expect(shapeOf(parseMarkdown('$$100 涨到 200 了'))).toEqual(['unstyled:$$100 涨到 200 了']);
+    const blocks = parseMarkdown('$$ a+b\n\n$$\nc\n$$');
+    expect(shapeOf(blocks)).toEqual(['unstyled:$$ a+b', 'LATEX:c']);
+  });
+
+  it('闭合行带内容但本身以 `$$` 开头时不当闭合行(继续找)', () => {
+    expect(shapeOf(parseMarkdown('$$\na\n$$ b\n$$'))).toEqual(['LATEX:a\n$$ b']);
+  });
+
+  it('带内容的起行只在段落续行内找闭合:遇列表 / 引用 / 标题 / setext 下划线即止(check 审查 A)', () => {
+    for (const md of ['$$100 涨\n- 项\n$$', '$$100 涨\n> q\n$$', '$$100 涨\n# 标题\n$$', '$$100 涨\n===\n正文\n$$']) {
+      const blocks = parseMarkdown(md);
+      expect([md, blocks.some((b) => b.kind === 'atomic' && b.entityType === 'LATEX')]).toEqual([md, false]);
+    }
+    // 段落续行照常并入公式
+    expect(shapeOf(parseMarkdown('$$ a+b\n= c \\cdot d\n$$'))).toEqual(['LATEX:a+b\n= c \\cdot d']);
+  });
+
+  it('裸起行保持宽松:公式体里以 `- ` 开头的行(如 `- b + c`)照常并入', () => {
+    expect(shapeOf(parseMarkdown('$$\nx =\n- b + c\n$$'))).toEqual(['LATEX:x =\n- b + c']);
+  });
+
+  it('段落中间的 `$$ a+b` 仍被段落吸收(不打断段落,与 isBlockBoundary 口径一致)', () => {
+    const blocks = parseMarkdown('前文\n$$ a+b\n后文');
+    expect(shapeOf(blocks)).toEqual(['unstyled:前文\n$$ a+b\n后文']);
+  });
+});
+
+describe('P5 引用块内的围栏代码原样保留', () => {
+  it('审查复现:引用里的 Python 代码不被强调符改写,产出 MARKDOWN 代码块', () => {
+    const blocks = parseMarkdown('> ```py\n> def f(*args, **kwargs): return a*b*c\n> ```');
+    expect(blocks).toHaveLength(1);
+    const b = asAtomic(blocks[0]);
+    expect(b.entityType).toBe('MARKDOWN');
+    if (b.entityType === 'MARKDOWN') {
+      expect(b.data.markdown).toBe('```py\ndef f(*args, **kwargs): return a*b*c\n```');
+    }
+  });
+
+  it('前后的引用文字仍是 blockquote 块,代码块夹在中间', () => {
+    const md = '> 前言\n> ```\n> x = 1\n> ```\n> 后记';
+    expect(shapeOf(parseMarkdown(md))).toEqual(['blockquote:前言', 'MARKDOWN', 'blockquote:后记']);
+  });
+
+  it('~~~ 围栏、info 规范化、代码内的空引用行', () => {
+    const b = asAtomic(parseMarkdown('> ~~~plain&#x20;text\n> a\n>\n> b\n> ~~~')[0]);
+    if (b.entityType !== 'MARKDOWN') throw new Error('期望 MARKDOWN');
+    expect(b.data.markdown).toBe('~~~plain\na\n\nb\n~~~');
+  });
+
+  it('引用结束仍未闭栏:按容器结束闭合(CommonMark),补齐闭栏', () => {
+    const blocks = parseMarkdown('> ```js\n> let a = b*c*d\n\n正文');
+    const b = asAtomic(blocks[0]);
+    if (b.entityType !== 'MARKDOWN') throw new Error('期望 MARKDOWN');
+    expect(b.data.markdown).toBe('```js\nlet a = b*c*d\n```');
+    expect(shapeOf(blocks.slice(1))).toEqual(['unstyled:正文']);
+  });
+
+  it('引用里只有开栏、随即结束:不产空代码块,按原逻辑作引用文字', () => {
+    expect(shapeOf(parseMarkdown('> ```\n正文'))).toEqual(['blockquote:```', 'unstyled:正文']);
+  });
+
+  it('引用里已闭合的空围栏照常成代码块(与顶层同口径)', () => {
+    expect(shapeOf(parseMarkdown('> ```\n> ```'))).toEqual(['MARKDOWN']);
+  });
+
+  it('forEachContentLine 跳过引用内的围栏区间(代码里的 `# x` 不作标题)', () => {
+    const seen: number[] = [];
+    forEachContentLine('> ```\n> # x\n> ```\n正文'.split('\n'), (_l, i) => {
+      seen.push(i);
+    });
+    expect(seen).toEqual([3]);
+  });
+});
+
+describe('P4 parseMarkdownWithHeadings:标题上报带块下标', () => {
+  it('blockIndex 指向产出序列中对应的标题块,块序列与 parseMarkdown 一致', () => {
+    const md = '前言\n\n# A\n\n段\n\nB\n===\n\n- x\n### C';
+    const { blocks, headings } = parseMarkdownWithHeadings(md);
+    expect(blocks).toEqual(parseMarkdown(md));
+    expect(headings.map((h) => [h.raw, h.blockIndex])).toEqual([
+      ['A', 1],
+      ['B', 3],
+      ['C', 5],
+    ]);
+    for (const h of headings) expect(asText(blocks[h.blockIndex]).text).toBe(h.raw);
+  });
+
+  it('解析开关只作用于本次调用(P7:不残留模块级开关)', () => {
+    parseMarkdownWithHeadings('![[a.png]]', { obsidianImg: false });
+    expect(parseMarkdownWithHeadings('![[a.png]]').blocks[0]?.kind).toBe('image');
   });
 });

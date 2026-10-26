@@ -30,7 +30,7 @@ import {
   type SetTitleResponse,
 } from '@/lib/bridge/protocol';
 import { capability, firstTitle } from '@/lib/markdown/capability';
-import { extractCover, extractTitle, stripFirstH1 } from '@/lib/markdown/frontmatter';
+import { extractCover, extractTitle, parseMarkdownWithoutTitle } from '@/lib/markdown/frontmatter';
 import { parseMarkdown } from '@/lib/markdown/parser';
 import { sampleEn, sampleZh } from '@/lib/markdown/sample';
 import { DRAFT_KEY, removeDraft, saveDraft } from '@/lib/storage/draftStore';
@@ -640,14 +640,16 @@ export function WorkspaceProvider({
         // 以下全同步(无 await),放在权限申请(首个 await)之前不破坏用户手势。
 
         // 标题抽取放在解析前:既决定后续是否设置标题,也决定要不要移除正文首个 H1。
-        // h1Handle=remove:在 md 文本层删那行 H1(不在 blocks 层按 type 删——parser 把 H1/H2
-        // 都映射成 header-one,blocks 层无法区分,见 stripFirstH1 注释)。
+        // h1Handle=remove:按块下标去掉被抽为标题的那个块(P4,parseMarkdownWithoutTitle)——不按块类型
+        // 删(parser 把 H1/H2 都映射成 header-one,无法区分),也不再删 md 源行重解析(相邻行会重新拼接)。
         // P7:标题抽取 / 移除与正文解析用**同一份**解析开关(标题判定随开关变化,如 obsidianImg
         // 决定 `![[a.png]]\n标题\n===` 是否构成单行 setext),不继承上一次 parseMarkdown 的残留开关。
         const parseOpts = { obsidianImg: opts.obsidianImg, wikilink: opts.wikilink, taskList: opts.taskList };
         const extracted = opts.setTitle ? extractTitle(md, parseOpts) : null;
-        const bodyMd = extracted?.source === 'h1' && opts.h1Handle === 'remove' ? stripFirstH1(md, parseOpts) : md;
-        let blocks = parseMarkdown(bodyMd, parseOpts);
+        let blocks =
+          extracted?.source === 'h1' && opts.h1Handle === 'remove'
+            ? parseMarkdownWithoutTitle(md, parseOpts)
+            : parseMarkdown(md, parseOpts);
 
         // 封面来源:frontmatter cover > 正文首图。首图取自**已解析 blocks 的首个 ImageBlock**——
         // 与实际上传/移除同源,避免用 images() 全文正则误选到内联图 / 代码块内的图(review #1)。
