@@ -1,9 +1,16 @@
 // W1(2026-10-26):导入收尾的纯计算——历史条目 / 报告快照 / 是否异常,只取决于本次运行显式传入的数据。
 import { describe, expect, it } from 'vitest';
+import { analyzeDraft } from '../markdown/frontmatter';
 import { buildRunRecord, type RunInput } from './runRecord';
 import type { ImageFailure } from '../bridge/protocol';
 
-const base = (over: Partial<RunInput> = {}): RunInput => ({
+// C2:analysis 默认由同一份 md / parseOpts 现算(与 startImport 一致);个别用例显式传入以证明不再重新解析。
+const base = (over: Partial<Omit<RunInput, 'analysis'>> & { analysis?: RunInput['analysis'] } = {}): RunInput => {
+  const md = over.md ?? '# 标题\n\n正文';
+  const parseOpts = over.parseOpts ?? { obsidianImg: true, wikilink: true, taskList: 'symbol' as const };
+  return baseRaw({ ...over, md, parseOpts, analysis: over.analysis ?? analyzeDraft(md, parseOpts) });
+};
+const baseRaw = (over: Partial<RunInput> & Pick<RunInput, 'analysis'>): RunInput => ({
   md: '# 标题\n\n正文',
   parseOpts: { obsidianImg: true, wikilink: true, taskList: 'symbol' },
   adjust: {},
@@ -105,5 +112,15 @@ describe('buildRunRecord · adjust(第三批 P11)', () => {
     const md2 = '# 标题[^1]\n\n正文';
     expect(buildRunRecord(base({ md: md2 })).snapshot.deg).toBe(1);
     expect(buildRunRecord(base({ md: md2, adjust: { removeTitle: true } })).snapshot.deg).toBe(0);
+  });
+});
+
+// C2:收尾只用 startImport 传入的那一次解析结果,不再自行解析 md。
+describe('buildRunRecord · 使用传入的 analysis(C2)', () => {
+  it('标题与降级计数取自 analysis', () => {
+    const analysis = analyzeDraft('# 另一个标题\n\n正文[^1]');
+    const { item, snapshot } = buildRunRecord(base({ md: '# 标题\n\n正文', analysis }));
+    expect(item.title).toBe('另一个标题');
+    expect(snapshot.deg).toBe(1);
   });
 });

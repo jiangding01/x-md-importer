@@ -10,11 +10,21 @@ import { CapabilityPanel } from './CapabilityPanel';
 import { PreflightCard } from './PreflightCard';
 import { ReportCard } from './ReportCard';
 import { Footer } from './Footer';
+import { DraftAnalysisProvider } from '@/lib/workspace/DraftAnalysis';
 
 /** X Articles 编辑器入口(新建/继续文章)。点「打开 X Articles」在新标签打开。 */
 const X_ARTICLES_URL = 'https://x.com/compose/articles';
 
+/** 第三批 C2:草稿页的卡片共享一次(延后的)解析,见 lib/workspace/DraftAnalysis。 */
 export function DraftTab() {
+  return (
+    <DraftAnalysisProvider>
+      <DraftTabBody />
+    </DraftAnalysisProvider>
+  );
+}
+
+function DraftTabBody() {
   const { t } = useI18n();
   const { readFile, storageError, exportDraft } = useWorkspace();
   const { connected } = useConnection();

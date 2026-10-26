@@ -1,5 +1,6 @@
 import type { ImageFailure } from '@/lib/bridge/protocol';
-import { capability, firstTitle, type CapabilityAdjust } from '@/lib/markdown/capability';
+import { capabilityFromAnalysis, titleText, type CapabilityAdjust } from '@/lib/markdown/capability';
+import type { DraftAnalysis } from '@/lib/markdown/frontmatter';
 import type { HistoryItem } from '@/lib/storage/schema';
 
 /** 本次导入实际使用的解析开关(与 HistoryItem.parseOpts 同形)。 */
@@ -16,6 +17,8 @@ export interface LastRunSnapshot {
   parseOpts: RunParseOpts;
   /** 第三批 P11:本次写入移除了标题块 / 封面首图——报告卡按它重算明细,与 deg 同口径。 */
   adjust: CapabilityAdjust;
+  /** 第三批 C2:本次写入的那一次解析,报告卡切语言重算明细时直接复用,不再重解析 md。 */
+  analysis: DraftAnalysis;
   ok: number;
   deg: number;
   fail: number;
@@ -28,6 +31,8 @@ export interface RunInput {
   md: string;
   /** startImport 解析用的同一份开关。 */
   parseOpts: RunParseOpts;
+  /** startImport 的那一次解析产出(第三批 C2):能力计数与历史标题取自它,收尾不再重解析 md。 */
+  analysis: DraftAnalysis;
   /** 第三批 P11:与写入流程同一判定的移除项(h1Handle=remove 的标题、coverKeep=remove 的首图)。 */
   adjust: CapabilityAdjust;
   en: boolean;
@@ -54,8 +59,8 @@ export interface RunInput {
  *  - hasAnomaly = 有降级 / 失败 / 任一失败明细(orphan-media / media-order-uncertain 不计数但需用户介入)。
  */
 export function buildRunRecord(input: RunInput): { item: HistoryItem; snapshot: LastRunSnapshot; hasAnomaly: boolean } {
-  const { md, parseOpts, adjust, en, blockCount, imageFail, imageFailures, id, now } = input;
-  const cap = capability(md, en, parseOpts, adjust);
+  const { md, parseOpts, analysis, adjust, en, blockCount, imageFail, imageFailures, id, now } = input;
+  const cap = capabilityFromAnalysis(analysis, en, adjust);
   const ok = Math.max(0, blockCount - imageFail);
   const deg = cap.filter((c) => c.badge === 'warn').reduce((a, c) => a + c.count, 0);
   const coverFail = (imageFailures ?? []).filter((f) => f.index < 0 && f.reason !== 'marker-residue').length;
@@ -63,7 +68,7 @@ export function buildRunRecord(input: RunInput): { item: HistoryItem; snapshot: 
   const pad = (n: number) => String(n).padStart(2, '0');
   const item: HistoryItem = {
     id,
-    title: firstTitle(md, en, parseOpts),
+    title: titleText(analysis.title, en),
     date: `${now.getFullYear()}/${pad(now.getMonth() + 1)}/${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`,
     ok,
     deg,
@@ -73,7 +78,7 @@ export function buildRunRecord(input: RunInput): { item: HistoryItem; snapshot: 
     parseOpts,
   };
   const hasAnomaly = deg > 0 || fail > 0 || (imageFailures?.length ?? 0) > 0;
-  return { item, snapshot: { md, parseOpts, adjust, ok, deg, fail, imageFailures }, hasAnomaly };
+  return { item, snapshot: { md, parseOpts, adjust, analysis, ok, deg, fail, imageFailures }, hasAnomaly };
 }
 
 /**

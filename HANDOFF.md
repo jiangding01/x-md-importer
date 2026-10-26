@@ -8,7 +8,7 @@
 > - 更新时重点维护：`## 5 当前进度`、`## 9 待办与路线图`、`## 11 最近一次会话小结`，并在顶部更新「最后更新」。
 > - **工作流**：每批改动 **先 code review + 修复，再提交**；走 **feature 分支 → PR → 合并 main**，不直接推 main。
 
-**最后更新**:2026-10-26 · 分支 `claude/happy-ride-bjd4qg`(基于 main `782d306`)· **v0.5.0 尚未打 tag——真机回归通过后打在 main `782d306`,不要打在之后的 main HEAD(第三批进 0.5.1,打错即 tag 漂移)**。本轮全面审查(`docs/review/全面审查-2026-10-26.md`)的修复按用户决定并入 0.5.0:**第一批**(P1/P4/P5、W1/W2/W10,PR #36、#37)与**第二批**(阶段 A 解析 PR #38、阶段 B 界面 / 文案 / 文档 PR #39)均已合入 main。**第三批**方案见 `docs/review/修复方案-2026-10-26-第三批.md`(用户已定:先打 v0.5.0、第三批进 0.5.1;P12 空标题不产出块;ESLint 放阶段 C 单独 PR)。**第三批阶段 A**(P6 / P11 / P12 / H1 / O5 / O7 / O8)已合入 main(PR #40);**阶段 B 的 I2 / I4** 本分支实施(待真机回归 QA T32),I5 / I6 / I7 等用户用 `docs/qa/真机取证脚本-第三批阶段B.md` 取证后再定;阶段 C 方案已定(O9 / O1 / O2 / O4 做,O3 / O6 不做,见方案 §3),**C1(ESLint)本分支实施**,C2–C4 待后续。均记入 CHANGELOG `[Unreleased]`。单测 834。逐项明细见 CHANGELOG [0.5.0] / [Unreleased];更早的历史见 §11 与 git log。
+**最后更新**:2026-10-26 · 分支 `claude/happy-ride-bjd4qg`(基于 main `782d306`)· **v0.5.0 尚未打 tag——真机回归通过后打在 main `782d306`,不要打在之后的 main HEAD(第三批进 0.5.1,打错即 tag 漂移)**。本轮全面审查(`docs/review/全面审查-2026-10-26.md`)的修复按用户决定并入 0.5.0:**第一批**(P1/P4/P5、W1/W2/W10,PR #36、#37)与**第二批**(阶段 A 解析 PR #38、阶段 B 界面 / 文案 / 文档 PR #39)均已合入 main。**第三批**方案见 `docs/review/修复方案-2026-10-26-第三批.md`(用户已定:先打 v0.5.0、第三批进 0.5.1;P12 空标题不产出块;ESLint 放阶段 C 单独 PR)。**第三批阶段 A**(P6 / P11 / P12 / H1 / O5 / O7 / O8)已合入 main(PR #40);**阶段 B 的 I2 / I4** 本分支实施(待真机回归 QA T32),I5 / I6 / I7 等用户用 `docs/qa/真机取证脚本-第三批阶段B.md` 取证后再定;阶段 C 方案已定(O9 / O1 / O2 / O4 做,O3 / O6 不做,见方案 §3),C1(ESLint)已合入 main(PR #42),**C2(单次解析)本分支实施**,C3 / C4 待后续。均记入 CHANGELOG `[Unreleased]`。单测 839。逐项明细见 CHANGELOG [0.5.0] / [Unreleased];更早的历史见 §11 与 git log。
 
 ---
 
@@ -248,6 +248,7 @@ pnpm build              # → .output/chrome-mv3
 - **草稿写失败走退避重试,退避期间键入不排定时器**(第三批 O7):`draftFailCount > 0` 时 `schedulePersist` 只更新 pending,由重试定时器落盘;重试成功时若又有新编辑,`flushDraft` 负责恢复常规防抖。改这段时三种时机都要顾到:退避中键入、重试写入进行中键入、失焦 / 手动保存与重试并发。
 - **列表语境按「上一块是否在列表项内部」保留**(第三批 P6):轮首清栈条件是「上一个块不是列表项且不在列表内部」,「在内部」= 该块起行缩进 ≥ 当时的列表内容列。别改回只看块类型——列表里的缩进围栏 / 图片之后子项层级会清零。
 - **能力计数要与写入同一判定**(第三批 P11):报告用 `capability(md, en, parseOpts, adjust)`,`adjust` 由 `startImport` 按 `h1Handle` / `coverKeep` 的实际移除结果给出并存进报告快照;新增「写入前改块」的步骤时,同步加进 `CapabilityAdjust`,否则报告又按原始 md 计数。
+- **解析结果只算一次、只读共享**(第三批 C2):写入流程用 `analyzeDraft` 一次得出标题 / 正文块 / 去标题块(`blocksWithoutTitle`),收尾与报告卡复用同一份(`RunInput.analysis`、`LastRunSnapshot.analysis`);草稿页卡片读 `useDraftAnalysis()`(DraftTab 内的 `DraftAnalysisProvider`,`useDeferredValue` 延后)。别在组件里再调 `parseMarkdown` / `capability(md…)`;共享的 `blocks` 不得原地修改;要看原文时用 `useDraftAnalysis().md`(与解析配对的那份),别混用 `useWorkspace().md`。
 - **正文编辑器定位只有一份**(第三批 I4,`lib/bridge/editorLocator`):injector 与 content 共用 `findEditorElement`。别在 content / 其他地方再写 `querySelector('[contenteditable="true"]')`——页面里第一个可编辑区不一定是正文。
 - **空稿取样的 `x` 要么被主提交替换、要么撤回**(第三批 I2):插入前复查切文章、轮询每轮复查;取样失败时只在正文恰为 `x` 时 `undo`,撤不掉在错误串里带 `SAMPLE_RESIDUE_SUFFIX` 让侧边栏提示。在插入与主提交之间再加 await 会放大残留窗口。
 - **素材板与写入流程的「封面来源 / 是否涉及本地图」只有一份**(第二批 W6,`lib/workspace/importPlan`):别在组件里再写一套判定。
@@ -302,6 +303,10 @@ pnpm build              # → .output/chrome-mv3
 ---
 
 ## 11. 最近一次会话小结
+
+**2026-10-26 · 第二十次会话(续)· 第三批阶段 C2**:
+- `analyzeDraft` / `blocksWithoutTitle` / `capabilityFromAnalysis` / `titleText`;写入路径 4 遍(含报告卡 5 遍)→ 1 遍,草稿页每次按键 2 遍 → 1 遍且延后。验证:仓内等价测试(语料 + 1500 组随机 × 3 种开关)、新旧差分 24 万组零差异、160 KB 基准(写入 131 → 40 ms,按键 54 → 30 ms)、审查期 React 脚本(两个面板随草稿更新且一次改动只解析一次;原有 8 例回归通过)。
+- 与方案的出入:Provider 挂在 DraftTab 而非 WorkspaceProvider(切到记录 / 设置时不解析,与此前一致);报告快照也带上 analysis,报告卡不再重解析。
 
 **2026-10-26 · 第二十次会话(续)· 第三批阶段 C 方案 + C1**:
 - 方案(think skill):实测 160 KB 文档每次按键能力面板与素材板各全文解析一次(约 30 + 30 ms),写入流程 4 遍解析只在点写入时发生;去掉 react-markdown + remark-gfm 侧边栏 JS 450 → 289 KB。据此 O1 扩到按键路径、O2 做、O4 收窄到 Settings / Prefs、O3 / O6 不做;用户按推荐批准。

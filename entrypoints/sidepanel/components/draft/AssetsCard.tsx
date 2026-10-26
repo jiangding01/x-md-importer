@@ -2,7 +2,7 @@ import { useEffect, useMemo, type CSSProperties } from 'react';
 import { useI18n } from '@/lib/i18n/useI18n';
 import { useSettings } from '@/lib/settings/SettingsProvider';
 import { useWorkspace } from '@/lib/workspace/WorkspaceProvider';
-import { parseMarkdown } from '@/lib/markdown/parser';
+import { useDraftAnalysis } from '@/lib/workspace/DraftAnalysis';
 import { classifyImageSource, type ImageBlock, type ImageSourceKind } from '@/lib/bridge/protocol';
 import { clearFolder, connectFolder, getFolderStatus } from '@/lib/bridge/importArticle';
 import { pickCoverSource, usesLocalImage } from '@/lib/workspace/importPlan';
@@ -154,14 +154,14 @@ function LocalFolderRow() {
 export function AssetsCard() {
   const { t } = useI18n();
   const { opts } = useSettings();
-  const { md, showToast } = useWorkspace();
+  const { showToast } = useWorkspace();
 
   // 口径与真实上传行为对齐:只有「独占行块级图」(parser 产出的 ImageBlock)才会被上传/选作封面,
-  // 段落内的行内图不会——故这里必须用 parseMarkdown 的块级结果计数/渲染,而不是全文正则 images()。
-  // 传 obsidianImg:关时 ![[x]] 不算图片块,素材计数与实际写入一致。
-  // review B6-UI:用 useMemo 缓存解析——组件每次渲染都重跑 parseMarkdown 会在长文卡顿;
-  // 且靠 App 层 ErrorBoundary 兜底 parser 抛错(不连累整树)。仅 md/obsidianImg 变化时重算。
-  const blocks = useMemo(() => parseMarkdown(md, { obsidianImg: opts.obsidianImg }), [md, opts.obsidianImg]);
+  // 段落内的行内图不会——故这里必须用解析的块级结果计数/渲染,而不是全文正则 images()。
+  // 第三批 C2:取草稿页共享的那一次(延后的)解析,开关为完整设置(图片块只取决于 obsidianImg,
+  // 有差分测试保证);md 用与解析配对的那份,frontmatter cover 判定才与块对得上。
+  const { md, analysis } = useDraftAnalysis();
+  const blocks = analysis.blocks;
   const imgs = useMemo(() => blocks.filter((b): b is ImageBlock => b.kind === 'image'), [blocks]);
   if (!md.trim() || (imgs.length === 0 && !opts.setCover)) return null;
 

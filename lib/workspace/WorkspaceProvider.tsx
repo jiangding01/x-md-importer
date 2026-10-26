@@ -21,8 +21,7 @@ import {
 } from '@/lib/bridge/imagePermissions';
 import { ARTICLE_SWITCHED_ERROR, type ImageFailure, type ImportMode, type SetTitleResponse } from '@/lib/bridge/protocol';
 import type { CapabilityAdjust } from '@/lib/markdown/capability';
-import { extractTitle, parseMarkdownWithoutTitle } from '@/lib/markdown/frontmatter';
-import { parseMarkdown } from '@/lib/markdown/parser';
+import { analyzeDraft, blocksWithoutTitle, type DraftAnalysis } from '@/lib/markdown/frontmatter';
 import { sampleEn, sampleZh } from '@/lib/markdown/sample';
 import { DRAFT_KEY, removeDraft, saveDraft } from '@/lib/storage/draftStore';
 import { HISTORY_KEY, removeHistory, saveHistory, type HistoryItem } from '@/lib/storage/historyStore';
@@ -538,7 +537,7 @@ export function WorkspaceProvider({
   // 写入,报告与历史就记下旧开关。口径见 lib/workspace/runRecord.ts。
   // toastMsg:成功收尾提示,默认「已写入」;标题/空替换场景由 startImport 组合后传入。
   const finishImport = useCallback((
-    run: { md: string; parseOpts: RunParseOpts; adjust: CapabilityAdjust },
+    run: { md: string; parseOpts: RunParseOpts; analysis: DraftAnalysis; adjust: CapabilityAdjust },
     toastMsg: string = t.writtenToast,
     imageFail = 0,
     blockCount = 0,
@@ -547,6 +546,7 @@ export function WorkspaceProvider({
     const { item, snapshot, hasAnomaly } = buildRunRecord({
       md: run.md,
       parseOpts: run.parseOpts,
+      analysis: run.analysis,
       adjust: run.adjust,
       en,
       blockCount,
@@ -627,14 +627,16 @@ export function WorkspaceProvider({
         // 以下全同步(无 await),放在权限申请(首个 await)之前不破坏用户手势。
 
         // 标题抽取放在解析前:既决定后续是否设置标题,也决定要不要移除正文首个 H1。
-        // h1Handle=remove:按块下标去掉被抽为标题的那个块(P4,parseMarkdownWithoutTitle)——不按块类型
+        // h1Handle=remove:按块下标去掉被抽为标题的那个块(P4,blocksWithoutTitle)——不按块类型
         // 删(parser 把 H1/H2 都映射成 header-one,无法区分),也不再删 md 源行重解析(相邻行会重新拼接)。
         // P7:标题抽取 / 移除与正文解析用**同一份**解析开关(标题判定随开关变化,如 obsidianImg
         // 决定 `![[a.png]]\n标题\n===` 是否构成单行 setext),不继承上一次 parseMarkdown 的残留开关。
         const parseOpts = { obsidianImg: opts.obsidianImg, wikilink: opts.wikilink, taskList: opts.taskList };
-        const extracted = opts.setTitle ? extractTitle(md, parseOpts) : null;
+        // 第三批 C2:标题、正文块、去标题块与收尾的能力计数都取这一次解析(此前 4 遍全文解析)。
+        const analysis = analyzeDraft(md, parseOpts);
+        const extracted = opts.setTitle ? analysis.title : null;
         const removeTitle = extracted?.source === 'h1' && opts.h1Handle === 'remove';
-        let blocks = removeTitle ? parseMarkdownWithoutTitle(md, parseOpts) : parseMarkdown(md, parseOpts);
+        let blocks = removeTitle ? blocksWithoutTitle(analysis) : analysis.blocks;
 
         // 封面来源:frontmatter cover > 正文首图。首图取自**已解析 blocks 的首个 ImageBlock**——
         // 与实际上传/移除同源,避免用 images() 全文正则误选到内联图 / 代码块内的图(review #1)。
@@ -769,7 +771,7 @@ export function WorkspaceProvider({
           if (imageFailures) imageFailures = relabelPermissionFailures(imageFailures, perm.deniedOrigins);
           finishImport(
             // 第三批 P11:报告按实际写入计数(去掉被移除的标题块 / 作封面的正文首图),与上面同一判定。
-            { md, parseOpts, adjust: { removeTitle, removeCoverImage: coverRemovedBodyImage } },
+            { md, parseOpts, analysis, adjust: { removeTitle, removeCoverImage: coverRemovedBodyImage } },
             toastMsg,
             res.imageFail,
             res.blockCount,
