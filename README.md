@@ -117,7 +117,7 @@ pnpm zip              # 打包上架用 zip → .output/x-md-importer-<版本>-c
 |---|---|
 | 扩展框架 | [WXT](https://wxt.dev)（MV3，多 world content script、injectScript、HMR） |
 | UI | React 18 + TypeScript（函数组件，无 class） |
-| Markdown | 自研递归下降解析器（写入用，精确产出 Draft 块 + 行内样式区间）；react-markdown + remark-gfm 仅用于编辑器内预览 |
+| Markdown | 自研递归下降解析器（精确产出 Draft 块 + 行内样式区间）；编辑器内预览也直接渲染这份块序列，所见即所写 |
 | 注入 | MAIN world 经 React fiber 借页面 Draft.js / Immutable 构造器直写 blockMap（比合成 paste 更稳） |
 | 主题 | CSS 变量驱动（四套主题 = 同一变量表的多组取值） |
 | 图片 | 远程走 background service worker 代理 + SSRF 防护；本地走 File System Access；压缩走 canvas |

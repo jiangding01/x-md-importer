@@ -33,7 +33,7 @@ const zh = {
   preview: '预览',
   // B3-8(P2-10):预览用的是通用 Markdown 渲染器(完整 CommonMark),与本项目解析器的
   // 子集语义系统性不一致(裸 URL、行内图片、H4-6、`- - -` 等)。能力面板才是写入真相。
-  previewNote: '预览为通用 Markdown 渲染,与 X 实际效果以能力面板为准',
+  previewNote: '预览按写入 X 的效果显示:嵌套列表扁平、四级以下标题为加粗段落、行内代码保留反引号',
   // P2-31:工具栏「插入表格」按钮的模板文本(此前硬编码中文,英文界面也插入中文列名)。
   tableTemplate: '\n| 列 A | 列 B |\n|---|---|\n| … | … |\n',
   ariaToggleTheme: '切换主题',
@@ -226,7 +226,7 @@ const en: Dict = {
   import: 'Import .md',
   edit: 'Edit',
   preview: 'Preview',
-  previewNote: 'Preview uses a generic Markdown renderer — the capability panel is the source of truth for X.',
+  previewNote: 'Preview shows what X will receive: nested lists are flattened, H4+ become bold paragraphs, inline code keeps its backticks.',
   tableTemplate: '\n| Col A | Col B |\n|---|---|\n| … | … |\n',
   ariaToggleTheme: 'Toggle theme',
   placeholder: 'Paste or type Markdown here…',
