@@ -8,8 +8,8 @@
  * 导出签名与 CapItem 结构保持不变(消费方 CapabilityPanel / ReportCard / AssetsCard 不改)。
  */
 
-import { extractTitle, parseMarkdownWithoutTitleMeta } from './frontmatter';
-import { isDemotedHeading, isUnclosedFence, parseMarkdownWithMeta, type ParseOptions } from './parser';
+import { analyzeDraft, blocksWithoutTitle, extractTitle, type DraftAnalysis, type ExtractedTitle } from './frontmatter';
+import { isDemotedHeading, isUnclosedFence, type ParseOptions } from './parser';
 
 export type CapBadge = 'native' | 'special' | 'image' | 'warn';
 
@@ -34,12 +34,18 @@ export interface CapabilityAdjust {
  * 「UI 撒谎」(计数与真实写入不一致)。调用方拿不到 opts 时不传,退回 parseMarkdown 的默认值。
  */
 export function capability(md: string, en: boolean, parseOpts?: ParseOptions, adjust: CapabilityAdjust = {}): CapItem[] {
-  // 第二批 P3:注释块不产出块,其个数只能取解析元数据(与写入同一次解析口径)。
-  // 第三批 P11:adjust 与写入流程同一判定——去掉被移除的标题块(h1Handle=remove)与作封面的正文首图
-  // (coverKeep=remove),报告按「实际写入」计数。
-  const parsed = adjust.removeTitle ? parseMarkdownWithoutTitleMeta(md, parseOpts) : parseMarkdownWithMeta(md, parseOpts);
-  const { htmlComments } = parsed;
-  let blocks = parsed.blocks;
+  return capabilityFromAnalysis(analyzeDraft(md, parseOpts), en, adjust);
+}
+
+/**
+ * 同 capability,但取已有的一次解析产出(第三批 C2):写入流程与侧边栏共享 analyzeDraft 的结果,不再重解析。
+ * 第二批 P3:注释块不产出块,其个数只能取解析元数据(与写入同一次解析口径)。
+ * 第三批 P11:adjust 与写入流程同一判定——去掉被移除的标题块(h1Handle=remove)与作封面的正文首图
+ * (coverKeep=remove),报告按「实际写入」计数。
+ */
+export function capabilityFromAnalysis(analysis: DraftAnalysis, en: boolean, adjust: CapabilityAdjust = {}): CapItem[] {
+  const { htmlComments } = analysis;
+  let blocks = adjust.removeTitle ? blocksWithoutTitle(analysis) : analysis.blocks;
   if (adjust.removeCoverImage) {
     const i = blocks.findIndex((b) => b.kind === 'image');
     if (i >= 0) blocks = blocks.filter((_, k) => k !== i);
@@ -205,7 +211,7 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions, ad
     en ? 'Task lists' : '任务列表',
     taskListItems,
     'warn',
-    (parseOpts?.taskList ?? 'symbol') === 'symbol'
+    (analysis.parseOpts.taskList ?? 'symbol') === 'symbol'
       ? (en ? 'X has no task lists · rendered as ☑/☐ symbols' : 'X 无任务列表 · 转 ☑/☐ 符号')
       : (en ? 'X has no task lists · rendered as plain list items' : 'X 无任务列表 · 转普通列表项'),
   );
@@ -284,5 +290,10 @@ export function capability(md: string, en: boolean, parseOpts?: ParseOptions, ad
  * `parseOpts` 透传给 extractTitle(P7):标题判定随解析开关与实际写入一致,不继承残留开关;不传按默认值。
  */
 export function firstTitle(md: string, en: boolean, parseOpts?: ParseOptions): string {
-  return extractTitle(md, parseOpts)?.title ?? (en ? 'Untitled draft' : '未命名草稿');
+  return titleText(extractTitle(md, parseOpts), en);
+}
+
+/** 抽出的标题 → 显示文案(抽不到回落「未命名草稿」);已有 analyzeDraft 结果时用它,免得再解析一遍(C2)。 */
+export function titleText(title: ExtractedTitle | null, en: boolean): string {
+  return title?.title ?? (en ? 'Untitled draft' : '未命名草稿');
 }

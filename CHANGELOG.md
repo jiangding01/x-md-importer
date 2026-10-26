@@ -7,7 +7,7 @@
 
 ## [Unreleased]
 
-> 2026-10-26 全面审查第三批阶段 A、阶段 B 的 I2 / I4 与阶段 C1(见 `docs/review/修复方案-2026-10-26-第三批.md`),计划随 0.5.1 发布。v0.5.0 的 tag 应打在 main `782d306`(第二批合入后的提交),不含以下改动。单测 818 → **834**。
+> 2026-10-26 全面审查第三批阶段 A、阶段 B 的 I2 / I4 与阶段 C1 / C2(见 `docs/review/修复方案-2026-10-26-第三批.md`),计划随 0.5.1 发布。v0.5.0 的 tag 应打在 main `782d306`(第二批合入后的提交),不含以下改动。单测 818 → **839**。
 
 ### 修复
 
@@ -23,6 +23,7 @@
 
 - **草稿写失败后自动重试(O7)**:此前存储持续失败时每次按键都整篇写一次,停手后又不再重试;现按 2s → 5s → 15s 退避重试,退避期间键入只更新待写值,成功即恢复常规防抖。
 - **`parseMarkdown` 不再残留解析开关(O5)**:改经 `withParseOptions` 设置并还原模块级开关,与其他解析入口一致。
+- **长文输入不再发顿,写入少解析三遍(O1,第三批阶段 C2)**:草稿页的能力面板与素材板此前在每次按键时各解析一遍全文;现在共用一次解析(`lib/workspace/DraftAnalysis`),并用 React 的 `useDeferredValue` 推到输入之后。写入流程的标题抽取、正文解析、能力计数、历史标题与报告卡也改为共用一次解析(`analyzeDraft`)。160 KB 文档实测:写入路径解析 131 → 40 ms,按键路径 54 → 30 ms 且不再阻塞输入。结果与改造前逐一相同(新旧差分 24 万组无差异)。
 - **CI 加 ESLint(O9,第三批阶段 C1)**:新增 `pnpm lint`,只开 `react-hooks/rules-of-hooks` 与 `react-hooks/exhaustive-deps` 两条规则(不用插件的 recommended 预设,其 React Compiler 规则与本项目无关),CI 在类型检查后执行;有意省略依赖处须写豁免注释,豁免失效时报错。新增 devDependencies:`eslint`、`@typescript-eslint/parser`、`eslint-plugin-react-hooks`。
 - **删除死代码(O8)**:`stripFirstImageLine` / `isImageLine`(仅测试在用)、context 里无人消费的 `editorHasContent`、`useTheme.setAccent` 与 `themes.ACCENTS`;设置页与素材板各一份的文件夹错误文案合并为 `lib/ui/folderErrText`。
 

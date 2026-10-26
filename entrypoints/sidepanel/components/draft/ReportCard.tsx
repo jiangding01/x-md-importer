@@ -1,7 +1,7 @@
 import { useMemo, type CSSProperties } from 'react';
 import { useI18n } from '@/lib/i18n/useI18n';
 import { useWorkspace } from '@/lib/workspace/WorkspaceProvider';
-import { capability } from '@/lib/markdown/capability';
+import { capabilityFromAnalysis } from '@/lib/markdown/capability';
 import { reportTone } from '@/lib/workspace/runRecord';
 import type { Dict } from '@/lib/i18n/dict';
 import type { ImageFailReason } from '@/lib/bridge/protocol';
@@ -56,10 +56,9 @@ export function ReportCard() {
   // lastRunSnapshot——导入收尾时钉死的不可变快照,不是当前 md/当前设置(会随后续编辑/切换
   // 开关跳变),也不是 history[0](可被用户在「记录」页删除/清空,报告卡展开期间会突然
   // 失真)。此前明细读当前 md/opts、汇总读 history[0],二者数据源不一致正是 P2-25 的成因。
-  // review B6-UI:useMemo 缓存 capability 解析(须在 return 之前,遵守 Hooks 规则);
-  // 解析抛错由 App 层 ErrorBoundary 兜底。
+  // useMemo 须在 return 之前(Hooks 规则)。第三批 C2:复用快照里本次写入的那一次解析,切语言只重算文案与计数。
   const items = useMemo(
-    () => (lastRunSnapshot ? capability(lastRunSnapshot.md, en, lastRunSnapshot.parseOpts, lastRunSnapshot.adjust) : []),
+    () => (lastRunSnapshot ? capabilityFromAnalysis(lastRunSnapshot.analysis, en, lastRunSnapshot.adjust) : []),
     [lastRunSnapshot, en],
   );
 

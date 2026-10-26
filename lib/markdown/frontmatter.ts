@@ -224,9 +224,39 @@ export function parseMarkdownWithoutTitle(md: string, opts: ParseOptions = {}): 
 
 /** 同 parseMarkdownWithoutTitle,另带回被丢弃的 HTML 注释块数(能力面板按「实际写入」计数用,第三批 P11)。 */
 export function parseMarkdownWithoutTitleMeta(md: string, opts: ParseOptions = {}): { blocks: ImportBlock[]; htmlComments: number } {
+  const analysis = analyzeDraft(md, opts);
+  return { blocks: blocksWithoutTitle(analysis), htmlComments: analysis.htmlComments };
+}
+
+/**
+ * 一次解析的全部产出(第三批 C2 / O1):写入流程与侧边栏的标题、正文块、去标题块、能力计数都取自同一份,
+ * 不再各自重解析全文(160 KB 文档每遍约 30 ms)。**只读**——多个消费方共享同一对象,不得原地修改 blocks。
+ */
+export interface DraftAnalysis {
+  blocks: ImportBlock[];
+  headings: HeadingInfo[];
+  htmlComments: number;
+  /** 文章标题:frontmatter 优先,其次正文首个可作标题的一级标题(与 extractTitle 同一判定)。 */
+  title: ExtractedTitle | null;
+  /** 正文里可作标题的那个一级标题块的下标;与 title 来源无关(frontmatter 标题时也照记),去不去由调用方定。 */
+  titleHeadingIndex: number | null;
+  /** 产出这份结果所用的解析开关(能力面板的任务列表说明随 taskList 变化)。 */
+  parseOpts: ParseOptions;
+}
+
+export function analyzeDraft(md: string, opts: ParseOptions = {}): DraftAnalysis {
   const { blocks, headings, htmlComments } = parseMarkdownWithMeta(md, opts);
   const h = pickTitleHeading(headings);
-  return { blocks: h ? blocks.filter((_, i) => i !== h.blockIndex) : blocks, htmlComments };
+  const fm = fromFrontmatter(md);
+  const title: ExtractedTitle | null =
+    fm !== null ? { title: fm, source: 'frontmatter' } : h ? { title: h.title, source: 'h1' } : null;
+  return { blocks, headings, htmlComments, title, titleHeadingIndex: h ? h.blockIndex : null, parseOpts: opts };
+}
+
+/** 去掉被抽为文章标题的那个一级标题块(按块下标,P4);是否该去(标题来源为 h1)由调用方判定。 */
+export function blocksWithoutTitle(analysis: DraftAnalysis): ImportBlock[] {
+  const idx = analysis.titleHeadingIndex;
+  return idx === null ? analysis.blocks : analysis.blocks.filter((_, i) => i !== idx);
 }
 
 /**
