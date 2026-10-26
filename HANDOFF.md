@@ -272,7 +272,7 @@ pnpm build              # → .output/chrome-mv3
 
 **发版后待办**:见 [`docs/review/backlog-2026-10-22.md`](./docs/review/backlog-2026-10-22.md)——审查推迟项(A8/A11/A19～A21、B6/B12/B13/B15、C10～C24/C27/C28/C32/C37、D8)与本轮 code review advisory;另有 8 月方案遗留的设计层项(信息架构流水线化、mdast 重构、arm 共享 hook)。
 
-**2026-10-26 全面审查**:见 [`docs/review/全面审查-2026-10-26.md`](./docs/review/全面审查-2026-10-26.md)(31 项新问题,其中 3 项需真机确认;另 9 条优化,均不在上面的 backlog 里);第一批 P1/P4/P5/W1/W2 修复方案见 [`docs/review/修复方案-2026-10-26.md`](./docs/review/修复方案-2026-10-26.md)(待评审、未实施)。
+**2026-10-26 全面审查**:见 [`docs/review/全面审查-2026-10-26.md`](./docs/review/全面审查-2026-10-26.md)(31 项新问题,其中 3 项需真机确认;另 9 条优化,均不在上面的 backlog 里);第一批 P1/P4/P5/W1/W2/W10 修复方案见 [`docs/review/修复方案-2026-10-26.md`](./docs/review/修复方案-2026-10-26.md)(已合入 main:PR #36、#37);第二批(P2/P3/P7/P8/P9、W3–W9/W11、I1/I3、D1)方案见 [`docs/review/修复方案-2026-10-26-第二批.md`](./docs/review/修复方案-2026-10-26-第二批.md)(P2/P3/W9 待用户定方案)。
 
 **远期**：文章 → Markdown 反向导出（xposter 有范本，§8.1 导出器）。
 
