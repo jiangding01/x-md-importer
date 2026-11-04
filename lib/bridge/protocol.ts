@@ -334,7 +334,16 @@ export type IsoMessage =
       /** 期望的目标文章 id(B2-1,见 RuntimeRequest 同名字段);缺省/null=不校验。 */
       expectedArticleId?: string | null;
     }
-  | { source: IsoSource; kind: 'set-title'; nonce: string; id: string; title: string; conflict: TitleConflict };
+  | {
+      source: IsoSource;
+      kind: 'set-title';
+      nonce: string;
+      id: string;
+      title: string;
+      conflict: TitleConflict;
+      /** 期望的目标文章 id(A11,同 import 的同名字段,取导入时钉死的同一值);缺省/null=不比 id。 */
+      expectedArticleId?: string | null;
+    };
 
 /** MAIN → ISOLATED 的消息。 */
 export type MainMessage =
@@ -386,7 +395,16 @@ export type RuntimeRequest =
        */
       expectedArticleId?: string | null;
     }
-  | { type: typeof SET_TITLE_REQUEST_TYPE; title: string; conflict: TitleConflict }
+  | {
+      type: typeof SET_TITLE_REQUEST_TYPE;
+      title: string;
+      conflict: TitleConflict;
+      /**
+       * 期望的目标文章 id(A11):标题在导入成功后才设(ask 冲突弹窗可挂起很久),期间同 tab SPA
+       * 切文章会改错标题。injector 比对不符即拒写(error 'article-switched')。缺省/null=不比 id。
+       */
+      expectedArticleId?: string | null;
+    }
   // forcePick=true 强制重新 showDirectoryPicker 选文件夹(「更换」);缺省/false 时若存量 handle
   // 仅权限回落(浏览器重启)则一键 requestPermission 复用,免重选(「连接 / 恢复」)。
   // lang(第二批 I1):X 页授权浮层的文案语言,缺省按中文(见 messageLang)。
@@ -465,7 +483,12 @@ export function isImportRequest(msg: unknown): msg is {
 /** 运行时守卫:窄化「标题设置请求」。 */
 export function isSetTitleRequest(
   msg: unknown,
-): msg is { type: typeof SET_TITLE_REQUEST_TYPE; title: string; conflict: TitleConflict } {
+): msg is {
+  type: typeof SET_TITLE_REQUEST_TYPE;
+  title: string;
+  conflict: TitleConflict;
+  expectedArticleId?: string | null;
+} {
   return (
     typeof msg === 'object' &&
     msg !== null &&

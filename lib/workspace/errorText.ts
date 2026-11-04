@@ -1,4 +1,9 @@
-import { BAD_RESULT_ERROR, NOT_ARTICLE_EDITOR_ERROR, type SetTitleResponse } from '@/lib/bridge/protocol';
+import {
+  ARTICLE_SWITCHED_ERROR,
+  BAD_RESULT_ERROR,
+  NOT_ARTICLE_EDITOR_ERROR,
+  type SetTitleResponse,
+} from '@/lib/bridge/protocol';
 import { SAMPLE_RESIDUE_SUFFIX } from '@/lib/bridge/sampleResidue';
 import type { Dict } from '@/lib/i18n/dict';
 
@@ -25,6 +30,21 @@ export function importErrorText(error: string, t: Dict): string {
   return `${t.errWriteFail}: ${error}`;
 }
 
+/**
+ * 写入失败(ImportResponse ok:false)的 toast 文案,按优先级归类:
+ *  1. 提交后切了文章(A11 S2:committed + article-switched)→ 正文已在原文章、图片/封面未完成,
+ *     引导刷新后回原文章检查并删残留占位符。不说「检查编辑器」——切走后 X 编辑器仍显示旧文章内容,会误导;
+ *  2. 提交后其他失败 / 通道超时(B2-2)→「正文可能已写入」,阻止按失败直觉重试造成整篇重复;
+ *  3. 提交前切了文章 → 未写入;
+ *  4. 其余按 importErrorText 归类。
+ */
+export function importFailureText(error: string, committed: boolean | undefined, t: Dict): string {
+  if (committed === true && error === ARTICLE_SWITCHED_ERROR) return t.errSwitchedAfterCommit;
+  if (committed === true || error === 'timeout') return t.errFailedButCommitted;
+  if (error === ARTICLE_SWITCHED_ERROR) return t.errArticleSwitched;
+  return importErrorText(error, t);
+}
+
 /** 把标题设置结果归类为可读文案。applied:false 属正常(keep 命中已有标题)。 */
 export function titleResultText(res: SetTitleResponse, t: Dict): string {
   if (res.ok) return res.applied ? t.titleSet : t.titleKept;
@@ -36,5 +56,8 @@ export function titleResultText(res: SetTitleResponse, t: Dict): string {
   if (res.error === 'timeout') return `${t.titleFail}: ${t.errTimeout}`;
   if (res.error === BAD_RESULT_ERROR) return `${t.titleFail}: ${t.errBadResult}`;
   if (res.error === NOT_ARTICLE_EDITOR_ERROR) return `${t.titleFail}: ${t.errNotArticleEditor}`;
+  // A11:标题阶段发现已切文章(injector 拒写)。不复用正文的 errArticleSwitched——那句是「未写入,
+  // 请重新点击写入」,而此时正文已成功写进原文章,诱导重写会在新文章里再写一遍。
+  if (res.error === ARTICLE_SWITCHED_ERROR) return t.titleArticleSwitched;
   return `${t.titleFail}: ${res.error}`;
 }

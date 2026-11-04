@@ -19,7 +19,7 @@ import {
   relabelPermissionFailures,
   requestRemoteImagePermissions,
 } from '@/lib/bridge/imagePermissions';
-import { ARTICLE_SWITCHED_ERROR, type ImageFailure, type ImportMode, type SetTitleResponse } from '@/lib/bridge/protocol';
+import { type ImageFailure, type ImportMode, type SetTitleResponse } from '@/lib/bridge/protocol';
 import type { CapabilityAdjust } from '@/lib/markdown/capability';
 import { analyzeDraft, blocksWithoutTitle, type DraftAnalysis } from '@/lib/markdown/frontmatter';
 import { sampleEn, sampleZh } from '@/lib/markdown/sample';
@@ -31,7 +31,7 @@ import { createEchoQueue } from '@/lib/storage/echoQueue';
 import { validateHistory } from '@/lib/storage/schema';
 import { downloadText } from '@/lib/ui/download';
 import { decideDraftChange, draftRetryDelay } from '@/lib/workspace/draftSync';
-import { importErrorText, titleResultText } from '@/lib/workspace/errorText';
+import { importErrorText, importFailureText, titleResultText } from '@/lib/workspace/errorText';
 import { decideHistoryChange, historySignature } from '@/lib/workspace/historySync';
 import { pickCoverSource, usesLocalImage } from '@/lib/workspace/importPlan';
 import { buildRunRecord, pruneHistory, type LastRunSnapshot, type RunParseOpts } from '@/lib/workspace/runRecord';
@@ -736,18 +736,22 @@ export function WorkspaceProvider({
           if (extracted) {
             // 标题 ask 询问弹窗 × B1 钉 tabId 的整合:三处 setTitleOnXTab **全部复用 pinnedTabId**,
             // 标题绝不落到用户中途切过去的另一篇文章(尤其 ask 弹窗无限期挂起期间)。
+            // A11:钉 tabId 挡不住同 tab 内 SPA 切文章,再透传导入时的同一 expectedArticleId,
+            // 由 injector 复核 id + 导入时 pathname 基线,不符即拒写(article-switched)。
             let titleRes: SetTitleResponse;
             if (opts.titleConflict === 'overwrite') {
-              titleRes = await setTitleOnXTab(extracted.title, 'overwrite', pinnedTabId);
+              titleRes = await setTitleOnXTab(extracted.title, 'overwrite', pinnedTabId, expectedArticleId);
             } else if (opts.titleConflict === 'keep') {
-              titleRes = await setTitleOnXTab(extracted.title, 'keep', pinnedTabId);
+              titleRes = await setTitleOnXTab(extracted.title, 'keep', pinnedTabId, expectedArticleId);
             } else {
               // ask:先以 keep 探测——编辑器本无标题则顺便设好(applied=true,无冲突不打扰);
               // 已有标题则被跳过(applied=false)→ 弹窗问用户,选覆盖才二次 overwrite。
-              titleRes = await setTitleOnXTab(extracted.title, 'keep', pinnedTabId);
+              titleRes = await setTitleOnXTab(extracted.title, 'keep', pinnedTabId, expectedArticleId);
               if (titleRes.ok && titleRes.applied === false) {
                 const overwrite = await askTitleConflict(extracted.title);
-                if (overwrite) titleRes = await setTitleOnXTab(extracted.title, 'overwrite', pinnedTabId);
+                if (overwrite) {
+                  titleRes = await setTitleOnXTab(extracted.title, 'overwrite', pinnedTabId, expectedArticleId);
+                }
               }
             }
             toastMsg = `${toastMsg} · ${titleResultText(titleRes, t)}`;
@@ -782,15 +786,10 @@ export function WorkspaceProvider({
           // B2-2:提交后失败(committed)或通道超时(injector 可能仍在后台完成提交,content
           // 无从得知)→ 用「正文可能已写入」文案族,阻止用户按「失败」直觉重试造成整篇重复;
           // 并重探一次让状态条反映编辑器真实内容。
+          // A11 S2:提交后才发现切了文章 → 专属文案。文案优先级统一在 importFailureText(可单测)。
           const maybeCommitted = res.committed === true || res.error === 'timeout';
-          if (maybeCommitted) {
-            showToast(t.errFailedButCommitted, 'error');
-            void refreshProbe();
-          } else if (res.error === ARTICLE_SWITCHED_ERROR) {
-            showToast(t.errArticleSwitched, 'error');
-          } else {
-            showToast(importErrorText(res.error, t), 'error');
-          }
+          showToast(importFailureText(res.error, res.committed, t), 'error');
+          if (maybeCommitted) void refreshProbe();
           // B5 的失败路径同步(review 修复):content 对「涉本地图的导入」**无论成败**都会清
           // vault handle,此前只有成功分支校准文件夹 UI——失败后素材板仍显示「已连接」,
           // 下次导入本地图静默找不到文件。失败也就地校准,UI 不撒谎。

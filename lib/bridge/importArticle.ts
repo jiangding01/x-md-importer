@@ -119,6 +119,8 @@ export async function importToXTab(
  *
  * @param title    要设置的标题文本。
  * @param conflict 标题冲突策略:'overwrite' 强制覆盖 / 'keep' 保留原标题、跳过设置。
+ * @param expectedArticleId 导入时钉死的目标文章 id(A11,与 importToXTab 传的同一值);
+ *          injector 比对不符即拒写(error 'article-switched')。null=不比 id。
  * @returns 注入引擎的 SetTitleResponse;定位不到 X tab 或 sendMessage 抛错/无应答时
  *          返回 `{ ok: false, error: 'disconnected' }`。
  */
@@ -126,8 +128,9 @@ export async function setTitleOnXTab(
   title: string,
   conflict: TitleConflict,
   pinnedTabId?: number,
+  expectedArticleId: string | null = null,
 ): Promise<SetTitleResponse> {
-  const request: RuntimeRequest = { type: SET_TITLE_REQUEST_TYPE, title, conflict };
+  const request: RuntimeRequest = { type: SET_TITLE_REQUEST_TYPE, title, conflict, expectedArticleId };
 
   // 标题阶段在正文写完后才跑,是 review B1 的核心暴露点:必须复用 startImport 钉死的
   // pinnedTabId,而非在此重解析「当前活动标签」——否则弹窗挂起期间用户切走会静默覆盖别篇标题。
