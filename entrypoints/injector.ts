@@ -15,6 +15,7 @@ import {
   type SetTitleResult,
   type TitleConflict,
 } from '@/lib/bridge/protocol';
+import { ARTICLE_ROUTE_PREFIX, articleIdFromPathname, isArticleSwitched } from '@/lib/bridge/articleGuard';
 import { findEditorElement } from '@/lib/bridge/editorLocator';
 import { isSampleResidue, SAMPLE_CHAR, SAMPLE_RESIDUE_SUFFIX } from '@/lib/bridge/sampleResidue';
 
@@ -245,19 +246,16 @@ export default defineUnlistedScript(() => {
     return null;
   };
 
-  /** 从 URL 提取文章草稿 id:/articles/edit/(\d+) 的捕获组,未在编辑页则为 null。 */
-  const getArticleId = (): string | null => {
-    const m = location.pathname.match(/articles\/edit\/(\d+)/);
-    return m?.[1] ?? null;
-  };
+  /** 从 URL 提取文章草稿 id:/articles/edit/(\d+) 的捕获组,未在编辑页则为 null(规则在 articleGuard,单一实现)。 */
+  const getArticleId = (): string | null => articleIdFromPathname(location.pathname);
 
   /**
    * 当前页是否为 X 文章编辑路由(B3)。文章列表 / 新建 / 编辑页 URL 均以 `/compose/articles`
    * 为前缀(docs/技术方案设计.md §入口 实测)。推文 compose 弹窗(`/compose/post`)、私信框等
    * 同样是 Draft.js 且尺寸达标,三灯探针会误判「可写」——写入/设标题入口与 connected 判定
-   * 都以此为闸门。不能用 articleId:新建文章页 articleId 本就为 null。
+   * 都以此为闸门。前缀常量与 articleGuard 共用(A11 J3:单一实现)。
    */
-  const isArticleEditorRoute = (): boolean => location.pathname.startsWith('/compose/articles');
+  const isArticleEditorRoute = (): boolean => location.pathname.startsWith(ARTICLE_ROUTE_PREFIX);
 
   /**
    * 执行三灯探针 + 文章 id + 路由判定,组装 ProbeResult。
@@ -306,6 +304,38 @@ export default defineUnlistedScript(() => {
   /** 从 draftNode 上取 Draft EditorState 实例(受控收口)。 */
   const readEditorState = (node: FiberStateNode): DraftEditorState =>
     node.props?.editorState as DraftEditorState;
+
+  /**
+   * 写入闸门(A11):返回 true = 禁止写编辑器。runImport 入口挂上「基于 articleGuard 的切文章判定」,
+   * finally 复位为「一律禁止」。所有改写编辑器的函数(placeSelectionAtMarker / relocate* /
+   * replaceMarkerWithText / sweepMarkersOnce / 主提交 / 封面 / 晚到追回)都只在 runImport 内被调用,
+   * 故 runImport 外一律禁止不影响任何既有调用(见 commitEditorState)。
+   * 写入由 importInFlight 串行化,同一时刻只有一次 runImport 在用它。
+   */
+  let writeBlocked: () => boolean = () => true;
+
+  /**
+   * 最近一次 runImport 开始时的 pathname(A11)。导入成功后侧边栏才设标题(ask 冲突弹窗可挂起很久),
+   * setTitle 据此判定「是否已不在导入时那篇文章」——新建文章页 articleId 为 null,只比 id 防不住。
+   * 不在 runImport 的 finally 清空(标题阶段在导入返回之后);null = 本页尚未导入过,跳过该条。
+   */
+  let lastImportPathname: string | null = null;
+
+  /**
+   * 编辑器写入的**唯一出口**(A11):同步检查写入闸门,已切文章就不调 onChange 并返回 false;
+   * 否则调 X 的 onChange 提交并返回 true。返回 false 只有「被闸门拦截」这一种含义,调用方据此
+   * 视为本步失败/中止(绝不当成功)。onChange 直调只允许出现在这里(injectorWriteGate.test.ts 结构断言)。
+   * 背景:同标签 SPA 切文章后 X 不重挂编辑器,Draft 仍是旧文章内容,此时任何 onChange 都会让 X
+   * 把整份旧状态自动保存进新文章(真机回归 A11 对照实验证实 X 自身切换不会保存)。
+   */
+  const commitEditorState = (node: FiberStateNode, state: DraftEditorState): boolean => {
+    if (writeBlocked()) {
+      console.warn('[MarkFlow] 目标文章已切换或不在写入流程中,拦截编辑器写入', location.pathname);
+      return false;
+    }
+    (node.props?.onChange as (s: DraftEditorState) => void)(state);
+    return true;
+  };
 
   /**
    * B1 诊断账本:本次 runImport 中 settle 超时的阶段名(随 ImportResult.settleTimeouts 回传)。
@@ -398,6 +428,7 @@ export default defineUnlistedScript(() => {
    * 把光标钉到 marker 块起始——X 的 onFilesAdded 会把 MEDIA 块插到光标处。
    * 提交后 settle 等 selection 的 anchorKey 指向 marker 块(B1);页面 SelectionState 缺
    * getAnchorKey 时无法从 state 判定,退化为固定 delay(250)。
+   * 写入闸门拦截(已切文章)时也返回 false,调用方须再查 writeBlocked() 区分「marker 丢失」与「已切换」。
    */
   const placeSelectionAtMarker = async (node: FiberStateNode, marker: string): Promise<boolean> => {
     const es = readEditorState(node);
@@ -406,7 +437,7 @@ export default defineUnlistedScript(() => {
     const SelStatic = es.getSelection().constructor as unknown as DraftSelectionStatic;
     const ESStatic = es.constructor as unknown as DraftEditorStateStatic;
     const sel = SelStatic.createEmpty(loc.blockKey).merge({ anchorOffset: 0, focusOffset: 0 });
-    (node.props?.onChange as (s: DraftEditorState) => void)(ESStatic.forceSelection(es, sel));
+    if (!commitEditorState(node, ESStatic.forceSelection(es, sel))) return false;
     if (typeof sel.getAnchorKey === 'function') {
       await settle('place-selection', node, (_c, state) => {
         const s = state.getSelection();
@@ -470,6 +501,9 @@ export default defineUnlistedScript(() => {
   const PENDING_MIN_AGE_MS = 20_000;
   const PENDING_CAP_MS = 32_000;
 
+  /** waitForNewMedia 的「已切文章」哨兵(A11):调用方据此立即中止,不归位、不写回原文。 */
+  const MEDIA_WAIT_SWITCHED = 'article-switched' as const;
+
 
   // -------------------------------------------------------------------------
   // B2 晚到追回 —— 图 k 超时降级(写回原文)后,X 的上传并未取消;k 的 MEDIA 若在图 k+1 的
@@ -499,11 +533,8 @@ export default defineUnlistedScript(() => {
   let pendingLate: LateEntry[] = [];
   /** 已追回的图片下标(runImport 收尾据此 imageOk++ 并移除对应 upload-timeout 明细)。 */
   let lateRecovered: number[] = [];
-  /**
-   * 追回会**写正文**(此前 waitForNewMedia 只读),必须服从 runImport 的切文章闸门:
-   * runImport 入口挂上 articleSwitched,finally 复位为「一律禁止」。
-   */
-  let lateWriteBlocked: () => boolean = () => true;
+  // 追回会**写正文**(此前 waitForNewMedia 只读),服从统一写入闸门 writeBlocked(A11 起与其余写入
+  // 共用同一闸门,原 lateWriteBlocked 并入;见 commitEditorState)。
 
   /** 块是否为 MEDIA atomic 块:'ready'=已带 mediaId;'pending'=entity 在但无 mediaId;null=不是。 */
   const mediaBlockState = (content: DraftContentState, block: DraftBlock): 'ready' | 'pending' | null => {
@@ -582,7 +613,7 @@ export default defineUnlistedScript(() => {
     const nc = content.set('blockMap', nextMap).set('selectionBefore', sel).set('selectionAfter', sel);
     let ns = ESStatic.push(es, nc, 'move-block');
     ns = ESStatic.forceSelection(ns, sel);
-    (node.props?.onChange as (s: DraftEditorState) => void)(ns);
+    if (!commitEditorState(node, ns)) return false; // 闸门拦截(已切文章):未改正文
     await settle('late-relocate', node, (c) => {
       const bm = c.getBlockMap();
       if (!bm.has(mediaKey)) return false;
@@ -600,7 +631,7 @@ export default defineUnlistedScript(() => {
    * 被认领的 pendingKey 块在超时那刻已存在,天然在后续图的 before 快照内,不会被本图当成新块。
    */
   const recoverLateOnce = async (): Promise<boolean> => {
-    if (!pendingLate.length || lateWriteBlocked()) return false;
+    if (!pendingLate.length || writeBlocked()) return false;
     const node = findDraftStateNode();
     if (!node) return false;
     const content = readEditorState(node).getCurrentContent();
@@ -637,20 +668,23 @@ export default defineUnlistedScript(() => {
    * B2:每轮先给此前超时图按 pendingKey 精确追回晚到 MEDIA(recoverLateOnce,只认登记过的 key,
    * 不猜归属);追回会改 selection,随后把光标重钉回本图 marker 再继续等本图——budget 不延长
    * (通道超时预算不放大)。
+   * A11:每轮先查写入闸门,切文章即刻返回 MEDIA_WAIT_SWITCHED(不再空等满 budget,也不再归位)。
    */
   const waitForNewMedia = async (
     before: Set<string>,
     budgetMs: number,
     marker: string,
-  ): Promise<{ key: string; confirmed: boolean } | null> => {
+  ): Promise<{ key: string; confirmed: boolean } | null | typeof MEDIA_WAIT_SWITCHED> => {
     const deadline = Date.now() + budgetMs;
     // 当前 pending 块的跟踪:firstSeen=首次出现时刻;signature/signatureSince=最近签名及其保持起始时刻。
     let pending: { key: string; firstSeen: number; signature: string; signatureSince: number } | null = null;
     while (Date.now() < deadline) {
       await delay(350);
+      if (writeBlocked()) return MEDIA_WAIT_SWITCHED;
       if (pendingLate.length && (await recoverLateOnce())) {
+        if (writeBlocked()) return MEDIA_WAIT_SWITCHED;
         const n = findDraftStateNode();
-        if (n && !lateWriteBlocked()) await placeSelectionAtMarker(n, marker);
+        if (n) await placeSelectionAtMarker(n, marker);
         continue;
       }
       const node = findDraftStateNode();
@@ -735,7 +769,8 @@ export default defineUnlistedScript(() => {
     const nc = content.set('blockMap', nextMap).set('selectionBefore', sel).set('selectionAfter', sel);
     let ns = ESStatic.push(es, nc, 'move-block');
     ns = ESStatic.forceSelection(ns, sel);
-    (node.props?.onChange as (s: DraftEditorState) => void)(ns);
+    // 闸门拦截(已切文章)返回 false;调用方须再查 writeBlocked(),不得走 fallbackIndex 当成功。
+    if (!commitEditorState(node, ns)) return false;
     await settle(
       'relocate-media',
       node,
@@ -781,7 +816,7 @@ export default defineUnlistedScript(() => {
     const nc = content.set('blockMap', nextMap).set('selectionBefore', sel).set('selectionAfter', sel);
     let ns = ESStatic.push(es, nc, 'change-block-data');
     ns = ESStatic.forceSelection(ns, sel);
-    (node.props?.onChange as (s: DraftEditorState) => void)(ns);
+    if (!commitEditorState(node, ns)) return null; // 闸门拦截(已切文章):未写回
     await settle('replace-marker', node, (c) => findMarkerBlock(c, marker) === null);
     return loc.blockKey;
   };
@@ -808,6 +843,8 @@ export default defineUnlistedScript(() => {
     let cleanStreak = 0;
     for (let round = 0; round < 6; round += 1) {
       await delay(round === 0 ? 120 : 220); // 首轮短等,后续留足 X commit 时间
+      // A11:每轮先查写入闸门——切文章即停,返回「未确认干净」(调用方另行判定已切换)。
+      if (writeBlocked()) return false;
       const r = sweepMarkersOnce(prefix, onSwept);
       if (r === 'clean') {
         cleanStreak += 1;
@@ -914,7 +951,8 @@ export default defineUnlistedScript(() => {
     const nc = content.set('blockMap', nextMap).set('selectionBefore', sel).set('selectionAfter', sel);
     let ns = ESStatic.push(es, nc, 'remove-range');
     ns = ESStatic.forceSelection(ns, sel);
-    (node.props?.onChange as (s: DraftEditorState) => void)(ns);
+    // 闸门拦截(已切文章):未提交,按「读不到」处理(不可当干净);外层下一轮查闸门即退出。
+    if (!commitEditorState(node, ns)) return 'no-node';
     if (onSwept) for (const m of sweptMarkers) onSwept(m);
     return 'swept'; // 本轮处理了残留 → 交外层再验(须此后连续两轮 clean 才算收工)
   };
@@ -922,6 +960,8 @@ export default defineUnlistedScript(() => {
   /** uploadOneImage 的结果:失败时带原因码(在知道原因的这一层产生,调用方只透传进失败明细)。 */
   type UploadOutcome =
     | { ok: true }
+    // A11:中途切文章——runImport 须立即返回 ARTICLE_SWITCHED_ERROR,不写回原文、不记失败明细。
+    | { ok: false; switched: true }
     // pendingKey:仅 upload-timeout 且超时时已有未确认 MEDIA 块时带上(B2 晚到追回按 key 精确等它)。
     | { ok: false; reason: ImageFailReason; detail?: string; pendingKey?: string };
 
@@ -931,10 +971,14 @@ export default defineUnlistedScript(() => {
    * 失败明细的诊断价值在最复杂的 upload 阶段归零(review 批次三)。失败均由调用方写回 fallbackText。
    */
   const uploadOneImage = async (marker: string, file: File, budgetMs: number): Promise<UploadOutcome> => {
+    // A11:各写入点前后都查写入闸门,切文章即返回 switched(区别于普通失败,调用方不写回原文)。
+    if (writeBlocked()) return { ok: false, switched: true };
     let node = findDraftStateNode();
     if (!node) return { ok: false, reason: 'upload-no-editor' };
     // placeSelectionAtMarker 内部已 settle 等 selection 落盘(B1);这 80ms 留给 DOM selection 同步。
-    if (!(await placeSelectionAtMarker(node, marker))) return { ok: false, reason: 'upload-marker-lost' };
+    if (!(await placeSelectionAtMarker(node, marker))) {
+      return writeBlocked() ? { ok: false, switched: true } : { ok: false, reason: 'upload-marker-lost' };
+    }
     await delay(80);
 
     node = findDraftStateNode();
@@ -943,6 +987,8 @@ export default defineUnlistedScript(() => {
     if (!onFilesAdded) return { ok: false, reason: 'upload-no-callback' };
     const before = snapshotMediaKeys(node);
 
+    // onFilesAdded 会让 X 自己往编辑器插 MEDIA 块并提交——切文章后同样会把旧状态存进新文章,同步复查。
+    if (writeBlocked()) return { ok: false, switched: true };
     try {
       onFilesAdded([file]);
     } catch (err) {
@@ -951,16 +997,20 @@ export default defineUnlistedScript(() => {
     }
 
     const media = await waitForNewMedia(before, budgetMs, marker);
+    if (media === MEDIA_WAIT_SWITCHED) return { ok: false, switched: true };
     // 无新 MEDIA 块,或有块但未确认(无 mediaId 且稳定性未达标)→ 未确认成功,交调用方降级。
     if (!media || !media.confirmed) return { ok: false, reason: 'upload-timeout', pendingKey: media?.key };
 
     await delay(120);
+    if (writeBlocked()) return { ok: false, switched: true };
     node = findDraftStateNode();
     // MEDIA 已确认后的失败一律归「归位失败」:图大概率已进 X 媒体库,只是没落进正文——
     // 与「超时」的排查方向完全不同(不该去查网络/重试,而该看正文结构)。
     if (!node) return { ok: false, reason: 'upload-relocate-failed' };
     // 归位:优先精确顶替 marker 位置;失败则走 §3.3 fallbackIndex 兜底;仍失败(MEDIA 块丢失)才算失败。
     if (await relocateMediaToMarker(node, marker, media.key)) return { ok: true };
+    // 归位被闸门拦截(已切文章)≠ marker 丢失:不得走 fallbackIndex 把「MEDIA 块存在」当成功。
+    if (writeBlocked()) return { ok: false, switched: true };
     node = findDraftStateNode();
     if (node && relocateMediaByFallbackIndex(node, media.key)) return { ok: true };
     return { ok: false, reason: 'upload-relocate-failed' };
@@ -1028,6 +1078,9 @@ export default defineUnlistedScript(() => {
       }) ?? null;
     if (!coverInput) return false;
     try {
+      // A11:封面不经 onChange,但同样会写进「当前 URL 对应的文章」——塞 File 前与每次点 Apply 前
+      // 都查写入闸门,切文章即放弃(返回 false、不点击;runImport 随后判定已切换并返回)。
+      if (writeBlocked()) return false;
       const dt = new DataTransfer();
       dt.items.add(file);
       coverInput.files = dt.files;
@@ -1039,6 +1092,7 @@ export default defineUnlistedScript(() => {
       let apply: HTMLElement | null = null;
       while (Date.now() < deadline) {
         await delay(200);
+        if (writeBlocked()) return false;
         apply = findApplyButton();
         if (apply) break;
       }
@@ -1048,6 +1102,7 @@ export default defineUnlistedScript(() => {
       // coverSet 谎报 true、弹窗却残留)。故用 realClick 派发完整事件序列,并轮询到「弹窗内 Apply
       // 消失」为准;单次没关就重新定位再点(DOM 可能重渲染),最多 5 轮。
       for (let attempt = 0; attempt < 5; attempt += 1) {
+        if (writeBlocked()) return false;
         realClick(apply);
         const closeDeadline = Date.now() + 1500;
         while (Date.now() < closeDeadline) {
@@ -1095,15 +1150,21 @@ export default defineUnlistedScript(() => {
     // (部分)落地,失败结果带上它,UI 才能提示「正文可能已写入」而不是诱导用户重试导致重复。
     let committed = false;
     // B2-1 持续校验(review 修复):入口校验只挡得住「点确认前」的切换;空稿取样最长再等 1.6s、
-    // 图片/清扫/封面阶段可达数分钟,期间 SPA 切文章后 findDraftStateNode 会解析到**新文章**的
-    // 编辑器——继续写就砸错目标。故 commit 前与每个后续阶段前都复查,切换即停手。
+    // 图片/清扫/封面阶段可达数分钟,期间 SPA 切文章后(A11 实测:X 不重挂编辑器,findDraftStateNode
+    // 拿到的仍是旧文章内容,但保存目标已是新文章)继续写,X 会把旧内容自动保存进新文章。故 commit 前、
+    // 每个后续阶段前、以及每次编辑器写入时(commitEditorState 闸门)都复查,切换即停手。
     // 路由也纳入:SPA 离开文章编辑路由(如切到推文 compose)时无论是否带 articleId 都视为切换。
+    // A11:再加「pathname 与写入开始时的基线不同」——新建文章页 articleId 为 null,只比 id 完全不防;
+    // 宁可误停也不写错文章。规则见 lib/bridge/articleGuard.ts。
+    const baselinePathname = location.pathname;
+    lastImportPathname = baselinePathname; // 供导入后的 setTitle 复核(不在 finally 清空)
     const articleSwitched = (): boolean =>
-      !isArticleEditorRoute() || (expectedArticleId != null && getArticleId() !== expectedArticleId);
-    // B2 晚到追回的模块级账本按次清零;追回写正文须服从本次的切文章闸门(finally 复位为禁止)。
+      isArticleSwitched({ baselinePathname, expectedArticleId, currentPathname: location.pathname });
+    // B2 晚到追回的模块级账本按次清零;A11 起所有编辑器写入统一服从本次的切文章闸门
+    // (commitEditorState / 封面 / 晚到追回;finally 复位为一律禁止)。
     pendingLate = [];
     lateRecovered = [];
-    lateWriteBlocked = articleSwitched;
+    writeBlocked = articleSwitched;
     // 每次运行独立的 marker 前缀,避免与历史残留 / 并发写入串扰。
     const markerPrefix = `__MARKFLOW_IMG_${Math.random().toString(36).slice(2, 8)}_`;
     // 清扫用**通用**前缀:不仅清本次,也清掉「历史遗留」——同一草稿反复导入时,之前某次
@@ -1120,7 +1181,7 @@ export default defineUnlistedScript(() => {
       if (import.meta.env.DEV) console.info('[MarkFlow] 写入开始', { blocks: blocks.length, mode, images: imageCount });
       // B2-1 双钥校验:在触碰编辑器之前比对目标文章——ask 弹窗挂起期间用户在同一 tab 内
       // SPA 切到另一篇草稿时(tabId 不变,sidepanel 的钉 tab 挡不住),这里是最后一道闸。
-      if (expectedArticleId != null && getArticleId() !== expectedArticleId) {
+      if (articleSwitched()) {
         console.warn('[MarkFlow] 目标文章已切换,拒绝写入', { expected: expectedArticleId, actual: getArticleId() });
         return { ok: false, error: ARTICLE_SWITCHED_ERROR };
       }
@@ -1144,8 +1205,9 @@ export default defineUnlistedScript(() => {
         document.execCommand('insertText', false, SAMPLE_CHAR);
         for (let waited = 0; waited < 1600 && !sample; waited += 100) {
           await delay(100);
-          // 轮询期间切了文章:立即停手,绝不从新文章的编辑器取样(下面的 findDraftStateNode 会解析到它)。
-          // 已插入原文章的字符无从撤回(原编辑器已卸载),这一窗口通常只有取样落盘前的约 100ms。
+          // 轮询期间切了文章:立即停手,不再取样、不再写入。A11 实测 X 同标签切文章**不重挂编辑器**,
+          // Draft 仍是原文章内容而保存目标已是新文章——此时再 undo 撤回插入的字符,会经 X 的 onChange
+          // 把旧编辑器状态自动保存进新文章。故不撤回(字符可能残留在原文章),这一窗口通常只有取样落盘前的约 100ms。
           if (articleSwitched()) return { ok: false, error: ARTICLE_SWITCHED_ERROR };
           const node = findDraftStateNode();
           if (!node) continue;
@@ -1324,7 +1386,8 @@ export default defineUnlistedScript(() => {
       if (articleSwitched()) return { ok: false, error: ARTICLE_SWITCHED_ERROR };
       let next = EditorStateClass.push(editorState, nextContent, 'insert-fragment');
       next = EditorStateClass.forceSelection(next, endSelection);
-      (draftNode.props?.onChange as (s: DraftEditorState) => void)(next);
+      // 经统一出口提交;被闸门拦截 = 已切文章,零副作用返回(committed 仍为 false)。
+      if (!commitEditorState(draftNode, next)) return { ok: false, error: ARTICLE_SWITCHED_ERROR };
       committed = true; // B2-2:此后任何失败都属「提交后失败」,结果须如实带 committed
       if (import.meta.env.DEV) console.info('[MarkFlow] onChange 已提交,块数', built.length);
 
@@ -1362,7 +1425,10 @@ export default defineUnlistedScript(() => {
         if (hit < blocks.length) {
           // 确实仍不达标才判失败。此 return 不走 catch,故此处显式补一次清扫——
           // 否则随正文提交的 __MARKFLOW_IMG_* 占位块会残留用户草稿(仅在确有图片 marker 时清)。
+          // A11:已切文章则跳过清扫(不写),直接报切换;清扫中途切换同样按切换返回。
+          if (articleSwitched()) return { ok: false, error: ARTICLE_SWITCHED_ERROR, committed };
           if (imageMarkers.length) await sweepMarkers(MARKER_SWEEP_PREFIX);
+          if (articleSwitched()) return { ok: false, error: ARTICLE_SWITCHED_ERROR, committed };
           return { ok: false, error: `verify: only ${hit}/${blocks.length} blocks landed`, committed };
         }
       }
@@ -1423,6 +1489,11 @@ export default defineUnlistedScript(() => {
           console.warn('[MarkFlow] 图片上传异常', e);
           outcome = { ok: false, reason: 'upload-exception', detail: String(e) };
         }
+        // A11:上传途中切了文章(含异常/超时后才发现)→ 立即停手,**不得**写回原文(那会经 onChange
+        // 把旧编辑器状态存进新文章)。marker 留在原文章,由错误文案引导用户回去检查。
+        if ('switched' in outcome || articleSwitched()) {
+          return { ok: false, error: ARTICLE_SWITCHED_ERROR, committed };
+        }
         if (outcome.ok) {
           imageOk += 1;
           placedIndices.push(imageIndex);
@@ -1480,6 +1551,8 @@ export default defineUnlistedScript(() => {
         stage = 'cover';
         coverSet = await setCoverImage(cover);
         if (import.meta.env.DEV) console.info('[MarkFlow] 封面设置', { coverSet });
+        // A11:封面阶段(最长 8s 等弹窗 + 多轮点 Apply)中途切文章 → setCoverImage 已放弃,如实报切换。
+        if (articleSwitched()) return { ok: false, error: ARTICLE_SWITCHED_ERROR, committed };
       }
 
       // --- marker 残留审计:sweep 未能确认干净时,读最终 state 如实上报,不再静默 ---
@@ -1581,19 +1654,23 @@ export default defineUnlistedScript(() => {
       // 打完整 err 对象(含堆栈),便于定位崩在 Draft 内部的哪一步
       console.error(`[MarkFlow] 写入异常 @${stage}`, err);
       // 出错也尽力清掉已写入的 marker 占位(通用前缀,连历史遗留一并清),避免正文残留脏 token。
-      try {
-        await sweepMarkers(MARKER_SWEEP_PREFIX);
-      } catch {
-        /* 兜底清扫本身失败则放弃 */
+      // A11:已切文章则跳过清扫(清扫会经 onChange 把旧状态存进新文章),改报切换(保留 committed 等字段)。
+      if (!articleSwitched()) {
+        try {
+          await sweepMarkers(MARKER_SWEEP_PREFIX);
+        } catch {
+          /* 兜底清扫本身失败则放弃 */
+        }
       }
       return {
         ok: false,
-        error: `${stage}: ${String(err)}`,
+        error: articleSwitched() ? ARTICLE_SWITCHED_ERROR : `${stage}: ${String(err)}`,
         committed,
         settleTimeouts: settleTimeouts.length ? [...settleTimeouts] : undefined,
       };
     } finally {
-      lateWriteBlocked = () => true;
+      // 复位为「一律禁止」:编辑器写入只发生在 runImport 内(见 writeBlocked 注释),不影响其他路径。
+      writeBlocked = () => true;
       pendingLate = [];
       importInFlight = false;
     }
@@ -1667,10 +1744,21 @@ export default defineUnlistedScript(() => {
    * 设置标题(仅 UI 通道):打分定位输入框 → 冲突策略判断 → 原生 setter 写入并派发事件。
    * applied=false 表示因 keep 策略遇到已有非空标题而跳过(非错误)。
    */
-  const setTitle = (title: string, conflict: TitleConflict): SetTitleResult => {
+  const setTitle = (title: string, conflict: TitleConflict, expectedArticleId: string | null): SetTitleResult => {
     // B3:非文章编辑路由一律拒绝——推文 compose 弹窗没有标题框,但 findTitleField 的打分
     // 可能命中页面其它带 title 关键词的输入框(搜索框等),覆盖掉用户输入。
     if (!isArticleEditorRoute()) return { ok: false, error: NOT_ARTICLE_EDITOR_ERROR };
+    // A11:标题在导入成功后才设(ask 冲突弹窗可挂起很久),期间同标签 SPA 切到别篇就会改错标题。
+    // expectedArticleId(导入时钉死的同一值;旧版 content 不带 → null 不比 id)+ 最近一次导入的
+    // pathname 基线双重复核,任一不符即拒写。
+    if (isArticleSwitched({ baselinePathname: lastImportPathname, expectedArticleId, currentPathname: location.pathname })) {
+      console.warn('[MarkFlow] 目标文章已切换,拒绝设置标题', {
+        expected: expectedArticleId,
+        baseline: lastImportPathname,
+        actual: location.pathname,
+      });
+      return { ok: false, error: ARTICLE_SWITCHED_ERROR };
+    }
 
     // B5:定位阶段也可能抛(findEditorElement → fiber 遍历 / X 改版 DOM 形状变化),此前无 try
     // → promise reject、set-title-result 永不发出、content 只见 timeout。明确失败码便于归类。
@@ -1772,7 +1860,9 @@ export default defineUnlistedScript(() => {
       if (import.meta.env.DEV) console.info('[MarkFlow] 设置标题开始', { conflict: msg.conflict });
       let result: SetTitleResult;
       try {
-        result = setTitle(msg.title, msg.conflict);
+        // 旧版 content 不带 expectedArticleId(或页面伪造非字符串)→ 按 null 兼容(不比 id,pathname 基线仍复核)。
+        const expectedArticleId = typeof msg.expectedArticleId === 'string' ? msg.expectedArticleId : null;
+        result = setTitle(msg.title, msg.conflict, expectedArticleId);
       } catch (err) {
         console.error('[MarkFlow] setTitle 未捕获异常', err);
         result = { ok: false, error: `set-title-exception: ${String(err)}` };

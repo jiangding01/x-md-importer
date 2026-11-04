@@ -463,12 +463,17 @@ export default defineContentScript({
      * - 未握手 → 立即回 no-injector;
      * - 已握手 → 经桥发 set-title(携带 title/conflict),等匹配的 set-title-result;
      *   8s 超时回 timeout。injector 的 SetTitleResult 经 normalizeSetTitleResult 守卫后透传(含 applied 语义)。
+     * - expectedArticleId(A11):导入时钉死的目标文章 id,原样转给 injector 复核;null=不比 id。
      */
-    const setTitleInjector = (title: string, conflict: TitleConflict): Promise<SetTitleResponse> => {
+    const setTitleInjector = (
+      title: string,
+      conflict: TitleConflict,
+      expectedArticleId: string | null = null,
+    ): Promise<SetTitleResponse> => {
       if (!handshaked) return Promise.resolve({ ok: false, error: 'no-injector' });
       return bridge.request<unknown, SetTitleResponse>(
         'set-title-result',
-        (id) => post({ source: ISO_SOURCE, kind: 'set-title', nonce, id, title, conflict }),
+        (id) => post({ source: ISO_SOURCE, kind: 'set-title', nonce, id, title, conflict, expectedArticleId }),
         8000,
         normalizeSetTitleResult, // B9:形状守卫
         () => ({ ok: false, error: 'timeout' }),
@@ -600,7 +605,9 @@ export default defineContentScript({
           message.compress ?? null,
           message.expectedArticleId ?? null,
         );
-      if (isSetTitleRequest(message)) return setTitleInjector(message.title, message.conflict);
+      // 旧版 sidepanel 不带 expectedArticleId → null(injector 仍按导入时的 pathname 基线复核)。
+      if (isSetTitleRequest(message))
+        return setTitleInjector(message.title, message.conflict, message.expectedArticleId ?? null);
       // scope 用 messageScope 归一(旧消息缺字段时回落 persistent),不裸信任 message.scope。
       if (isConnectFolderRequest(message))
         return connectFolder(messageScope(message), message.forcePick === true, messageLang(message));

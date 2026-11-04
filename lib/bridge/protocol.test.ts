@@ -171,6 +171,17 @@ describe('消息守卫', () => {
       ).toBe(true);
     });
 
+    it('带 expectedArticleId(A11)的标题请求同样通过判别', () => {
+      expect(
+        isSetTitleRequest({
+          type: SET_TITLE_REQUEST_TYPE,
+          title: 'x',
+          conflict: 'overwrite',
+          expectedArticleId: '1234567890123456789',
+        }),
+      ).toBe(true);
+    });
+
     it('type 不匹配时拒绝', () => {
       expect(isSetTitleRequest({ type: PROBE_REQUEST_TYPE })).toBe(false);
     });
