@@ -151,6 +151,9 @@ interface DraftEditorState {
   getCurrentContent(): DraftContentState;
   /** 最近一次变更类型(EditorState.undo/redo 会置为 'undo'/'redo';导入后守护据此让位,先 typeof 守卫)。 */
   getLastChangeType?(): string | null;
+  /** 撤销 / 重做栈(Immutable.Stack<ContentState>;仅撤销诊断读取,先 typeof 守卫)。 */
+  getUndoStack?(): { toArray?(): DraftContentState[] };
+  getRedoStack?(): { toArray?(): DraftContentState[] };
 }
 
 /** Draft.js EditorState 类(静态方法,从 editorState.constructor 取得)。 */
@@ -1024,6 +1027,63 @@ export default defineUnlistedScript(() => {
   };
 
   /**
+   * 正文结构摘要(诊断用):图片 / 特殊块与 marker 各在第几块,只记序号、类型与 marker 串,
+   * 不含正文内容。形如 `blocks=49 atomic=[5:MARKDOWN,26:MEDIA] markers=[35:__MARKFLOW_IMG_x_1__]`。
+   */
+  const summarizeContent = (content: DraftContentState): string => {
+    const atomic: string[] = [];
+    const markers: string[] = [];
+    let i = 0;
+    content.getBlockMap().forEach((block) => {
+      if (block.getType() === 'atomic') {
+        const ek = block.getEntityAt(0);
+        let type = '?';
+        try {
+          if (ek) type = content.getEntity(ek).getType();
+        } catch {
+          /* entity 读取失败按未知 */
+        }
+        atomic.push(`${i}:${type}`);
+      } else {
+        MARKER_FULL_RE.lastIndex = 0;
+        const m = block.getText().match(MARKER_FULL_RE);
+        if (m) markers.push(`${i}:${m.join('+')}`);
+      }
+      i += 1;
+    });
+    MARKER_FULL_RE.lastIndex = 0;
+    return `blocks=${i} atomic=[${atomic.join(',')}] markers=[${markers.join(',')}]`;
+  };
+
+  /**
+   * 撤销诊断(真机 2026-11-13:一次 Cmd+Z 跳回「第 2 张图归位之前」——图回文末、`_1` 重现、
+   * 用户刚输入的内容消失,按 Draft 每步一条撤销记录的规则本应只退一步;现场已失,未能取证)。
+   * 守护检测到撤销 / 重做而让位时,打出当前与撤销 / 重做栈顶的结构摘要,下次复现即可据此判断
+   * 撤销到底退到了哪个状态、栈里缺了哪一步。纯只读,任何异常都吞掉,不影响守护停止。
+   */
+  const logUndoDiagnostic = (
+    es: DraftEditorState,
+    lastChange: string,
+    afterMs: number,
+    releases: string[],
+  ): void => {
+    try {
+      const top = (stack: { toArray?(): DraftContentState[] } | undefined): string[] =>
+        (stack?.toArray?.() ?? []).slice(0, 3).map(summarizeContent);
+      console.info('[MarkFlow] 检测到撤销 / 重做,导入后守护停止(撤销诊断)', {
+        lastChange,
+        afterMs,
+        releases,
+        current: summarizeContent(es.getCurrentContent()),
+        undoTop3: top(es.getUndoStack?.()),
+        redoTop3: top(es.getRedoStack?.()),
+      });
+    } catch (err) {
+      console.warn('[MarkFlow] 撤销诊断读取失败', err);
+    }
+  };
+
+  /**
    * 启动导入后守护。每 MARKER_GUARD_INTERVAL_MS 读一次最新 state,只认**本次** markerPrefix 的完整
    * marker(用户正文 / 其他导入的不动),剥除方式同 sweepMarkersOnce(单事务、保留同块用户文字、
    * 不拽用户光标)。切文章 / 新导入开始 / 到期即停,停时摘掉交互监听。
@@ -1059,8 +1119,10 @@ export default defineUnlistedScript(() => {
       // 用户在撤销 / 重做:让位并停止守护。否则守护清掉 marker 的那步压在撤销栈顶,用户每按一次
       // Cmd+Z 都会还原出 marker、守护又删掉并再压一条,60s 内永远撤销不过这一步。
       const probeNode = findDraftStateNode();
-      const lastChange = probeNode ? readEditorState(probeNode).getLastChangeType?.() : null;
+      const probeState = probeNode ? readEditorState(probeNode) : null;
+      const lastChange = probeState?.getLastChangeType?.() ?? null;
       if (lastChange === 'undo' || lastChange === 'redo') {
+        logUndoDiagnostic(probeState!, lastChange, Date.now() - endedAt, releases);
         stop();
         return;
       }
