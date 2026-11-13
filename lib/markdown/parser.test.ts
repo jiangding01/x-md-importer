@@ -15,6 +15,24 @@ import type {
   InlineStyleRange,
 } from '../bridge/protocol';
 
+/**
+ * 性能用例统一计时:先用小输入预热一次,再取 3 次中的最小耗时(ms)。
+ * 只计一次时会被并发 worker / GC / 机器负载放大成离群值——实测 `**a `×5000 单独跑 2–8ms,
+ * 全量并发跑偶发 126ms,撞上 100ms 阈值造成假红。取最小值去掉噪声、阈值不放宽,
+ * 真退化照样抓得住(如未闭合围栏 ×20000 修复前单次 2922ms,最小值仍远超 500ms 上限)。
+ * 用了它的用例超时放宽到 60s:退化代码 3 次计时会超默认 5s,让红灯落在断言而非超时上。
+ */
+const minMs = (s: string): number => {
+  parseMarkdown('a ~~b~~ *c* **d** _e_ `f` [g](h)');
+  let best = Number.POSITIVE_INFINITY;
+  for (let k = 0; k < 3; k += 1) {
+    const t0 = performance.now();
+    parseMarkdown(s);
+    best = Math.min(best, performance.now() - t0);
+  }
+  return best;
+};
+
 // ---------------------------------------------------------------------------
 // 断言辅助:窄化联合类型 + 按区间切片校验 offset/length 的精确性。
 // ---------------------------------------------------------------------------
@@ -1392,10 +1410,8 @@ describe('批次三 code review 修复回归', () => {
 
 describe('A2 强调符的最小 flanking 规则', () => {
   it('性能:大量未闭合 ** 后跟转义标点仍线性(< 100ms)', () => {
-    const t0 = performance.now();
-    parseMarkdown('**a '.repeat(5000) + '\\_');
-    expect(performance.now() - t0).toBeLessThan(100);
-  });
+    expect(minMs('**a '.repeat(5000) + '\\_')).toBeLessThan(100);
+  }, 60_000);
 
   it('两侧带空格的星号是乘号,原样保留且不设样式', () => {
     const b = inlineOf('2 * 3 * 4');
@@ -1768,17 +1784,6 @@ describe('P5 列表续行里序号非 1 的有序行', () => {
 });
 
 describe('P1/P2 闭符扫描记忆化(性能,行为零差异由差分模糊在仓库外验收)', () => {
-  /** 先用小输入预热一次,再取 3 次最小耗时(ms)。 */
-  const minMs = (s: string): number => {
-    parseMarkdown('a ~~b~~ *c* **d** _e_ `f` [g](h)');
-    let best = Number.POSITIVE_INFINITY;
-    for (let k = 0; k < 3; k += 1) {
-      const t0 = performance.now();
-      parseMarkdown(s);
-      best = Math.min(best, performance.now() - t0);
-    }
-    return best;
-  };
   const cases: Array<[string, string]> = [
     ['P1 `**x \\`y\\` ` × 8000', '**x `y` '.repeat(8000)],
     ['P1 `调用 *args 与 \\`f()\\` 。` × 8000', '调用 *args 与 `f()` 。'.repeat(8000)],
@@ -1983,11 +1988,9 @@ describe('第二批 P2 未闭合围栏:到文末都是代码', () => {
 
   it('大量未闭合开栏行线性完成(原 P10 块级 O(n²) 随之消失)', () => {
     const md = '```js\n'.repeat(20000);
-    const t0 = performance.now();
-    const blocks = parseMarkdown(md);
-    expect(performance.now() - t0).toBeLessThan(500);
-    expect(blocks).toHaveLength(1);
-  });
+    expect(minMs(md)).toBeLessThan(500);
+    expect(parseMarkdown(md)).toHaveLength(1);
+  }, 60_000);
 });
 
 describe('第二批 P3 HTML 注释块不写入', () => {
