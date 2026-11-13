@@ -306,6 +306,10 @@ pnpm build              # → .output/chrome-mv3
 
 **v0.5.1**:合入标题修复后,用 main 构建跑 `docs/qa/真机回归执行清单-v0.5.1-发版.md`(45 条,含 R-B18 守护、R-B19 底部栏、R-B20 回放旧快照 a–e、R-A15 附加的标题残留项)→ 按其 §7 改版本号为 0.5.1、CHANGELOG 定版、打 tag → 隐私政策发布到公开地址 → 上架。待办:I5 / I6 / I7 等取证结果(`docs/qa/真机取证脚本-第三批阶段B.md`)再定修法。
 
+**v0.5.1 回归进度(2026-11-13)**:A 组 19 条全部 PASS(R-A17 的 T33-a 为用户手测);R-A3 导入后被 X 回退丢图、报告不更新,定为已知局限 ⑦(CHANGELOG),不阻断发版;结果见清单 §5。B 组 20 条、C 组 6 条未跑。
+
+**v0.5.2(计划)**:导入后 60 秒守护发现丢图 / 写回原文时通知侧边栏(injector → content → sidepanel 推送通道,补报告失败明细 + toast,新增文案需用户确认措辞),补测 R-A3 / R-B18 / R-B20;另记 backlog:正文里的 marker 字面量被静默剥离无提示(R-A13)、素材卡 `./cover.png` 显示成「cover.png/.」的 bidi 问题(R-A14)。
+
 **测试体系(下次单独出方案)**:目前没有 e2e,CI 只跑 compile / lint / vitest / build,injector 与侧边栏组件零自动化。方向:Playwright + 注入模拟 `globalThis.browser` 跑侧边栏;本地真 Draft.js + 仿 X fiber / onChange / onFilesAdded 的测试页跑 injector,并把 R-B20 的旧快照回放做成 CI 用例(仿 X ≠ 真 X,真机清单保留)。新增依赖前先征得同意。
 
 **发版后待办**:见 [`docs/review/backlog-2026-10-22.md`](./docs/review/backlog-2026-10-22.md)——审查推迟项(A8/A11/A19～A21、B6/B12/B13/B15、C10～C24/C27/C28/C32/C37、D8)与本轮 code review advisory;另有 8 月方案遗留的设计层项(信息架构流水线化、mdast 重构、arm 共享 hook)。
