@@ -136,6 +136,8 @@ interface DraftSelection {
   merge(props: Record<string, unknown>): DraftSelection;
   /** 锚点所在块 key(settle 判定「光标已钉到 marker 块」用;调用处先 typeof 守卫,X 包装可能缺)。 */
   getAnchorKey?(): string;
+  /** 焦点所在块 key(导入后守护判定「用户光标是否落在被改写的块里」用;同样先 typeof 守卫)。 */
+  getFocusKey?(): string;
 }
 
 /** Draft.js SelectionState 类(从 editorState.getSelection().constructor 取得)。 */
@@ -147,6 +149,8 @@ interface DraftSelectionStatic {
 interface DraftEditorState {
   getSelection(): DraftSelection;
   getCurrentContent(): DraftContentState;
+  /** 最近一次变更类型(EditorState.undo/redo 会置为 'undo'/'redo';导入后守护据此让位,先 typeof 守卫)。 */
+  getLastChangeType?(): string | null;
 }
 
 /** Draft.js EditorState 类(静态方法,从 editorState.constructor 取得)。 */
@@ -501,6 +505,13 @@ export default defineUnlistedScript(() => {
   const PENDING_MIN_AGE_MS = 20_000;
   const PENDING_CAP_MS = 32_000;
 
+  /**
+   * 图片被判定上传成功的路径(诊断用):'ready'=已带 mediaId;'pending-stable'/'pending-cap'=
+   * 无 mediaId、按签名稳定 / 出现满 32s 放行(此时 X 的上传可能仍在进行,其完成时的提交有可能
+   * 覆盖我们的归位);'fallback-index'=精确归位失败、按「MEDIA 块已在正文」兜底配对。
+   */
+  type ReleaseVia = 'ready' | 'pending-stable' | 'pending-cap' | 'fallback-index';
+
   /** waitForNewMedia 的「已切文章」哨兵(A11):调用方据此立即中止,不归位、不写回原文。 */
   const MEDIA_WAIT_SWITCHED = 'article-switched' as const;
 
@@ -674,7 +685,7 @@ export default defineUnlistedScript(() => {
     before: Set<string>,
     budgetMs: number,
     marker: string,
-  ): Promise<{ key: string; confirmed: boolean } | null | typeof MEDIA_WAIT_SWITCHED> => {
+  ): Promise<{ key: string; confirmed: boolean; via?: ReleaseVia } | null | typeof MEDIA_WAIT_SWITCHED> => {
     const deadline = Date.now() + budgetMs;
     // 当前 pending 块的跟踪:firstSeen=首次出现时刻;signature/signatureSince=最近签名及其保持起始时刻。
     let pending: { key: string; firstSeen: number; signature: string; signatureSince: number } | null = null;
@@ -712,7 +723,7 @@ export default defineUnlistedScript(() => {
           /* ignore */
         }
       });
-      if (readyKey) return { key: readyKey, confirmed: true };
+      if (readyKey) return { key: readyKey, confirmed: true, via: 'ready' };
 
       if (pendingKey) {
         const now = Date.now();
@@ -725,8 +736,9 @@ export default defineUnlistedScript(() => {
         }
         const stableFor = now - pending.signatureSince;
         const age = now - pending.firstSeen;
-        if ((stableFor >= PENDING_STABLE_MS && age >= PENDING_MIN_AGE_MS) || age >= PENDING_CAP_MS) {
-          return { key: pending.key, confirmed: true };
+        const stableOk = stableFor >= PENDING_STABLE_MS && age >= PENDING_MIN_AGE_MS;
+        if (stableOk || age >= PENDING_CAP_MS) {
+          return { key: pending.key, confirmed: true, via: stableOk ? 'pending-stable' : 'pending-cap' };
         }
       } else {
         pending = null; // pending 块消失(可能被 X 换成带 mediaId 的块,下轮会命中 readyKey)
@@ -887,6 +899,7 @@ export default defineUnlistedScript(() => {
   const sweepMarkersOnce = (
     prefix: string,
     onSwept?: (markerText: string) => void,
+    opts?: { keepSelection?: boolean },
   ): 'clean' | 'swept' | 'no-node' => {
     const node = findDraftStateNode();
     if (!node) return 'no-node';
@@ -946,20 +959,138 @@ export default defineUnlistedScript(() => {
     const last = nextMap.last();
     const SelStatic = es.getSelection().constructor as unknown as DraftSelectionStatic;
     const ESStatic = es.constructor as unknown as DraftEditorStateStatic;
+    // keepSelection(导入后守护用):导入已结束、用户可能正在编辑,只要其光标不在被删 / 改写的块里
+    // 就原样保留,不把光标拽到文末;否则(或页面 SelectionState 缺 getter 无法判定)退回原行为。
+    const cur = es.getSelection();
+    const touched = new Set<string>([...toDelete, ...toRewrite.map(([k]) => k)]);
+    const keepCur =
+      !!opts?.keepSelection &&
+      typeof cur.getAnchorKey === 'function' &&
+      typeof cur.getFocusKey === 'function' &&
+      !touched.has(cur.getAnchorKey()) &&
+      !touched.has(cur.getFocusKey());
     // nextMap 此时保证非空(survivorCount===0 时已保留 keepKey),last() 必有值。
-    const sel = SelStatic.createEmpty((last ?? blockMap.first()).getKey());
+    const sel = keepCur ? cur : SelStatic.createEmpty((last ?? blockMap.first()).getKey());
     const nc = content.set('blockMap', nextMap).set('selectionBefore', sel).set('selectionAfter', sel);
     let ns = ESStatic.push(es, nc, 'remove-range');
-    ns = ESStatic.forceSelection(ns, sel);
+    if (!keepCur) ns = ESStatic.forceSelection(ns, sel);
     // 闸门拦截(已切文章):未提交,按「读不到」处理(不可当干净);外层下一轮查闸门即退出。
     if (!commitEditorState(node, ns)) return 'no-node';
     if (onSwept) for (const m of sweptMarkers) onSwept(m);
     return 'swept'; // 本轮处理了残留 → 交外层再验(须此后连续两轮 clean 才算收工)
   };
 
+  // -------------------------------------------------------------------------
+  // 导入后守护(真机复现 2026-11-13):runImport 收尾的清扫 + 审计都读到「干净」并报成功后,
+  // 正文里仍可能**重新出现**本次的 marker——有提交基于「X 插入该图 MEDIA 那一刻」的旧
+  // editorState 落盘(只读探针实证:lastChangeType=change-block-data、撤销栈里我们那次归位
+  // 整个消失、marker 块紧挨在已带 mediaId 的 MEDIA 块之前),把我们的归位覆盖了。触发者
+  // 疑为 X 上传完成时的晚提交,或用户点击编辑器时 Draft 用未刷新的内部缓存处理聚焦。
+  // 守护在导入返回后继续观察 MARKER_GUARD_MS:本次前缀的完整 marker 一出现就剥掉,并带
+  // 放行方式 + 交互时间线打 warn 供诊断。覆盖可能反复发生,故不是删一次就走而是守到截止。
+  // -------------------------------------------------------------------------
+
+  const MARKER_GUARD_MS = 60_000;
+  const MARKER_GUARD_INTERVAL_MS = 1_000;
+  /** 当前守护的停止函数(新一次导入开始时先停掉旧守护)。 */
+  let stopMarkerGuard: (() => void) | null = null;
+
+  /** 导入期间编辑器上的用户交互时间线(诊断用:只记事件类型与相对时刻,不记按键内容)。 */
+  type InteractionLog = { events: string[]; detach: () => void };
+
+  const startInteractionLog = (): InteractionLog => {
+    const startedAt = Date.now();
+    const events: string[] = [];
+    // 在 runImport 的 try 之外调用:定位抛错(B5:X 改版 DOM 形状变化)只放弃诊断,
+    // 绝不能让异常逃出、使 importInFlight 卡死。
+    let editor: HTMLElement | null = null;
+    try {
+      editor = findEditorElement();
+    } catch {
+      editor = null;
+    }
+    if (!editor) return { events, detach: () => {} };
+    const record = (e: Event): void => {
+      if (events.length < 60) events.push(`+${Date.now() - startedAt}ms ${e.type}`);
+    };
+    const types = ['pointerdown', 'focusin', 'focusout', 'keydown'];
+    for (const type of types) editor.addEventListener(type, record, { capture: true, passive: true });
+    return {
+      events,
+      detach: () => {
+        for (const type of types) editor.removeEventListener(type, record, { capture: true });
+      },
+    };
+  };
+
+  /**
+   * 启动导入后守护。每 MARKER_GUARD_INTERVAL_MS 读一次最新 state,只认**本次** markerPrefix 的完整
+   * marker(用户正文 / 其他导入的不动),剥除方式同 sweepMarkersOnce(单事务、保留同块用户文字、
+   * 不拽用户光标)。切文章 / 新导入开始 / 到期即停,停时摘掉交互监听。
+   * 写入闸门:runImport 的 finally 已把 writeBlocked 复位为「一律禁止」;守护每轮**同步**地临时换成
+   * 本次的切文章判定、清扫完立即复位——全程同步,不会与下一次 runImport 交错(其入口先停守护,
+   * 且本函数每轮先查 importInFlight)。
+   */
+  const startMarkerGuard = (
+    markerPrefix: string,
+    isSwitched: () => boolean,
+    log: InteractionLog,
+    releases: string[],
+  ): void => {
+    stopMarkerGuard?.();
+    const endedAt = Date.now();
+    const deadline = endedAt + MARKER_GUARD_MS;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let stopped = false;
+    const stop = (): void => {
+      if (stopped) return;
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      log.detach();
+      if (stopMarkerGuard === stop) stopMarkerGuard = null;
+    };
+    const tick = (): void => {
+      timer = null;
+      if (stopped) return;
+      if (importInFlight || isSwitched() || Date.now() >= deadline) {
+        stop();
+        return;
+      }
+      // 用户在撤销 / 重做:让位并停止守护。否则守护清掉 marker 的那步压在撤销栈顶,用户每按一次
+      // Cmd+Z 都会还原出 marker、守护又删掉并再压一条,60s 内永远撤销不过这一步。
+      const probeNode = findDraftStateNode();
+      const lastChange = probeNode ? readEditorState(probeNode).getLastChangeType?.() : null;
+      if (lastChange === 'undo' || lastChange === 'redo') {
+        stop();
+        return;
+      }
+      const swept: string[] = [];
+      let result: 'clean' | 'swept' | 'no-node' = 'no-node';
+      writeBlocked = isSwitched;
+      try {
+        result = sweepMarkersOnce(markerPrefix, (m) => swept.push(m), { keepSelection: true });
+      } catch (err) {
+        console.warn('[MarkFlow] 导入后守护清扫异常', err);
+      } finally {
+        writeBlocked = () => true;
+      }
+      if (result === 'swept') {
+        console.warn('[MarkFlow] 导入结束后图片占位符重新出现,已自动清除', {
+          afterMs: Date.now() - endedAt,
+          markers: swept,
+          releases,
+          interactions: [...log.events],
+        });
+      }
+      timer = setTimeout(tick, MARKER_GUARD_INTERVAL_MS);
+    };
+    stopMarkerGuard = stop;
+    timer = setTimeout(tick, MARKER_GUARD_INTERVAL_MS);
+  };
+
   /** uploadOneImage 的结果:失败时带原因码(在知道原因的这一层产生,调用方只透传进失败明细)。 */
   type UploadOutcome =
-    | { ok: true }
+    | { ok: true; via: ReleaseVia }
     // A11:中途切文章——runImport 须立即返回 ARTICLE_SWITCHED_ERROR,不写回原文、不记失败明细。
     | { ok: false; switched: true }
     // pendingKey:仅 upload-timeout 且超时时已有未确认 MEDIA 块时带上(B2 晚到追回按 key 精确等它)。
@@ -1008,11 +1139,11 @@ export default defineUnlistedScript(() => {
     // 与「超时」的排查方向完全不同(不该去查网络/重试,而该看正文结构)。
     if (!node) return { ok: false, reason: 'upload-relocate-failed' };
     // 归位:优先精确顶替 marker 位置;失败则走 §3.3 fallbackIndex 兜底;仍失败(MEDIA 块丢失)才算失败。
-    if (await relocateMediaToMarker(node, marker, media.key)) return { ok: true };
+    if (await relocateMediaToMarker(node, marker, media.key)) return { ok: true, via: media.via ?? 'ready' };
     // 归位被闸门拦截(已切文章)≠ marker 丢失:不得走 fallbackIndex 把「MEDIA 块存在」当成功。
     if (writeBlocked()) return { ok: false, switched: true };
     node = findDraftStateNode();
-    if (node && relocateMediaByFallbackIndex(node, media.key)) return { ok: true };
+    if (node && relocateMediaByFallbackIndex(node, media.key)) return { ok: true, via: 'fallback-index' };
     return { ok: false, reason: 'upload-relocate-failed' };
   };
 
@@ -1144,6 +1275,13 @@ export default defineUnlistedScript(() => {
     }
     importInFlight = true;
     settleTimeouts = []; // B1 诊断账本按次清零
+    // 导入后守护(见 startMarkerGuard):新导入开始先停旧守护;交互时间线从本次开始记录,
+    // 成功且有图时交给守护在其结束时摘监听,否则在 finally 摘掉。
+    stopMarkerGuard?.();
+    const interactionLog = startInteractionLog();
+    let guardStarted = false;
+    /** 每张图的成功判定路径(诊断用,形如 `#1 pending-cap`;随守护告警输出)。 */
+    const releases: string[] = [];
     // 以下声明本身不会抛错,且 catch(stage)/finally 需引用,故留在 try 外层:
     let stage = 'draft node';
     // B2-2:主 onChange 提交后置 true。提交后再失败(verify 不达标/图片阶段异常)时正文已
@@ -1497,6 +1635,11 @@ export default defineUnlistedScript(() => {
         if (outcome.ok) {
           imageOk += 1;
           placedIndices.push(imageIndex);
+          releases.push(`#${imageIndex + 1} ${outcome.via}`);
+          // 非 ready 放行:X 的上传可能仍在进行,其完成时的提交有覆盖归位的风险(由导入后守护兜底)。
+          if (outcome.via !== 'ready') {
+            console.warn('[MarkFlow] 图片未拿到 mediaId 即按放行规则判定成功', { image: imageIndex + 1, via: outcome.via });
+          }
         } else {
           pushFailure(imageIndex, source, 'upload', outcome.reason, outcome.detail);
           const node = findDraftStateNode();
@@ -1638,6 +1781,10 @@ export default defineUnlistedScript(() => {
       if (import.meta.env.DEV) console.info('[MarkFlow] 写入成功', { blockCount: blocks.length, effectiveMode, imageOk, imageFail, coverSet });
       if (imageFailures.length) console.warn('[MarkFlow] 图片失败明细', imageFailures);
       if (settleTimeouts.length) console.warn('[MarkFlow] settle 超时阶段', settleTimeouts);
+      if (imageMarkers.length) {
+        startMarkerGuard(markerPrefix, articleSwitched, interactionLog, releases);
+        guardStarted = true;
+      }
       return {
         ok: true,
         blockCount: blocks.length,
@@ -1673,6 +1820,7 @@ export default defineUnlistedScript(() => {
       writeBlocked = () => true;
       pendingLate = [];
       importInFlight = false;
+      if (!guardStarted) interactionLog.detach();
     }
   };
 
