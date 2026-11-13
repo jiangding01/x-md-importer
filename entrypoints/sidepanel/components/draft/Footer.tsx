@@ -52,6 +52,7 @@ export function Footer() {
     boxShadow: writeDisabled ? 'none' : 'var(--btnShadow)',
     font: '600 11.5px var(--fUI)',
     letterSpacing: '.3px',
+    whiteSpace: 'nowrap',
     transition: 'all .2s',
   };
 
@@ -69,49 +70,68 @@ export function Footer() {
           </div>
         </div>
       ) : (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '11px 18px 13px' }}>
-          <span style={{ font: '500 9px var(--fMono)', color: 'var(--ink3)', letterSpacing: '.5px' }}>{stats}</span>
-          <span style={{ flex: 1 }} />
-          {/* C4:autoReport='never'(或 anomaly 下无异常)时报告不会自动弹出,失败明细此前永远
-              看不到。有上次快照且报告卡未展开时给出手动入口;快照随草稿变更清空,入口随之消失。 */}
-          {lastRunSnapshot && !reportVisible && (
+        // 宽度不够时整体换行:统计信息独占一行,按钮组整组换到下一行靠右——按钮文字永不折行
+        // (此前按钮可收缩,多出「查看报告」后被挤成两行)。
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            columnGap: 9,
+            rowGap: 8,
+            padding: '11px 18px 13px',
+          }}
+        >
+          <span
+            title={stats}
+            style={{ font: '500 9px var(--fMono)', color: 'var(--ink3)', letterSpacing: '.5px', whiteSpace: 'nowrap' }}
+          >
+            {stats}
+          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginLeft: 'auto', flexShrink: 0 }}>
+            {/* C4:autoReport='never'(或 anomaly 下无异常)时报告不会自动弹出,失败明细此前永远
+                看不到。有上次快照且报告卡未展开时给出手动入口;快照随草稿变更清空,入口随之消失。 */}
+            {lastRunSnapshot && !reportVisible && (
+              <button
+                className="mf-btn mf-hover-soft"
+                onClick={openReport}
+                title={t.viewLastReportTip}
+                aria-label={t.viewLastReportTip}
+                style={{
+                  border: '1px solid var(--line)',
+                  padding: '7px 11px',
+                  borderRadius: 'var(--btnR)',
+                  font: '500 11.5px var(--fUI)',
+                  color: reportTone(lastRunSnapshot) !== 'ok' ? 'var(--dgr)' : 'var(--ink2)', // 与报告卡标题栏同一判定(第二批 W7)
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {t.viewLastReport}
+                {lastRunSnapshot.fail > 0 ? ` · ${lastRunSnapshot.fail}` : ''}
+              </button>
+            )}
             <button
               className="mf-btn mf-hover-soft"
-              onClick={openReport}
-              title={t.viewLastReportTip}
-              aria-label={t.viewLastReportTip}
+              onClick={handleCheck}
+              disabled={probing}
               style={{
                 border: '1px solid var(--line)',
-                padding: '7px 11px',
+                padding: '7px 14px',
                 borderRadius: 'var(--btnR)',
                 font: '500 11.5px var(--fUI)',
-                color: reportTone(lastRunSnapshot) !== 'ok' ? 'var(--dgr)' : 'var(--ink2)', // 与报告卡标题栏同一判定(第二批 W7)
-                cursor: 'pointer',
+                color: probing ? 'var(--ink3)' : 'var(--ink2)',
+                cursor: probing ? 'default' : 'pointer',
+                opacity: probing ? 0.7 : 1,
+                whiteSpace: 'nowrap',
               }}
             >
-              {t.viewLastReport}
-              {lastRunSnapshot.fail > 0 ? ` · ${lastRunSnapshot.fail}` : ''}
+              {t.check}
             </button>
-          )}
-          <button
-            className="mf-btn mf-hover-soft"
-            onClick={handleCheck}
-            disabled={probing}
-            style={{
-              border: '1px solid var(--line)',
-              padding: '7px 14px',
-              borderRadius: 'var(--btnR)',
-              font: '500 11.5px var(--fUI)',
-              color: probing ? 'var(--ink3)' : 'var(--ink2)',
-              cursor: probing ? 'default' : 'pointer',
-              opacity: probing ? 0.7 : 1,
-            }}
-          >
-            {t.check}
-          </button>
-          <button className="mf-btn" onClick={writeX} disabled={writeDisabled} style={writeBtn}>
-            {t.writeX}
-          </button>
+            <button className="mf-btn" onClick={writeX} disabled={writeDisabled} style={writeBtn}>
+              {t.writeX}
+            </button>
+          </div>
         </div>
       )}
 
