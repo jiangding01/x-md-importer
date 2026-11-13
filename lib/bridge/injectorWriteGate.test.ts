@@ -171,6 +171,38 @@ describe('injector 写入闸门(A11 结构回归)', () => {
     expect(ungatedCalls(body, /realClick\(/g)).toEqual([]);
   });
 
+  it('导入后守护:每轮同步换成切文章闸门,其后 finally 块内复位为一律禁止', () => {
+    const span = functionSpan(CODE, 'startMarkerGuard');
+    expect(span).not.toBeNull();
+    const body = span!.body;
+    // 截取正确性自检:守护体内应含 tick 与 stop,且不越界到下一个顶层函数
+    expect(body).toContain('const tick =');
+    expect(body).not.toContain('const uploadOneImage =');
+    const swapAt = body.search(/\bwriteBlocked\s*=\s*isSwitched\s*;/);
+    expect(swapAt).toBeGreaterThanOrEqual(0);
+    const finallyAt = body.indexOf('finally {', swapAt);
+    expect(finallyAt).toBeGreaterThan(swapAt);
+    const finallyBody = body.slice(finallyAt, body.indexOf('}', finallyAt + 'finally {'.length));
+    expect(finallyBody).toMatch(/\bwriteBlocked\s*=\s*\(\)\s*=>\s*true\s*;/);
+    // 守护的写入(单轮核对)必须发生在换闸门之后、finally 复位之前——挪到区间外就会在「一律禁止」
+    // 或未复位的闸门下写编辑器。
+    const reconcileAt = body.indexOf('guardReconcileOnce(', swapAt);
+    expect(reconcileAt).toBeGreaterThan(swapAt);
+    expect(reconcileAt).toBeLessThan(finallyAt);
+    expect(body.indexOf('guardReconcileOnce(')).toBe(reconcileAt); // 区间之前不得另有调用
+  });
+
+  it('守护单轮核对全程同步:只用归位 / 写回的同步内核,不出现 await 或异步版本', () => {
+    const span = functionSpan(CODE, 'guardReconcileOnce');
+    expect(span).not.toBeNull();
+    const body = span!.body;
+    expect(body).toContain('relocateMediaToMarkerOnce(');
+    expect(body).toContain('replaceMarkerWithTextOnce(');
+    expect(body).not.toMatch(/\bawait\b/);
+    expect(body).not.toMatch(/\brelocateMediaToMarker\(/);
+    expect(body).not.toMatch(/\breplaceMarkerWithText\(/);
+  });
+
   it('runImport 入口挂上切文章闸门,finally 复位为一律禁止', () => {
     const span = functionSpan(CODE, 'runImport');
     expect(span).not.toBeNull();
