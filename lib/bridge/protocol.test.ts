@@ -105,6 +105,7 @@ describe('IMAGE_FAIL_REASONS', () => {
       'upload-exception',
       'local-ambiguous',
       'media-order-uncertain',
+      'image-lost',
     ];
     for (const code of expectedSubset) {
       expect(IMAGE_FAIL_REASONS).toContain(code);

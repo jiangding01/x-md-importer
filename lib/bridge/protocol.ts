@@ -219,6 +219,9 @@ export const IMAGE_FAIL_REASONS = [
   // 且存在孤儿 MEDIA——后续图可能认领了它的晚到块,位置可能错位。只此一条(index = 最早的
   // 不可追踪超时图),不计入 imageFail;不猜归属、如实提示用户核对。
   'media-order-uncertain',
+  // 图片曾成功插入并归位,后被编辑器回退丢失(X 偶发用旧快照整体覆盖正文;收尾核对时补传未果
+  // 或不宜补传,已在原位写回原文 / 原位已不在);计入 imageFail。
+  'image-lost',
 
   // 封面
   'cover-set-failed', // 封面 File 已备好但 setCoverImage 未落地

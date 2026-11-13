@@ -36,6 +36,7 @@ import {
   saveVaultHandle,
 } from '@/lib/bridge/localVault';
 import type { VaultScope } from '@/lib/bridge/protocol';
+import { MAX_REUPLOADS_PER_IMPORT } from '@/lib/bridge/imageReconcile';
 import { normalizeImportResult, normalizeProbeResult, normalizeSetTitleResult } from '@/lib/bridge/resultGuards';
 import { compressImage } from '@/lib/image/compress';
 import { folderOverlayText } from '@/lib/bridge/folderOverlayText';
@@ -377,11 +378,17 @@ export default defineContentScript({
       let cover = coverPrep?.file ?? null;
       if (cover) cover = await compressAndLog(cover, compress, '封面');
       clearVaultIndexCache(); // 本地图字节已全部备好(正文 + 封面),索引不再需要,释放内存
-      // 通道超时必须显著大于「图片数 × injector 单图 30s 预算」,否则慢图/多图会先在通道超时,
-      // 报失败并丢弃 injector 事后回来的成功结果(而 injector 仍在后台改写编辑器)。基础 45s +
-      // 每图 45s(单图 30s 预算 + 归位/清理冗余 + settle 等待余量——settle 最坏每图 +3s,
-      // 此前 40s 的冗余被吃紧)+ 封面 20s。
-      const timeoutMs = 45_000 + images.length * 45_000 + (cover ? 20_000 : 0);
+      // 通道超时必须显著大于「图片数 × injector 单图 40s 预算」,否则慢图/多图会先在通道超时,
+      // 报失败并丢弃 injector 事后回来的成功结果(而 injector 仍在后台改写编辑器)。
+      // 基础 60s(取样 / 主提交 / 清扫,加收尾保存稳定窗与逐图核对:首核 ≤8s + 补传后复核 ≤4s +
+      // 封面后终核 ≤1.5s)+ 每图 45s(单图 40s 预算 + 归位/清理 + settle 余量)+ 收尾补传预留
+      // min(n, MAX_REUPLOADS_PER_IMPORT) × 45s(被编辑器回退丢失的图在原位补传,每张最多一次)+ 封面 20s。
+      // 三轮核对中每张图最坏各约 1.5s settle(删占位 / 写回原文),未单独计入,依赖基础额度的余量。
+      const timeoutMs =
+        60_000 +
+        images.length * 45_000 +
+        Math.min(images.length, MAX_REUPLOADS_PER_IMPORT) * 45_000 +
+        (cover ? 20_000 : 0);
       let response = await bridge.request<unknown, ImportResponse>(
         'import-result',
         (id) => post({ source: ISO_SOURCE, kind: 'import', nonce, id, blocks, mode, images, cover, expectedArticleId }),

@@ -32,6 +32,7 @@ const REASON_KEY: Record<ImageFailReason, keyof Dict> = {
   'cover-set-failed': 'rsnCoverSet',
   'orphan-media': 'rsnOrphanMedia',
   'media-order-uncertain': 'rsnMediaOrderUncertain',
+  'image-lost': 'rsnImageLost',
 };
 
 function reasonText(reason: string, t: Dict): string {

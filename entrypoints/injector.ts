@@ -18,6 +18,30 @@ import {
 import { ARTICLE_ROUTE_PREFIX, articleIdFromPathname, isArticleSwitched } from '@/lib/bridge/articleGuard';
 import { findEditorElement } from '@/lib/bridge/editorLocator';
 import { isSampleResidue, SAMPLE_CHAR, SAMPLE_RESIDUE_SUFFIX } from '@/lib/bridge/sampleResidue';
+import {
+  createSaveTracker,
+  isContentSaveUrl,
+  QUIESCE_CAP_MS,
+  QUIESCE_FINAL_CAP_MS,
+  QUIESCE_POLL_MS,
+  QUIESCE_RECHECK_CAP_MS,
+  type SaveTracker,
+} from '@/lib/bridge/saveQuiesce';
+import {
+  decideImageAction,
+  decideRevival,
+  isOriginalImageReturn,
+  reuploadBlockReason,
+  type ImageAction,
+  type ImageExpectation,
+} from '@/lib/bridge/imageReconcile';
+import {
+  claimedMediaKeys,
+  hasUnclaimedNewMedia,
+  observeImage,
+  type ImageSighting,
+  type SimpleBlock,
+} from '@/lib/bridge/mediaIdentity';
 
 /**
  * MAIN world 注入引擎 —— 经 content.ts 的 injectScript 注入,运行于**页面 JS 上下文**
@@ -145,6 +169,12 @@ interface DraftSelectionStatic {
   createEmpty(blockKey: string): DraftSelection;
 }
 
+/** Immutable.Stack<ContentState>(撤销 / 重做栈;仅诊断读取,字段都可能缺)。 */
+interface DraftStack {
+  toArray?(): DraftContentState[];
+  size?: number;
+}
+
 /** Draft.js EditorState 实例。 */
 interface DraftEditorState {
   getSelection(): DraftSelection;
@@ -152,8 +182,8 @@ interface DraftEditorState {
   /** 最近一次变更类型(EditorState.undo/redo 会置为 'undo'/'redo';导入后守护据此让位,先 typeof 守卫)。 */
   getLastChangeType?(): string | null;
   /** 撤销 / 重做栈(Immutable.Stack<ContentState>;仅撤销诊断读取,先 typeof 守卫)。 */
-  getUndoStack?(): { toArray?(): DraftContentState[] };
-  getRedoStack?(): { toArray?(): DraftContentState[] };
+  getUndoStack?(): DraftStack;
+  getRedoStack?(): DraftStack;
 }
 
 /** Draft.js EditorState 类(静态方法,从 editorState.constructor 取得)。 */
@@ -329,6 +359,18 @@ export default defineUnlistedScript(() => {
   let lastImportPathname: string | null = null;
 
   /**
+   * 最近一次经 commitEditorState 写编辑器的时刻(performance.now() 时基,与资源计时条目同一时基)。
+   * 收尾保存稳定窗据此判断「写入之后 X 是否已保存并静默」(见 waitForSaveQuiesce)。
+   */
+  let lastWriteAt = 0;
+
+  /**
+   * 本次 runImport 调用上传回调的次数(含收尾补传;runImport 入口清零)。为 0 时收尾跳过保存稳定窗:
+   * 没有上传,回退的两个嫌疑(上传管线陈旧提交 / 上传后保存回写)都无从发生。
+   */
+  let filesAddedCount = 0;
+
+  /**
    * 编辑器写入的**唯一出口**(A11):同步检查写入闸门,已切文章就不调 onChange 并返回 false;
    * 否则调 X 的 onChange 提交并返回 true。返回 false 只有「被闸门拦截」这一种含义,调用方据此
    * 视为本步失败/中止(绝不当成功)。onChange 直调只允许出现在这里(injectorWriteGate.test.ts 结构断言)。
@@ -341,6 +383,7 @@ export default defineUnlistedScript(() => {
       return false;
     }
     (node.props?.onChange as (s: DraftEditorState) => void)(state);
+    lastWriteAt = performance.now();
     return true;
   };
 
@@ -507,6 +550,11 @@ export default defineUnlistedScript(() => {
   const PENDING_STABLE_MS = 5_000;
   const PENDING_MIN_AGE_MS = 20_000;
   const PENDING_CAP_MS = 32_000;
+  /**
+   * 单张图上传预算(上传循环与收尾补传共用):需 ≥ PENDING_CAP_MS,否则 pending 封顶放行分支永不触发,
+   * 留足余量取 40s。content.ts 的通道超时按此预算 + 余量(每图 45s)计算。
+   */
+  const IMAGE_UPLOAD_BUDGET_MS = 40_000;
 
   /**
    * 图片被判定上传成功的路径(诊断用):'ready'=已带 mediaId;'pending-stable'/'pending-cap'=
@@ -545,10 +593,26 @@ export default defineUnlistedScript(() => {
   };
   /** 待追回队列(按超时先后排列)。模块级同 settleTimeouts:importInFlight 串行化,runImport 入口清零。 */
   let pendingLate: LateEntry[] = [];
-  /** 已追回的图片下标(runImport 收尾据此 imageOk++ 并移除对应 upload-timeout 明细)。 */
-  let lateRecovered: number[] = [];
+  /**
+   * 已追回的图片(runImport 收尾据此 imageOk++、移除对应 upload-timeout 明细,并把该图登记为已归位;
+   * mediaKey 是追回归位的 MEDIA 块 key,供收尾核对 / 导入后守护判定「图在不在」)。
+   */
+  let lateRecovered: Array<{ imageIndex: number; mediaKey: string }> = [];
   // 追回会**写正文**(此前 waitForNewMedia 只读),服从统一写入闸门 writeBlocked(A11 起与其余写入
   // 共用同一闸门,原 lateWriteBlocked 并入;见 commitEditorState)。
+
+  /** MEDIA atomic 块的 mediaId(不是 MEDIA 块或尚无 mediaId 时 null)——收尾核对按 mediaId 认图用。 */
+  const mediaIdOfBlock = (content: DraftContentState, block: DraftBlock): string | null => {
+    if (block.getType() !== 'atomic') return null;
+    const ek = block.getEntityAt(0);
+    if (!ek) return null;
+    try {
+      const ent = content.getEntity(ek);
+      return ent.getType() === 'MEDIA' ? extractMediaId(ent.getData()) : null;
+    } catch {
+      return null;
+    }
+  };
 
   /** 块是否为 MEDIA atomic 块:'ready'=已带 mediaId;'pending'=entity 在但无 mediaId;null=不是。 */
   const mediaBlockState = (content: DraftContentState, block: DraftBlock): 'ready' | 'pending' | null => {
@@ -664,7 +728,7 @@ export default defineUnlistedScript(() => {
     const { entry, mediaKey } = pick;
     pendingLate = pendingLate.filter((e) => e !== entry);
     if (await relocateLateMedia(node, entry, mediaKey)) {
-      lateRecovered.push(entry.imageIndex);
+      lateRecovered.push({ imageIndex: entry.imageIndex, mediaKey });
       if (import.meta.env.DEV) console.info('[MarkFlow] 晚到图片已追回归位', { imageIndex: entry.imageIndex, mediaKey });
     } else {
       console.warn('[MarkFlow] 晚到图片认领但原文位置已找不到,留待孤儿审计', { imageIndex: entry.imageIndex });
@@ -755,8 +819,33 @@ export default defineUnlistedScript(() => {
    * 重排 blockMap:删除 marker 块,把 MEDIA 块移到 marker 原位置。
    * 提交后 settle 等「MEDIA 块仍在位 且 marker 已清」落盘(B1),再让下一张图读 state。
    * 返回 true 表示已提交重排(settle 超时也算已提交,不回滚、只记账)。
+   * 构造与提交在同步内核 relocateMediaToMarkerOnce 里(导入后守护每轮同步换闸门,只能同步写)。
    */
   const relocateMediaToMarker = async (node: FiberStateNode, marker: string, mediaKey: string): Promise<boolean> => {
+    if (!relocateMediaToMarkerOnce(node, marker, mediaKey)) return false;
+    await settle(
+      'relocate-media',
+      node,
+      (c) => c.getBlockMap().has(mediaKey) && findMarkerBlock(c, marker) === null,
+    );
+    return true;
+  };
+
+  /**
+   * relocateMediaToMarker 的同步内核:读 state → 按 xposter 蓝本原样构造 blockMap 重排(不做等价简化)
+   * → commitEditorState,返回是否已提交。不等落盘——异步调用方须自行 settle。
+   * keepSelection(导入后守护用,口径同 sweepMarkersOnce / replaceMarkerWithTextOnce):用户光标的
+   * anchor / focus 都不在被删的 marker 块里时原样保留选区、不 forceSelection,不把光标拽到文末;
+   * 光标恰在被删的 marker 块里(或页面 SelectionState 缺 getter 无法判定)时,把光标落在被归位的 MEDIA
+   * 块的下一块(没有下一块则落在 MEDIA 块本身)——守护期用户可能正在编辑,落到文末等于把光标拽走。
+   * 不带 keepSelection(导入内)保持蓝本原选区行为(落在最后一块)。
+   */
+  const relocateMediaToMarkerOnce = (
+    node: FiberStateNode,
+    marker: string,
+    mediaKey: string,
+    opts?: { keepSelection?: boolean },
+  ): boolean => {
     const es = readEditorState(node);
     const content = es.getCurrentContent();
     const blockMap = content.getBlockMap();
@@ -780,18 +869,21 @@ export default defineUnlistedScript(() => {
     const SelStatic = es.getSelection().constructor as unknown as DraftSelectionStatic;
     const ESStatic = es.constructor as unknown as DraftEditorStateStatic;
     const lastKey = orderedKeys[orderedKeys.length - 1] ?? mediaKey;
-    const sel = SelStatic.createEmpty(lastKey);
+    const cur = es.getSelection();
+    const keepCur =
+      !!opts?.keepSelection &&
+      typeof cur.getAnchorKey === 'function' &&
+      typeof cur.getFocusKey === 'function' &&
+      cur.getAnchorKey() !== loc.blockKey &&
+      cur.getFocusKey() !== loc.blockKey;
+    const mediaAt = orderedKeys.indexOf(mediaKey);
+    const fallbackKey = opts?.keepSelection ? (orderedKeys[mediaAt + 1] ?? mediaKey) : lastKey;
+    const sel = keepCur ? cur : SelStatic.createEmpty(fallbackKey);
     const nc = content.set('blockMap', nextMap).set('selectionBefore', sel).set('selectionAfter', sel);
     let ns = ESStatic.push(es, nc, 'move-block');
-    ns = ESStatic.forceSelection(ns, sel);
+    if (!keepCur) ns = ESStatic.forceSelection(ns, sel);
     // 闸门拦截(已切文章)返回 false;调用方须再查 writeBlocked(),不得走 fallbackIndex 当成功。
-    if (!commitEditorState(node, ns)) return false;
-    await settle(
-      'relocate-media',
-      node,
-      (c) => c.getBlockMap().has(mediaKey) && findMarkerBlock(c, marker) === null,
-    );
-    return true;
+    return commitEditorState(node, ns);
   };
 
   /**
@@ -808,8 +900,27 @@ export default defineUnlistedScript(() => {
    * 提交后 settle 等「该 marker 已不在任何块中」落盘(B1)——否则下一张图的读-改-写会基于
    * 陈旧 state 把这次写回整体回滚,marker 重现后被 sweepMarkers 整块删掉(原文静默丢失)。
    * 返回写回所在块的 key(块 merge 保 key)——B2 晚到追回据此定位该段原文;未写回返回 null。
+   * 构造与提交在同步内核 replaceMarkerWithTextOnce 里(导入后守护每轮同步换闸门,只能同步写)。
    */
   const replaceMarkerWithText = async (node: FiberStateNode, marker: string, text: string): Promise<string | null> => {
+    const key = replaceMarkerWithTextOnce(node, marker, text);
+    if (key === null) return null;
+    await settle('replace-marker', node, (c) => findMarkerBlock(c, marker) === null);
+    return key;
+  };
+
+  /**
+   * replaceMarkerWithText 的同步内核:读 state → 构造 → commitEditorState,返回写回所在块 key 或 null
+   * (marker 不在 / 取不到样本 / 被闸门拦截)。不等落盘——异步调用方须自行 settle。
+   * keepSelection(导入后守护用,口径同 sweepMarkersOnce):用户光标不在被改写的块里就原样保留,
+   * 不把光标拽到占位处;否则(或页面 SelectionState 缺 getter 无法判定)退回原行为。
+   */
+  const replaceMarkerWithTextOnce = (
+    node: FiberStateNode,
+    marker: string,
+    text: string,
+    opts?: { keepSelection?: boolean },
+  ): string | null => {
     const es = readEditorState(node);
     const content = es.getCurrentContent();
     const blockMap = content.getBlockMap();
@@ -827,12 +938,18 @@ export default defineUnlistedScript(() => {
     const nextMap = blockMap.set(loc.blockKey, nextBlock);
     const SelStatic = es.getSelection().constructor as unknown as DraftSelectionStatic;
     const ESStatic = es.constructor as unknown as DraftEditorStateStatic;
-    const sel = SelStatic.createEmpty(loc.blockKey);
+    const cur = es.getSelection();
+    const keepCur =
+      !!opts?.keepSelection &&
+      typeof cur.getAnchorKey === 'function' &&
+      typeof cur.getFocusKey === 'function' &&
+      cur.getAnchorKey() !== loc.blockKey &&
+      cur.getFocusKey() !== loc.blockKey;
+    const sel = keepCur ? cur : SelStatic.createEmpty(loc.blockKey);
     const nc = content.set('blockMap', nextMap).set('selectionBefore', sel).set('selectionAfter', sel);
     let ns = ESStatic.push(es, nc, 'change-block-data');
-    ns = ESStatic.forceSelection(ns, sel);
+    if (!keepCur) ns = ESStatic.forceSelection(ns, sel);
     if (!commitEditorState(node, ns)) return null; // 闸门拦截(已切文章):未写回
-    await settle('replace-marker', node, (c) => findMarkerBlock(c, marker) === null);
     return loc.blockKey;
   };
 
@@ -854,13 +971,15 @@ export default defineUnlistedScript(() => {
   const sweepMarkers = async (
     prefix: string,
     onSwept?: (markerText: string) => void,
+    // 透传给 sweepMarkersOnce:命中的完整 marker 不剥、不计入「未清干净」(交逐图核对处理)。
+    protect?: (markerText: string) => boolean,
   ): Promise<boolean> => {
     let cleanStreak = 0;
     for (let round = 0; round < 6; round += 1) {
       await delay(round === 0 ? 120 : 220); // 首轮短等,后续留足 X commit 时间
       // A11:每轮先查写入闸门——切文章即停,返回「未确认干净」(调用方另行判定已切换)。
       if (writeBlocked()) return false;
-      const r = sweepMarkersOnce(prefix, onSwept);
+      const r = sweepMarkersOnce(prefix, onSwept, { protect });
       if (r === 'clean') {
         cleanStreak += 1;
         if (cleanStreak >= 2) return true; // 连续两轮确认干净 → 收工
@@ -869,21 +988,29 @@ export default defineUnlistedScript(() => {
         // B1:本轮删了块就等它真正落盘再进下一轮——否则下一轮读到的陈旧 state 里 marker
         // "还在",会对同一批块再提交一次删除(基于旧 map 的二次 onChange 可能回滚中间的变更)。
         // 超时不中断:连续两轮干净的退出条件(HANDOFF §8)原样保留在上面。
-        if (r === 'swept') await settle('sweep-markers', null, (c) => !hasFullMarker(c, prefix));
+        if (r === 'swept') await settle('sweep-markers', null, (c) => !hasFullMarker(c, prefix, protect));
       }
     }
     return false;
   };
 
-  /** 任一非 atomic 块是否仍含**完整形状**的 marker(settle 判定用,与 sweepMarkersOnce 口径一致)。 */
-  const hasFullMarker = (content: DraftContentState, prefix: string): boolean => {
+  /**
+   * 任一非 atomic 块是否仍含**完整形状**、且未被 protect 保护的 marker(settle 判定用,与
+   * sweepMarkersOnce 口径一致——受保护的 marker 本就不剥,不能让 settle 一直等它消失)。
+   */
+  const hasFullMarker = (
+    content: DraftContentState,
+    prefix: string,
+    protect?: (markerText: string) => boolean,
+  ): boolean => {
     let found = false;
     content.getBlockMap().forEach((block) => {
       if (found || block.getType() === 'atomic') return;
       const text = block.getText();
       if (!text.includes(prefix)) return;
       MARKER_FULL_RE.lastIndex = 0;
-      if (MARKER_FULL_RE.test(text)) found = true;
+      const matches = text.match(MARKER_FULL_RE);
+      if (matches && matches.some((m) => !protect?.(m))) found = true;
     });
     MARKER_FULL_RE.lastIndex = 0;
     return found;
@@ -898,11 +1025,13 @@ export default defineUnlistedScript(() => {
    * 'clean'=读到最新 state 且无残留;'swept'=发现并处理了残留;'no-node'=读不到状态节点
    * (不可当"干净"——那只是没读到,不是没有)。
    * onSwept:每处理一个完整 marker 回调一次(供主路径把被清扫的图片索引记入失败明细)。
+   * protect:返回 true 的完整 marker 跳过(不剥、不计 swept)——X 偶发用旧快照覆盖正文,图被回退
+   * 丢失时占位是它唯一的位置锚点,盲删即静默丢图;这类占位交逐图核对(补传 / 写回原文)处理。
    */
   const sweepMarkersOnce = (
     prefix: string,
     onSwept?: (markerText: string) => void,
-    opts?: { keepSelection?: boolean },
+    opts?: { keepSelection?: boolean; protect?: (markerText: string) => boolean },
   ): 'clean' | 'swept' | 'no-node' => {
     const node = findDraftStateNode();
     if (!node) return 'no-node';
@@ -919,8 +1048,11 @@ export default defineUnlistedScript(() => {
       MARKER_FULL_RE.lastIndex = 0;
       const matches = text.match(MARKER_FULL_RE);
       if (!matches) return; // 只含前缀字面量、无完整 marker → 用户内容,不动
-      sweptMarkers.push(...matches);
-      const stripped = text.replace(MARKER_FULL_RE, '');
+      const toStrip = matches.filter((m) => !opts?.protect?.(m));
+      if (!toStrip.length) return; // 全部受保护 → 本块不动
+      sweptMarkers.push(...toStrip);
+      MARKER_FULL_RE.lastIndex = 0;
+      const stripped = text.replace(MARKER_FULL_RE, (m) => (toStrip.includes(m) ? '' : m));
       if (stripped.trim().length === 0) toDelete.push(key);
       else toRewrite.push([key, stripped]);
     });
@@ -991,10 +1123,15 @@ export default defineUnlistedScript(() => {
   // 疑为 X 上传完成时的晚提交,或用户点击编辑器时 Draft 用未刷新的内部缓存处理聚焦。
   // 守护在导入返回后继续观察 MARKER_GUARD_MS:本次前缀的完整 marker 一出现就剥掉,并带
   // 放行方式 + 交互时间线打 warn 供诊断。覆盖可能反复发生,故不是删一次就走而是守到截止。
+  // 2026-11-13 追加取证:回退的快照也可能停在「某图插入之前」——图丢失、占位重现;此时再删占位就连
+  // 位置锚点都没了(静默丢图)。故守护改为逐图核对(guardReconcileOnce):图在才删占位,图不在则把占位
+  // 换回该图原文并告警;守护阶段不补传(结果已返回,补传结论无处上报)。
   // -------------------------------------------------------------------------
 
   const MARKER_GUARD_MS = 60_000;
   const MARKER_GUARD_INTERVAL_MS = 1_000;
+  /** 守护里同一张图写回原文累计失败的上限(写回成功才清零;达到后不再优先尝试,见 guardReconcileOnce)。 */
+  const GUARD_RESTORE_MAX_FAILURES = 3;
   /** 当前守护的停止函数(新一次导入开始时先停掉旧守护)。 */
   let stopMarkerGuard: (() => void) | null = null;
 
@@ -1056,6 +1193,27 @@ export default defineUnlistedScript(() => {
   };
 
   /**
+   * 编辑器现场诊断(守护告警 / 撤销诊断共用):当前 lastChangeType、撤销栈长度、距最近一次正文
+   * 保存完成多少 ms(无则 null)——用于判断回退是否紧跟保存响应(保存回写嫌疑)还是与保存无关
+   * (上传管线陈旧闭包嫌疑)。纯只读,读失败的字段记 null。
+   */
+  const editorDiag = (
+    es: DraftEditorState | null,
+    tracker: SaveTracker | null,
+  ): { lastChangeType: string | null; undoDepth: number | null; msSinceSave: number | null } => {
+    let lastChangeType: string | null = null;
+    let undoDepth: number | null = null;
+    try {
+      lastChangeType = es?.getLastChangeType?.() ?? null;
+      const stack = es?.getUndoStack?.();
+      undoDepth = typeof stack?.size === 'number' ? stack.size : (stack?.toArray?.()?.length ?? null);
+    } catch {
+      /* 诊断读取失败按 null */
+    }
+    return { lastChangeType, undoDepth, msSinceSave: tracker ? tracker.msSinceLastSave(performance.now()) : null };
+  };
+
+  /**
    * 撤销诊断(真机 2026-11-13:一次 Cmd+Z 跳回「第 2 张图归位之前」——图回文末、`_1` 重现、
    * 用户刚输入的内容消失,按 Draft 每步一条撤销记录的规则本应只退一步;现场已失,未能取证)。
    * 守护检测到撤销 / 重做而让位时,打出当前与撤销 / 重做栈顶的结构摘要,下次复现即可据此判断
@@ -1066,14 +1224,18 @@ export default defineUnlistedScript(() => {
     lastChange: string,
     afterMs: number,
     releases: string[],
+    tracker: SaveTracker | null,
   ): void => {
     try {
-      const top = (stack: { toArray?(): DraftContentState[] } | undefined): string[] =>
+      const top = (stack: DraftStack | undefined): string[] =>
         (stack?.toArray?.() ?? []).slice(0, 3).map(summarizeContent);
+      const diag = editorDiag(es, tracker);
       console.info('[MarkFlow] 检测到撤销 / 重做,导入后守护停止(撤销诊断)', {
         lastChange,
         afterMs,
         releases,
+        undoDepth: diag.undoDepth,
+        msSinceSave: diag.msSinceSave,
         current: summarizeContent(es.getCurrentContent()),
         undoTop3: top(es.getUndoStack?.()),
         redoTop3: top(es.getRedoStack?.()),
@@ -1085,10 +1247,11 @@ export default defineUnlistedScript(() => {
 
   /**
    * 启动导入后守护。每 MARKER_GUARD_INTERVAL_MS 读一次最新 state,只认**本次** markerPrefix 的完整
-   * marker(用户正文 / 其他导入的不动),剥除方式同 sweepMarkersOnce(单事务、保留同块用户文字、
-   * 不拽用户光标)。切文章 / 新导入开始 / 到期即停,停时摘掉交互监听。
+   * marker(用户正文 / 其他导入的不动),逐图核对(guardReconcileOnce):图在才剥占位(方式同
+   * sweepMarkersOnce:单事务、保留同块用户文字、不拽用户光标),图不在则写回原文。切文章 / 新导入开始 /
+   * 到期即停,停时摘掉交互监听并断开正文保存观察。
    * 写入闸门:runImport 的 finally 已把 writeBlocked 复位为「一律禁止」;守护每轮**同步**地临时换成
-   * 本次的切文章判定、清扫完立即复位——全程同步,不会与下一次 runImport 交错(其入口先停守护,
+   * 本次的切文章判定、核对完立即复位——全程同步,不会与下一次 runImport 交错(其入口先停守护,
    * 且本函数每轮先查 importInFlight)。
    */
   const startMarkerGuard = (
@@ -1096,6 +1259,7 @@ export default defineUnlistedScript(() => {
     isSwitched: () => boolean,
     log: InteractionLog,
     releases: string[],
+    guard: { tracks: ImageTrack[]; baselineMedia: Set<string> | null; saves: SaveWatch },
   ): void => {
     stopMarkerGuard?.();
     const endedAt = Date.now();
@@ -1107,42 +1271,112 @@ export default defineUnlistedScript(() => {
       stopped = true;
       if (timer) clearTimeout(timer);
       log.detach();
+      guard.saves.disconnect();
       if (stopMarkerGuard === stop) stopMarkerGuard = null;
     };
     const tick = (): void => {
       timer = null;
       if (stopped) return;
-      if (importInFlight || isSwitched() || Date.now() >= deadline) {
-        stop();
-        return;
-      }
-      // 用户在撤销 / 重做:让位并停止守护。否则守护清掉 marker 的那步压在撤销栈顶,用户每按一次
-      // Cmd+Z 都会还原出 marker、守护又删掉并再压一条,60s 内永远撤销不过这一步。
-      const probeNode = findDraftStateNode();
-      const probeState = probeNode ? readEditorState(probeNode) : null;
-      const lastChange = probeState?.getLastChangeType?.() ?? null;
-      if (lastChange === 'undo' || lastChange === 'redo') {
-        logUndoDiagnostic(probeState!, lastChange, Date.now() - endedAt, releases);
-        stop();
-        return;
-      }
-      const swept: string[] = [];
-      let result: 'clean' | 'swept' | 'no-node' = 'no-node';
-      writeBlocked = isSwitched;
+      // 整轮包 try:定位 / 读 state / 诊断任一处抛错(X 改版等)都会让守护静默死掉、交互监听与保存观察
+      // 泄漏到下次导入——异常即告警并 stop()。换闸门的内层 try/finally 原样保留(同步复位)。
       try {
-        result = sweepMarkersOnce(markerPrefix, (m) => swept.push(m), { keepSelection: true });
+        if (importInFlight || isSwitched() || Date.now() >= deadline) {
+          stop();
+          return;
+        }
+        // 用户在撤销 / 重做:让位并停止守护。否则守护清掉 marker 的那步压在撤销栈顶,用户每按一次
+        // Cmd+Z 都会还原出 marker、守护又删掉并再压一条,60s 内永远撤销不过这一步。
+        const probeNode = findDraftStateNode();
+        const probeState = probeNode ? readEditorState(probeNode) : null;
+        const lastChange = probeState?.getLastChangeType?.() ?? null;
+        if (lastChange === 'undo' || lastChange === 'redo') {
+          logUndoDiagnostic(probeState!, lastChange, Date.now() - endedAt, releases, guard.saves.tracker);
+          stop();
+          return;
+        }
+        // 诊断取写入之前的现场(回退刚发生时的 lastChangeType / 撤销栈深度 / 距上次保存)。
+        const diag = editorDiag(probeState, guard.saves.tracker);
+        let outcome: GuardOutcome = {
+          swept: [],
+          restored: [],
+          restoreFailed: [],
+          lost: [],
+          ambiguous: [],
+          relocated: [],
+          unfixed: [],
+        };
+        writeBlocked = isSwitched;
+        try {
+          outcome = guardReconcileOnce(markerPrefix, guard.tracks, guard.baselineMedia);
+        } catch (err) {
+          console.warn('[MarkFlow] 导入后守护核对异常', err);
+        } finally {
+          writeBlocked = () => true;
+        }
+        const afterMs = Date.now() - endedAt;
+        if (outcome.swept.length) {
+          console.warn('[MarkFlow] 导入结束后图片占位符重新出现,已自动清除', {
+            afterMs,
+            markers: outcome.swept,
+            releases,
+            interactions: [...log.events],
+            ...diag,
+          });
+        }
+        for (const image of outcome.relocated) {
+          console.warn('[MarkFlow] 导入结束后图片被编辑器回退到旧位置,已重新归位到占位处', {
+            afterMs,
+            image,
+            releases,
+            interactions: [...log.events],
+            ...diag,
+          });
+        }
+        for (const image of outcome.restoreFailed) {
+          console.warn('[MarkFlow] 导入结束后图片占位符需换回原文,但写回失败,占位符仍在,请在正文核对', {
+            afterMs,
+            image,
+            releases,
+            ...diag,
+          });
+        }
+        for (const image of outcome.unfixed) {
+          console.warn('[MarkFlow] 导入结束后图片占位符重新出现,已删除占位符,但图片位置未能校正(占位行有其他文字或归位失败),请核对', {
+            afterMs,
+            image,
+            releases,
+            ...diag,
+          });
+        }
+        for (const r of outcome.restored) {
+          console.warn(
+            r.wasPlaced
+              ? '[MarkFlow] 导入结束后图片被编辑器回退丢失,已把占位符换回原文,请在正文核对并手动补图'
+              : '[MarkFlow] 导入结束后失败图片的原文被编辑器回退成占位符,已重新写回原文',
+            { afterMs, image: r.image, releases, interactions: [...log.events], ...diag },
+          );
+        }
+        for (const image of outcome.lost) {
+          console.warn('[MarkFlow] 导入结束后图片被编辑器回退丢失(占位符也已不在),请在正文核对并手动补图', {
+            afterMs,
+            image,
+            releases,
+            interactions: [...log.events],
+            ...diag,
+          });
+        }
+        for (const image of outcome.ambiguous) {
+          console.warn('[MarkFlow] 导入结束后图片块已认不出(占位符也已不在),正文有多张来历不明的新图,无法确认是否丢失,请核对', {
+            afterMs,
+            image,
+            releases,
+            ...diag,
+          });
+        }
       } catch (err) {
-        console.warn('[MarkFlow] 导入后守护清扫异常', err);
-      } finally {
-        writeBlocked = () => true;
-      }
-      if (result === 'swept') {
-        console.warn('[MarkFlow] 导入结束后图片占位符重新出现,已自动清除', {
-          afterMs: Date.now() - endedAt,
-          markers: swept,
-          releases,
-          interactions: [...log.events],
-        });
+        console.warn('[MarkFlow] 导入后守护异常,已停止', err);
+        stop();
+        return;
       }
       timer = setTimeout(tick, MARKER_GUARD_INTERVAL_MS);
     };
@@ -1152,7 +1386,9 @@ export default defineUnlistedScript(() => {
 
   /** uploadOneImage 的结果:失败时带原因码(在知道原因的这一层产生,调用方只透传进失败明细)。 */
   type UploadOutcome =
-    | { ok: true; via: ReleaseVia }
+    // mediaKey / mediaId:归位后的 MEDIA 块 key 与其 mediaId(放行时尚无则 null)——收尾核对与导入后
+    // 守护据此判定这张图是否被编辑器回退丢失(块 key 在回退到旧快照时不变,是主身份)。
+    | { ok: true; via: ReleaseVia; mediaKey: string; mediaId: string | null }
     // A11:中途切文章——runImport 须立即返回 ARTICLE_SWITCHED_ERROR,不写回原文、不记失败明细。
     | { ok: false; switched: true }
     // pendingKey:仅 upload-timeout 且超时时已有未确认 MEDIA 块时带上(B2 晚到追回按 key 精确等它)。
@@ -1180,6 +1416,9 @@ export default defineUnlistedScript(() => {
     if (!onFilesAdded) return { ok: false, reason: 'upload-no-callback' };
     const before = snapshotMediaKeys(node);
 
+    // 计数放在闸门复查之前、不插在闸门与调用之间(结构断言要求调用前就近有闸门检查);被拦下时多计
+    // 一次无害——已切文章,调用方随即按切换返回,不会再走收尾稳定窗。
+    filesAddedCount += 1;
     // onFilesAdded 会让 X 自己往编辑器插 MEDIA 块并提交——切文章后同样会把旧状态存进新文章,同步复查。
     if (writeBlocked()) return { ok: false, switched: true };
     try {
@@ -1201,14 +1440,636 @@ export default defineUnlistedScript(() => {
     // 与「超时」的排查方向完全不同(不该去查网络/重试,而该看正文结构)。
     if (!node) return { ok: false, reason: 'upload-relocate-failed' };
     // 归位:优先精确顶替 marker 位置;失败则走 §3.3 fallbackIndex 兜底;仍失败(MEDIA 块丢失)才算失败。
-    if (await relocateMediaToMarker(node, marker, media.key)) return { ok: true, via: media.via ?? 'ready' };
+    if (await relocateMediaToMarker(node, marker, media.key)) return placedOutcome(media.via ?? 'ready', media.key);
     // 归位被闸门拦截(已切文章)≠ marker 丢失:不得走 fallbackIndex 把「MEDIA 块存在」当成功。
     if (writeBlocked()) return { ok: false, switched: true };
     node = findDraftStateNode();
-    if (node && relocateMediaByFallbackIndex(node, media.key)) return { ok: true, via: 'fallback-index' };
+    if (node && relocateMediaByFallbackIndex(node, media.key)) return placedOutcome('fallback-index', media.key);
     return { ok: false, reason: 'upload-relocate-failed' };
   };
 
+  /** 组装 uploadOneImage 的成功结果:顺带读出该 MEDIA 块当前的 mediaId(读不到为 null)。 */
+  const placedOutcome = (via: ReleaseVia, mediaKey: string): UploadOutcome => {
+    let mediaId: string | null = null;
+    try {
+      const node = findDraftStateNode();
+      if (node) {
+        const content = readEditorState(node).getCurrentContent();
+        const block = content.getBlockMap().get(mediaKey);
+        if (block) mediaId = mediaIdOfBlock(content, block);
+      }
+    } catch {
+      mediaId = null; // 只为补身份信息,读失败不影响成功结论
+    }
+    return { ok: true, via, mediaKey, mediaId };
+  };
+
+  // -------------------------------------------------------------------------
+  // 收尾稳定窗 + 逐图核对(真机取证 2026-11-13):X 偶发在导入收尾后 ≤1s(偶见 49s)把编辑器整体
+  // 替换成更早的快照(正文 + 撤销历史一起),触发者在 X 内部、未定(保存响应回写 或 上传管线的
+  // 陈旧闭包)。快照若是「某图已插入、尚未归位」→ 图上方残留占位;若是「某图插入之前」→ 图丢失、
+  // 占位重现。此前清扫 / 守护见占位就删,丢图时连位置锚点都没了(静默丢图)。现在:
+  //  1) 收尾先等 X 的正文保存在最后一次写入之后完成并静默(waitForSaveQuiesce;判定在 saveQuiesce);
+  //  2) 再按「这张图该是什么样」逐张核对(决策在 imageReconcile):图在占位在 → 删占位;图不在占位在
+  //     → 原位补传(复用 uploadOneImage,不新增上传回调调用点)或写回原文;都不在 → 如实计 image-lost;
+  //  3) 清扫与导入后守护不再盲删「图不在」的占位。
+  // 只在 xposter 蓝本(钉光标 / 上传回调 / waitForNewMedia 放行参数 / relocateMediaToMarker)外围加核对,
+  // 不改其构造方式(不做等价简化)。
+  // -------------------------------------------------------------------------
+
+  /** 一张图的核对账本:runImport 建立,收尾核对与导入后守护共用、就地更新。 */
+  type ImageTrack = {
+    imageIndex: number;
+    marker: string;
+    fallbackText: string;
+    source: string;
+    /** 预期终态:placed = 已归位成图;failed = 已写回原文(或应写回原文)。 */
+    expected: ImageExpectation;
+    /** 归位时的 MEDIA 块 key——主身份:回退到旧快照时块 key 不变。 */
+    key: string | null;
+    /** 该 MEDIA 的 mediaId——key 不在时的次身份;放行时尚无则 null,核对时见到即补记。 */
+    mediaId: string | null;
+    /** 是否已补传过(每张最多一次)。 */
+    reuploaded: boolean;
+    /** 导入后守护是否已就「图与占位都不在」告警过(每张只报一次)。 */
+    lostWarned: boolean;
+    /** 是否已就「图与占位都不在、但正文有不唯一的来历不明新图」告警过(每张只报一次)。 */
+    ambiguousWarned: boolean;
+    /** 是否已就「已知 mediaId 但块读不到 mediaId」告警过(每张只报一次)。 */
+    pendingIdWarned: boolean;
+    /**
+     * 残留审计把「已归位却认不回」的图转为 failed、但尚未写回原文时置 true:守护随后写回时据此仍按
+     * 「图被回退丢失」告警,而不是「失败图片的原文被回退」(复审 N2)。守护写回后清零。
+     */
+    lostAwaitingFallback: boolean;
+    /** 写回原文所在块 key(replaceMarkerWithText 的返回值;原图回来时据此用图顶替原文行)。 */
+    fallbackKey: string | null;
+    /** 本次导入里是否经 onLost 计过丢失(终核后复查:原图回来则撤销记账)。 */
+    lostCounted: boolean;
+    /** 守护写回原文累计失败的次数(写回成功清零;达上限后不再优先尝试,免得饿死其他图的归位)。 */
+    restoreFailures: number;
+  };
+
+  /** 正文保存观察:PerformanceObserver 只读接线(不 hook fetch / XHR)。 */
+  type SaveWatch = { tracker: SaveTracker; disconnect: () => void };
+
+  /**
+   * 开始观察正文保存请求(URL 含 ArticleEntityUpdateContent 的资源条目,完成时才会产生)。
+   * runImport 入口建立;导入有图且守护接手时交给守护、守护停止时断开,否则 runImport 的 finally 断开。
+   * 不支持 / 构造失败时 tracker 一条也记不到,稳定窗自动退化为「距最后写入 ≥3s」。
+   */
+  const startSaveWatch = (): SaveWatch => {
+    const tracker = createSaveTracker();
+    let observer: PerformanceObserver | null = null;
+    try {
+      observer = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          if (!isContentSaveUrl(entry.name)) continue;
+          const timing = entry as PerformanceResourceTiming;
+          tracker.record({ startTime: timing.startTime, responseEnd: timing.responseEnd });
+        }
+      });
+      observer.observe({ type: 'resource', buffered: false });
+    } catch (err) {
+      try {
+        observer?.disconnect();
+      } catch {
+        /* 断开失败忽略 */
+      }
+      observer = null;
+      console.info('[MarkFlow] 正文保存观察不可用,收尾稳定窗退化为按写入时间判定', err);
+    }
+    return {
+      tracker,
+      disconnect: () => {
+        try {
+          observer?.disconnect();
+        } catch {
+          /* 断开失败忽略 */
+        }
+        observer = null;
+      },
+    };
+  };
+
+  /**
+   * 等收尾保存稳定窗(判定见 saveQuiesce.isQuiet):每 QUIESCE_POLL_MS 轮询,每轮先查写入闸门
+   * (A11:切文章即返回 'switched',调用方按 ARTICLE_SWITCHED_ERROR 返回);到上限返回 'cap'
+   * (带着现状去核对,此后的回退由导入后守护兜底)。本函数不写编辑器。
+   */
+  const waitForSaveQuiesce = async (tracker: SaveTracker, capMs: number): Promise<'quiet' | 'cap' | 'switched'> => {
+    const startedAt = performance.now();
+    for (;;) {
+      if (writeBlocked()) return 'switched';
+      const now = performance.now();
+      if (tracker.isQuiet({ lastWriteAt, now })) return 'quiet';
+      if (now - startedAt >= capMs) return 'cap';
+      await delay(QUIESCE_POLL_MS);
+    }
+  };
+
+  /**
+   * Draft state → 认图用的简化块列表(判定逻辑在 lib/bridge/mediaIdentity,可单测;这里只做转换)。
+   * MEDIA atomic 块按「有无 mediaId」分 ready / pending;其他 atomic 块记 other(不参与占位匹配)。
+   */
+  const toSimpleBlocks = (content: DraftContentState): SimpleBlock[] => {
+    const out: SimpleBlock[] = [];
+    content.getBlockMap().forEach((block, key) => {
+      const state = mediaBlockState(content, block);
+      if (state) {
+        const kind = state === 'ready' ? 'media-ready' : 'media-pending';
+        out.push({ key, kind, mediaId: mediaIdOfBlock(content, block), text: '' });
+      } else if (block.getType() === 'atomic') {
+        out.push({ key, kind: 'other', mediaId: null, text: '' });
+      } else {
+        out.push({ key, kind: 'text', mediaId: null, text: block.getText() });
+      }
+    });
+    return out;
+  };
+
+  /**
+   * 额外视为「已认领」的 MEDIA 块:待追回超时图的 pendingKey,以及已追回(可能尚未被 runImport
+   * 吸收进账本)的晚到图 mediaKey——否则补传途中刚追回的图会被当成「未认领新图」误拦补传或被误认。
+   */
+  const extraClaimedKeys = (): string[] => [
+    ...pendingLate.map((e) => e.pendingKey ?? ''),
+    ...lateRecovered.map((r) => r.mediaKey),
+  ].filter((k) => k !== '');
+
+  /** observeTrack 的产出:在 ImageSighting 基础上加「图在不在」的布尔量。 */
+  type TrackSeen = ImageSighting & { mediaPresent: boolean };
+
+  /**
+   * 读一张图在当前正文中的状况(判定见 mediaIdentity.observeImage)。预期已归位的图在正文时就地补记
+   * 身份:key 变了以新 key 为准;放行时没有的 mediaId 此时有了就记上,便于之后 key 再变时仍能认出。
+   * 账本已知 mediaId、块却仍是 pending 实体时告警一次(诊断:X 是否把已落定的图又换回了上传中状态)。
+   */
+  const observeTrack = (
+    content: DraftContentState,
+    t: ImageTrack,
+    tracks: ImageTrack[],
+    baseline: Set<string> | null,
+  ): TrackSeen => {
+    const seen = observeImage(toSimpleBlocks(content), t, tracks, extraClaimedKeys(), baseline);
+    if (seen.mediaKey) {
+      if (seen.via === 'sole-unclaimed' || seen.via === 'media-id') {
+        console.warn('[MarkFlow] 核对:图片块 key 已变,按身份认回', { image: t.imageIndex + 1, via: seen.via });
+      }
+      t.key = seen.mediaKey;
+      if (!t.mediaId && seen.mediaId) t.mediaId = seen.mediaId;
+    }
+    if (seen.pendingDespiteKnownId && !t.pendingIdWarned) {
+      t.pendingIdWarned = true;
+      console.warn('[MarkFlow] 核对:图片已知 mediaId,但其块当前读不到 mediaId(仍是上传中实体)', {
+        image: t.imageIndex + 1,
+        mediaId: t.mediaId,
+      });
+    }
+    return { ...seen, mediaPresent: seen.mediaKey !== null };
+  };
+
+  /**
+   * 收尾核对上下文(runImport 建立)。onLost / onRevived 由 runImport 提供:前者 imageOk 减 1 + 推
+   * image-lost 明细,后者撤销之(原图回来时)。
+   */
+  type ReconcileCtx = {
+    tracks: ImageTrack[];
+    markerPrefix: string;
+    baselineMedia: Set<string> | null;
+    /** 每张图的 File(按 imageIndex;补传用)。 */
+    files: Array<File | null>;
+    releases: string[];
+    /** 本次导入已发起的补传张数(含失败;上限见 MAX_REUPLOADS_PER_IMPORT)。 */
+    reuploadsUsed: number;
+    onLost: (t: ImageTrack, detail: string) => void;
+    onRevived: (t: ImageTrack) => void;
+  };
+
+  /** image-lost 明细的英文诊断串(detail 不走 i18n,同 orphan-media)。 */
+  const lostDetail = (allowReupload: boolean, blocked: string | null, restored: boolean): string => {
+    // 写回原文失败时如实说明占位还留着,不能写「已写回」(审计随后另记 marker-residue)。
+    const tail = restored ? 'original text restored' : 'restoring original text failed, placeholder left';
+    if (blocked === 'unclaimed-media') return `reverted by editor; re-upload skipped (unclaimed image block in body); ${tail}`;
+    if (blocked === 'already-reuploaded') return `reverted by editor again after re-upload; ${tail}`;
+    if (blocked === 'limit-reached') return `reverted by editor; re-upload limit reached; ${tail}`;
+    return allowReupload ? `reverted by editor; ${tail}` : `reverted by editor after checks; ${tail}`;
+  };
+
+  /** 删一张图自己的占位(单事务剥除,只动这一个 marker),提交后等落盘。 */
+  const stripTrackMarker = async (t: ImageTrack, markerPrefix: string): Promise<void> => {
+    const r = sweepMarkersOnce(markerPrefix, undefined, { protect: (m) => m !== t.marker });
+    if (r === 'swept') await settle('reconcile-strip', null, (c) => findMarkerBlock(c, t.marker) === null);
+  };
+
+  /**
+   * 「图在、占位在」的收口(收尾核对 / 残留审计 / 原图回来复查共用):不能只删占位——X 常把图先插在
+   * 文末、再由插件挪到占位处,回退到「插入后、归位前」的快照时图回到了文末(真机 R-B20 a:只删占位后
+   * 图停在文末,报告仍 2/2)。故按蓝本原构造重新归位;占位行里有用户文字(非独占,整块顶替会连文字一起
+   * 删)或归位未提交时,退回只剥占位串并告警位置未能校正。读最新 state;phase 只用于告警文案。
+   */
+  const relocateOrStrip = async (
+    ctx: ReconcileCtx,
+    t: ImageTrack,
+    phase: string,
+  ): Promise<'switched' | 'relocated' | 'stripped' | 'absent'> => {
+    if (writeBlocked()) return 'switched';
+    const node = findDraftStateNode();
+    if (!node) return 'absent';
+    const loc = findMarkerBlock(readEditorState(node).getCurrentContent(), t.marker);
+    if (!loc) return 'absent';
+    const n = t.imageIndex + 1;
+    if (loc.exact && t.key) {
+      if (await relocateMediaToMarker(node, t.marker, t.key)) {
+        console.warn(`[MarkFlow] ${phase}:图片被编辑器回退到旧位置,已重新归位到占位处`, { image: n });
+        return 'relocated';
+      }
+      if (writeBlocked()) return 'switched';
+      await stripTrackMarker(t, ctx.markerPrefix);
+      console.warn(`[MarkFlow] ${phase}:图片重新归位失败,已删除占位符,图片位置未能校正,请核对`, { image: n });
+    } else {
+      await stripTrackMarker(t, ctx.markerPrefix);
+      console.warn(`[MarkFlow] ${phase}:占位符所在行有其他文字,只删除占位符,图片位置未能校正,请核对`, { image: n });
+    }
+    return writeBlocked() ? 'switched' : 'stripped';
+  };
+
+  /**
+   * 已写回原文所在块:优先登记的 fallbackKey(块仍含原文);登记块已不含原文(X 换了块 key)时,再找
+   * 「整块文本恰为原文」的非 atomic 块,但排除其他图登记过的原文行。本图从没写回过原文(fallbackKey
+   * 为 null,如 report-lost)时不做整块文本搜索——否则可能命中另一张同 alt / 同 src 失败图的原文行或
+   * 用户恰好手写的同一行,用本图顶掉别人的内容(复审 N1)。
+   */
+  const findFallbackBlockKey = (content: DraftContentState, t: ImageTrack, tracks: ImageTrack[]): string | null => {
+    if (!t.fallbackKey) return null;
+    const bm = content.getBlockMap();
+    const own = bm.get(t.fallbackKey);
+    if (own && own.getType() !== 'atomic' && own.getText().includes(t.fallbackText)) return t.fallbackKey;
+    const others = new Set(tracks.filter((x) => x !== t && x.fallbackKey).map((x) => x.fallbackKey as string));
+    const want = t.fallbackText.trim();
+    const hits: string[] = [];
+    bm.forEach((b, k) => {
+      if (!hits.length && !others.has(k) && b.getType() !== 'atomic' && b.getText().trim() === want) hits.push(k);
+    });
+    return hits[0] ?? null;
+  };
+
+  /**
+   * 终核之后复查被计过丢失的图(决策见 imageReconcile.decideRevival):X 的回退可能是瞬时的,随后又恢复
+   * 较新状态、原图回到正文。只按原身份(块 key / mediaId)认回才撤销丢失记账(onRevived:imageOk +1、
+   * 移除 image-lost 明细、回到已归位),并收口位置:占位又在 → 挪回占位处;已写回的原文行还在 → 用图
+   * 顶替原文行(复用 B2 晚到追回的 relocateLateMedia,不另造构造),免得原文与图重复出现。
+   */
+  const reviveLostTracks = async (ctx: ReconcileCtx): Promise<'switched' | 'done'> => {
+    for (const t of ctx.tracks) {
+      if (!t.lostCounted) continue;
+      if (writeBlocked()) return 'switched';
+      const node = findDraftStateNode();
+      if (!node) return 'done';
+      const content = readEditorState(node).getCurrentContent();
+      // 以「已归位」身份只读探查(不改账本);probe 替换掉 tracks 里的自己,认领集合才不把原 key 当别人的。
+      const probe: ImageTrack = { ...t, expected: 'placed' };
+      const seen = observeImage(
+        toSimpleBlocks(content),
+        probe,
+        ctx.tracks.map((x) => (x === t ? probe : x)),
+        extraClaimedKeys(),
+        ctx.baselineMedia,
+      );
+      const matched = seen.mediaKey !== null && (seen.via === 'key' || seen.via === 'media-id');
+      const fallbackAt = matched ? findFallbackBlockKey(content, t, ctx.tracks) : null;
+      const action = decideRevival({
+        lostCounted: true,
+        matchedByIdentity: matched,
+        markerPresent: seen.markerPresent,
+        fallbackPresent: fallbackAt !== null,
+      });
+      if (action === 'none' || !seen.mediaKey) continue;
+      t.key = seen.mediaKey;
+      if (!t.mediaId && seen.mediaId) t.mediaId = seen.mediaId;
+      t.expected = 'placed';
+      t.lostCounted = false;
+      t.lostAwaitingFallback = false;
+      ctx.onRevived(t);
+      console.warn('[MarkFlow] 收尾核对:此前判定丢失的图片已重新出现(编辑器又恢复了较新状态),撤销丢失记账', {
+        image: t.imageIndex + 1,
+        action,
+      });
+      if (action === 'relocate-to-marker') {
+        if ((await relocateOrStrip(ctx, t, '收尾核对')) === 'switched') return 'switched';
+      } else if (action === 'replace-fallback') {
+        const entry: LateEntry = { imageIndex: t.imageIndex, fallbackKey: fallbackAt, fallbackText: t.fallbackText, pendingKey: null };
+        if (!(await relocateLateMedia(node, entry, seen.mediaKey)) && !writeBlocked()) {
+          console.warn('[MarkFlow] 收尾核对:原图已回来,但未能用它顶替已写回的原文行,请手动删除重复的原文', { image: t.imageIndex + 1 });
+        }
+        if (writeBlocked()) return 'switched';
+      }
+    }
+    return 'done';
+  };
+
+  /**
+   * 在占位处补传一张被回退丢失的图:复用 uploadOneImage(钉光标 → 上传回调 → 等新 MEDIA → 归位),
+   * 不新增上传调用点。成功更新身份;失败写回原文并计 image-lost。每张最多一次(调用前已判定未受限)。
+   */
+  const reuploadTrack = async (ctx: ReconcileCtx, t: ImageTrack): Promise<'switched' | 'done'> => {
+    ctx.reuploadsUsed += 1;
+    t.reuploaded = true;
+    // 原身份留底:补传期间原图若回来,其 key 不在补传前快照里,会被等新图的轮询当成补传结果(见下)。
+    const origKey = t.key;
+    const origMediaId = t.mediaId;
+    const file = ctx.files[t.imageIndex] ?? null;
+    let outcome: UploadOutcome;
+    if (!file) {
+      outcome = { ok: false, reason: 'upload-exception', detail: 'file missing for re-upload' };
+    } else {
+      try {
+        // 预算同上传循环(≥ PENDING_CAP_MS);通道超时已按 MAX_REUPLOADS_PER_IMPORT 张补传预留(见 content.ts)。
+        outcome = await uploadOneImage(t.marker, file, IMAGE_UPLOAD_BUDGET_MS);
+      } catch (e) {
+        console.warn('[MarkFlow] 补传异常', e);
+        outcome = { ok: false, reason: 'upload-exception', detail: String(e) };
+      }
+    }
+    if ('switched' in outcome || writeBlocked()) return 'switched';
+    const n = t.imageIndex + 1;
+    if (outcome.ok) {
+      t.key = outcome.mediaKey;
+      t.mediaId = outcome.mediaId ?? (outcome.mediaKey === origKey ? origMediaId : null);
+      if (isOriginalImageReturn({ origKey, origMediaId, gotKey: outcome.mediaKey, gotMediaId: outcome.mediaId })) {
+        // 归位的其实是回来的原图:不记作补传。补传自己若也插了块,它成了多余的图,交孤儿审计如实上报,
+        // 不去删(无法确证哪块是补传插的)。
+        ctx.releases.push(`#${n} original-returned ${outcome.via}`);
+        console.warn('[MarkFlow] 补传期间原图已回来,按原图归位处理', { image: n, via: outcome.via });
+        return 'done';
+      }
+      ctx.releases.push(`#${n} re-upload ${outcome.via}`);
+      console.warn('[MarkFlow] 图片被编辑器回退丢失,已在原位补传', { image: n, via: outcome.via });
+      return 'done';
+    }
+    const node = findDraftStateNode();
+    if (node) {
+      // 补传失败期间 X 可能又回退到较新的快照、原图回来了:先复查,按原身份(块 key / mediaId)认得回
+      // 就恢复为已归位、不写回原文、不计丢失(残留的占位交下一轮核对删除)。只认原身份:邻接 / 唯一
+      // 未认领认到的可能正是这次失败补传自己留下的未确认块,不能当成功。
+      // 用只读的 observeImage(不用会就地改账本的 observeTrack):认图不被采纳时,账本不能指向那个块——
+      // 否则它此后一直算「已认领」,后续图的补传拦截与守护的唯一认领门都看不到它(复审 N1)。
+      const recheck = observeImage(
+        toSimpleBlocks(readEditorState(node).getCurrentContent()),
+        t,
+        ctx.tracks,
+        extraClaimedKeys(),
+        ctx.baselineMedia,
+      );
+      if (recheck.mediaKey && (recheck.via === 'key' || recheck.via === 'media-id')) {
+        t.key = recheck.mediaKey;
+        if (!t.mediaId && recheck.mediaId) t.mediaId = recheck.mediaId;
+        console.warn('[MarkFlow] 补传未成功,但原图已重新出现在正文,按已归位处理', { image: n, reason: outcome.reason });
+        return 'done';
+      }
+      t.fallbackKey = await replaceMarkerWithText(node, t.marker, t.fallbackText);
+    }
+    if (writeBlocked()) return 'switched';
+    t.expected = 'failed';
+    const restoredNote = t.fallbackKey ? 'original text restored' : 'restoring original text failed, placeholder left';
+    ctx.onLost(t, `re-upload failed: ${outcome.reason}${outcome.detail ? ` (${outcome.detail})` : ''}; ${restoredNote}`);
+    console.warn('[MarkFlow] 图片被编辑器回退丢失,补传未成功,已写回原文', { image: n, reason: outcome.reason });
+    return 'done';
+  };
+
+  /**
+   * 收尾逐图核对一轮(导入内,结果返回前;决策见 imageReconcile.decideImageAction)。每张图先读最新
+   * state;每次写入都等落盘后才看下一张(B1:不基于陈旧 state 二次写)。allowReupload=false 用于
+   * 补传后复核与封面后终核(不再补传,图不在、占位在 → 写回原文)。A11:每张前后查闸门。
+   * 读不到编辑器节点返回 'no-node'(本轮其余图不核对):本次占位在兜底清扫里一律受保护,首核 / 复核
+   * 跳过的交终核;终核也跳过的交 runImport 的残留审计(图不在 → 报 image-lost;图在 → 重新归位)。
+   */
+  const reconcileImages = async (
+    ctx: ReconcileCtx,
+    allowReupload: boolean,
+  ): Promise<'switched' | 'done' | 'no-node'> => {
+    for (const t of ctx.tracks) {
+      if (writeBlocked()) return 'switched';
+      const node = findDraftStateNode();
+      if (!node) {
+        console.warn('[MarkFlow] 收尾核对读不到编辑器状态节点,本轮跳过', { image: t.imageIndex + 1 });
+        return 'no-node';
+      }
+      const content = readEditorState(node).getCurrentContent();
+      const seen = observeTrack(content, t, ctx.tracks, ctx.baselineMedia);
+      const blocked =
+        t.expected === 'placed' && !seen.mediaPresent && seen.markerPresent
+          ? reuploadBlockReason({
+              alreadyReuploaded: t.reuploaded,
+              reuploadsUsed: ctx.reuploadsUsed,
+              hasUnclaimedMedia: hasUnclaimedNewMedia(
+                toSimpleBlocks(content),
+                claimedMediaKeys(ctx.tracks, null, extraClaimedKeys()),
+                ctx.baselineMedia,
+              ),
+            })
+          : null;
+      const action: ImageAction = decideImageAction({
+        expected: t.expected,
+        mediaPresent: seen.mediaPresent,
+        markerPresent: seen.markerPresent,
+        allowReupload,
+        reuploadBlocked: blocked !== null,
+        mediaAmbiguous: seen.ambiguousCount > 0,
+      });
+      if (action === 'none') continue;
+      const n = t.imageIndex + 1;
+      if (action === 'report-ambiguous') {
+        // 不判丢失、不调 onLost:多出来的新图里可能就有本图(换了 key、又无 mediaId 可比对),
+        // 交孤儿审计按「新增 MEDIA − imageOk」如实上报,不诱导用户删图。
+        if (!t.ambiguousWarned) {
+          t.ambiguousWarned = true;
+          console.warn('[MarkFlow] 收尾核对:图片块已认不出(占位也已不在),正文有多张来历不明的新图,无法确认是否丢失', {
+            image: n,
+            candidates: seen.ambiguousCount,
+          });
+        }
+        continue;
+      }
+      if (action === 'relocate') {
+        if ((await relocateOrStrip(ctx, t, '收尾核对')) === 'switched') return 'switched';
+      } else if (action === 'reupload') {
+        if ((await reuploadTrack(ctx, t)) === 'switched') return 'switched';
+      } else if (action === 'report-lost') {
+        t.expected = 'failed';
+        ctx.onLost(t, 'reverted by editor; image and placeholder both missing');
+        console.warn('[MarkFlow] 收尾核对:图片被编辑器回退丢失(占位也已不在),请在正文核对并手动补图', { image: n });
+      } else {
+        // write-fallback(已归位的图被回退丢失,不补传)/ rewrite-fallback(失败图的原文被回退成占位)
+        const fallbackKey = await replaceMarkerWithText(node, t.marker, t.fallbackText);
+        if (writeBlocked()) return 'switched';
+        if (fallbackKey) t.fallbackKey = fallbackKey;
+        if (action === 'write-fallback') {
+          t.expected = 'failed';
+          ctx.onLost(t, lostDetail(allowReupload, blocked, fallbackKey !== null));
+          console.warn(
+            fallbackKey
+              ? '[MarkFlow] 收尾核对:图片被编辑器回退丢失,已在原位写回原文'
+              : '[MarkFlow] 收尾核对:图片被编辑器回退丢失,写回原文失败,占位符仍在',
+            { image: n, blocked },
+          );
+        } else {
+          console.warn(
+            fallbackKey
+              ? '[MarkFlow] 收尾核对:失败图片的原文被编辑器回退成占位符,已重新写回原文'
+              : '[MarkFlow] 收尾核对:失败图片的原文被编辑器回退成占位符,重新写回失败,占位符仍在',
+            { image: n },
+          );
+        }
+      }
+      if (writeBlocked()) return 'switched';
+    }
+    return 'done';
+  };
+
+  /** 先等保存稳定窗(上限 capMs)再核对一轮。label 仅用于诊断日志。 */
+  const quiesceAndReconcile = async (
+    ctx: ReconcileCtx,
+    tracker: SaveTracker,
+    capMs: number,
+    allowReupload: boolean,
+    label: string,
+  ): Promise<'switched' | 'done' | 'no-node'> => {
+    // 本次导入一次上传回调都没调过(含补传;典型:所有图都在准备阶段失败):回退的两个嫌疑——上传管线
+    // 的陈旧提交、上传完成后的保存回写——都无从发生,不等稳定窗、直接核对(用户决定,省掉 1.5–8s)。
+    if (filesAddedCount === 0) {
+      if (import.meta.env.DEV) console.info('[MarkFlow] 本次导入未调用上传回调,跳过收尾保存稳定窗', { label });
+      return writeBlocked() ? 'switched' : reconcileImages(ctx, allowReupload);
+    }
+    const startedAt = performance.now();
+    const q = await waitForSaveQuiesce(tracker, capMs);
+    if (q === 'switched') return 'switched';
+    const info = { label, result: q, waitedMs: Math.round(performance.now() - startedAt), saves: tracker.observedCount };
+    // 到上限仍未稳定:生产环境也留一条,便于真机判断稳定窗是否常态性等满(X 改接口名 / 保存不触发等)。
+    if (q === 'cap') console.info('[MarkFlow] 收尾保存稳定窗到上限,按现状核对', info);
+    else if (import.meta.env.DEV) console.info('[MarkFlow] 收尾保存稳定窗', info);
+    return reconcileImages(ctx, allowReupload);
+  };
+
+  /** 导入后守护单轮核对的产出(由守护打告警)。 */
+  type GuardOutcome = {
+    /** 本轮剥掉的占位(图在、占位也在但无法重新归位,或未登记的本次 marker)。 */
+    swept: string[];
+    /** 本轮重新归位到占位处的图(1 起编号)。 */
+    relocated: number[];
+    /** 本轮只剥了占位、图片位置未能校正的图(1 起编号;占位行有用户文字或归位提交失败)。 */
+    unfixed: number[];
+    /** 本轮写回原文的图(1 起编号);wasPlaced=该图原本已归位(被回退丢失)而非失败图。 */
+    restored: Array<{ image: number; wasPlaced: boolean }>;
+    /** 本轮首次写回原文失败的图(1 起编号;每张只报一次)。 */
+    restoreFailed: number[];
+    /** 本轮首次发现「图与占位都不在」的图(1 起编号;每张只报一次)。 */
+    lost: number[];
+    /** 本轮首次发现「图与占位都不在、但正文有不唯一的来历不明新图」的图(无法确认丢失;每张只报一次)。 */
+    ambiguous: number[];
+  };
+
+  /**
+   * 导入后守护的单轮**同步**核对(复用 observeTrack + decideImageAction,不补传):
+   * 图在、占位在 → 把图重新归位到占位处(relocateMediaToMarkerOnce,不拽光标;占位行有用户文字时只剥
+   * 占位串);图不在、占位在 → 写回该图原文(不拽光标);图与占位都不在 → 只记一次告警。
+   * 守护每轮同步换闸门、finally 复位,故这里只做同步写,且**每轮至多一次提交**——同步写完立即再读
+   * props 只能读到提交前的旧 state,第二次写会把第一次回滚(B1),余下的交下一轮(1s 后)。
+   * 优先级:写回原文 > 重新归位 > 剥占位(前者关乎图的位置锚点,其次是图的位置)。写回未提交时本轮
+   * 不算用掉提交名额,继续归位 / 剥占位;同一张写回连续失败 GUARD_RESTORE_MAX_FAILURES 次后不再优先。
+   */
+  const guardReconcileOnce = (
+    markerPrefix: string,
+    tracks: ImageTrack[],
+    baseline: Set<string> | null,
+  ): GuardOutcome => {
+    const out: GuardOutcome = {
+      swept: [],
+      restored: [],
+      restoreFailed: [],
+      lost: [],
+      ambiguous: [],
+      relocated: [],
+      unfixed: [],
+    };
+    const node = findDraftStateNode();
+    if (!node) return out;
+    const content = readEditorState(node).getCurrentContent();
+    const decisions = new Map<string, ImageAction>();
+    let restore: ImageTrack | null = null;
+    /** 可重新归位的图(决策 relocate、占位块独占、有 MEDIA key)。 */
+    const relocatable: ImageTrack[] = [];
+    /** 本轮只剥占位、不挪图的 marker。 */
+    const stripOnly = new Set<string>();
+    for (const t of tracks) {
+      const seen = observeTrack(content, t, tracks, baseline);
+      const action = decideImageAction({
+        expected: t.expected,
+        mediaPresent: seen.mediaPresent,
+        markerPresent: seen.markerPresent,
+        allowReupload: false,
+        reuploadBlocked: true,
+        mediaAmbiguous: seen.ambiguousCount > 0,
+      });
+      decisions.set(t.marker, action);
+      if (action === 'report-lost' && !t.lostWarned) {
+        t.lostWarned = true;
+        out.lost.push(t.imageIndex + 1);
+      }
+      if (action === 'report-ambiguous' && !t.ambiguousWarned) {
+        t.ambiguousWarned = true;
+        out.ambiguous.push(t.imageIndex + 1);
+      }
+      // 写回连续失败达上限的图不再优先尝试:否则它每轮占住「唯一一次提交」的名额,饿死其他图的归位。
+      const restoreWanted = action === 'write-fallback' || action === 'rewrite-fallback';
+      if (!restore && restoreWanted && t.restoreFailures < GUARD_RESTORE_MAX_FAILURES) restore = t;
+      if (action === 'relocate') {
+        const loc = findMarkerBlock(content, t.marker);
+        if (loc && loc.exact && t.key) relocatable.push(t);
+        else stripOnly.add(t.marker); // 占位行有用户文字:只剥占位串,不挪图
+      }
+    }
+    if (restore) {
+      const wasPlaced = restore.expected === 'placed' || restore.lostAwaitingFallback;
+      const fallbackKey = replaceMarkerWithTextOnce(node, restore.marker, restore.fallbackText, { keepSelection: true });
+      if (fallbackKey !== null) {
+        restore.expected = 'failed';
+        restore.lostAwaitingFallback = false;
+        restore.fallbackKey = fallbackKey;
+        restore.restoreFailures = 0;
+        out.restored.push({ image: restore.imageIndex + 1, wasPlaced });
+        return out;
+      }
+      if (writeBlocked()) return out; // 已切文章:不再写,下一轮 tick 查到切换即停
+      // 写回未提交(取不到样本字符等):本轮没有发生提交,继续处理归位 / 剥占位;首次失败告警一次。
+      restore.restoreFailures += 1;
+      if (restore.restoreFailures === 1) out.restoreFailed.push(restore.imageIndex + 1);
+    }
+    const target = relocatable[0];
+    if (target && target.key) {
+      if (relocateMediaToMarkerOnce(node, target.marker, target.key, { keepSelection: true })) {
+        out.relocated.push(target.imageIndex + 1);
+        return out;
+      }
+      if (writeBlocked()) return out; // 已切文章:不再写,下一轮 tick 查到切换即停
+      stripOnly.add(target.marker); // 归位未提交(state 已变等):退回只剥占位,图片位置未能校正
+    }
+    // 只剥 stripOnly 里的占位;其余已登记图的占位受保护(可归位的留到下一轮逐张归位)。
+    // 未登记的本次前缀 marker 照旧剥除。
+    sweepMarkersOnce(
+      markerPrefix,
+      (m) => {
+        out.swept.push(m);
+        const t = tracks.find((x) => x.marker === m);
+        if (t && stripOnly.has(m)) out.unfixed.push(t.imageIndex + 1);
+      },
+      {
+        keepSelection: true,
+        protect: (m) => decisions.has(m) && !stripOnly.has(m),
+      },
+    );
+    return out;
+  };
   /**
    * 派发**完整鼠标事件序列**(pointer/mouse down→up→click)。裸 `.click()` 对某些 React
    * 组件(处理器挂在 pointerdown/mousedown、或依赖真实事件序列)偶发不触发——X 裁剪弹窗的
@@ -1341,6 +2202,9 @@ export default defineUnlistedScript(() => {
     // 成功且有图时交给守护在其结束时摘监听,否则在 finally 摘掉。
     stopMarkerGuard?.();
     const interactionLog = startInteractionLog();
+    // 正文保存观察(收尾保存稳定窗 + 守护诊断用,只读;内部吞掉构造异常,不会抛)。与交互时间线同生命周期:
+    // 守护接手时由守护停止时断开,否则 finally 断开。
+    const saveWatch = startSaveWatch();
     let guardStarted = false;
     /** 每张图的成功判定路径(诊断用,形如 `#1 pending-cap`;随守护告警输出)。 */
     const releases: string[] = [];
@@ -1364,6 +2228,7 @@ export default defineUnlistedScript(() => {
     // (commitEditorState / 封面 / 晚到追回;finally 复位为一律禁止)。
     pendingLate = [];
     lateRecovered = [];
+    filesAddedCount = 0;
     writeBlocked = articleSwitched;
     // 每次运行独立的 marker 前缀,避免与历史残留 / 并发写入串扰。
     const markerPrefix = `__MARKFLOW_IMG_${Math.random().toString(36).slice(2, 8)}_`;
@@ -1662,6 +2527,22 @@ export default defineUnlistedScript(() => {
       // B2:上传循环里成功归位的图片下标——收尾判定「不可追踪的超时图之后是否有图成功归位」
       // (media-order-uncertain 的条件之一)。
       const placedIndices: number[] = [];
+      // 逐图核对账本(见 ImageTrack):上传循环登记每张图「已归位(MEDIA 身份)」或「应为原文」,
+      // 收尾核对与导入后守护据此判断回退后该删占位、补传还是写回原文。
+      const tracks: ImageTrack[] = imageMarkers.map((m) => ({
+        ...m,
+        expected: 'failed',
+        key: null,
+        mediaId: null,
+        reuploaded: false,
+        lostWarned: false,
+        ambiguousWarned: false,
+        pendingIdWarned: false,
+        lostAwaitingFallback: false,
+        fallbackKey: null,
+        lostCounted: false,
+        restoreFailures: 0,
+      }));
       for (const { marker, imageIndex, fallbackText, source } of imageMarkers) {
         // 每张图前复查:中途切文章立即停手(marker 留在原文章,由错误文案引导用户回去检查),
         // 绝不对切换后的文章做 replace/sweep/封面等任何改写。
@@ -1683,8 +2564,7 @@ export default defineUnlistedScript(() => {
         }
         let outcome: UploadOutcome;
         try {
-          // budget 需 ≥ PENDING_CAP_MS(32s),否则 pending 封顶放行分支永不触发。留足余量取 40s。
-          outcome = await uploadOneImage(marker, file, 40_000);
+          outcome = await uploadOneImage(marker, file, IMAGE_UPLOAD_BUDGET_MS);
         } catch (e) {
           console.warn('[MarkFlow] 图片上传异常', e);
           outcome = { ok: false, reason: 'upload-exception', detail: String(e) };
@@ -1698,6 +2578,12 @@ export default defineUnlistedScript(() => {
           imageOk += 1;
           placedIndices.push(imageIndex);
           releases.push(`#${imageIndex + 1} ${outcome.via}`);
+          const track = tracks[imageIndex];
+          if (track) {
+            track.expected = 'placed';
+            track.key = outcome.mediaKey;
+            track.mediaId = outcome.mediaId;
+          }
           // 非 ready 放行:X 的上传可能仍在进行,其完成时的提交有覆盖归位的风险(由导入后守护兜底)。
           if (outcome.via !== 'ready') {
             console.warn('[MarkFlow] 图片未拿到 mediaId 即按放行规则判定成功', { image: imageIndex + 1, via: outcome.via });
@@ -1713,26 +2599,74 @@ export default defineUnlistedScript(() => {
         }
       }
       // B2 末轮追回:只按 pendingKey **精确**扫一遍当前 state(无归属证据的块不猜,末轮 FIFO 已删除)。
-      // 不额外等待——通道超时(基础 45s + 每图 45s)不随此放大;此后才到的、以及不可追踪超时图的
+      // 不额外等待——通道超时不随此放大(见 content.ts);此后才到的、以及不可追踪超时图的
       // 晚到块计入 orphan-media 审计与 media-order-uncertain 提示。
       while (pendingLate.length && (await recoverLateOnce())) {
         /* 每轮至多追回一张,直至无可认领 */
       }
-      // 追回的图:计成功、移除其 upload-timeout 明细(同一事实只记一份账,imageFail 仍由明细派生)。
-      const recoveredSet = new Set(lateRecovered);
-      if (recoveredSet.size) {
-        imageOk += recoveredSet.size;
-        for (let i = imageFailures.length - 1; i >= 0; i -= 1) {
-          const f = imageFailures[i]!;
-          if (f.reason === 'upload-timeout' && recoveredSet.has(f.index)) imageFailures.splice(i, 1);
+      // 追回的图:计成功、移除其 upload-timeout 明细(同一事实只记一份账,imageFail 仍由明细派生),
+      // 并登记为已归位。收尾补传途中(其 waitForNewMedia 每轮也会追回)可能再追回,故做成可重复调用、
+      // 只吸收新增条目。
+      const recoveredSet = new Set<number>();
+      const absorbLateRecovered = (): void => {
+        for (const r of lateRecovered) {
+          if (recoveredSet.has(r.imageIndex)) continue;
+          recoveredSet.add(r.imageIndex);
+          imageOk += 1;
+          for (let i = imageFailures.length - 1; i >= 0; i -= 1) {
+            const f = imageFailures[i]!;
+            if (f.reason === 'upload-timeout' && f.index === r.imageIndex) imageFailures.splice(i, 1);
+          }
+          const track = tracks[r.imageIndex];
+          if (track) {
+            track.expected = 'placed';
+            track.key = r.mediaKey;
+            track.mediaId = null; // 核对时见到即补记
+          }
+        }
+      };
+      absorbLateRecovered();
+
+      // --- 收尾保存稳定窗 + 逐图核对(X 偶发用旧快照整体覆盖正文,见 reconcileImages 段首注释)---
+      // 结果返回前先等 X 的正文保存在最后一次写入后完成并静默(上限 8s),再逐张核对:残留占位删除、
+      // 丢失的图在原位补传(每张最多一次、单次导入最多 2 张)、补不回如实计 image-lost。
+      // 有补传则再等一次稳定窗(上限 4s)做不补传的复核。
+      const reconcileCtx: ReconcileCtx = {
+        tracks,
+        markerPrefix,
+        baselineMedia: initialMedia,
+        files: imageMarkers.map((m) => images[m.imageIndex]?.file ?? null),
+        releases,
+        reuploadsUsed: 0,
+        onLost: (t, detail) => {
+          t.lostCounted = true;
+          imageOk -= 1;
+          pushFailure(t.imageIndex, t.source, 'upload', 'image-lost', detail);
+        },
+        onRevived: (t) => {
+          imageOk += 1;
+          for (let i = imageFailures.length - 1; i >= 0; i -= 1) {
+            const f = imageFailures[i]!;
+            if (f.reason === 'image-lost' && f.index === t.imageIndex) imageFailures.splice(i, 1);
+          }
+        },
+      };
+      if (tracks.length) {
+        stage = 'reconcile';
+        if ((await quiesceAndReconcile(reconcileCtx, saveWatch.tracker, QUIESCE_CAP_MS, true, 'first')) === 'switched') {
+          return { ok: false, error: ARTICLE_SWITCHED_ERROR, committed };
+        }
+        absorbLateRecovered();
+        if (reconcileCtx.reuploadsUsed > 0) {
+          const recheck = await quiesceAndReconcile(reconcileCtx, saveWatch.tracker, QUIESCE_RECHECK_CAP_MS, false, 'recheck');
+          if (recheck === 'switched') return { ok: false, error: ARTICLE_SWITCHED_ERROR, committed };
+          absorbLateRecovered();
         }
       }
-      // 同一事实只记一份账:失败数从明细派生,天然不会与明细条数漂移。
-      // 必须在 marker 残留审计**之前**取值:残留条目(marker-residue)只进明细、不计 imageFail
-      // ——图本身多已落地(imageOk 已计),残留的是需手动删除的占位文本,计入会让
-      // 「成功 = blockCount - imageFail」误减、toast「图片 N/M」分母虚高。
-      const imageFail = imageFailures.length;
-      // 兜底清扫:任何残留 marker(本次走 fallbackIndex 未删的 + 历史遗留的)一并清掉。
+      // 兜底清扫:清历史遗留与未登记的 marker。本次已登记图的占位**一律受保护**,交封面后终核处理
+      // (挪回占位处 / 剥占位 / 写回原文,并等落盘)与残留审计——清扫只会剥占位、不会挪图:首核之后、
+      // 清扫期间若 X 又回退到「图在文末、占位重现」,只剥占位会让图停在文末,终核看到「图在、占位不在」
+      // 就无从发现(复审 H1)。
       // 用通用前缀而非本次随机 prefix——否则清不掉之前导入残留的其它 prefix 的 marker。
       let sweepConfirmedClean = true;
       // onSwept 只做诊断日志,不计失败明细:能被 sweep 清掉的 marker 主要来自 fallbackIndex
@@ -1741,9 +2675,12 @@ export default defineUnlistedScript(() => {
       // 真正清不掉的残留仍由下方审计如实上报。
       if (articleSwitched()) return { ok: false, error: ARTICLE_SWITCHED_ERROR, committed };
       if (imageMarkers.length) {
-        sweepConfirmedClean = await sweepMarkers(MARKER_SWEEP_PREFIX, (markerText) => {
-          if (import.meta.env.DEV) console.info('[MarkFlow] 清扫收尾 marker', markerText);
-        },
+        sweepConfirmedClean = await sweepMarkers(
+          MARKER_SWEEP_PREFIX,
+          (markerText) => {
+            if (import.meta.env.DEV) console.info('[MarkFlow] 清扫收尾 marker', markerText);
+          },
+          (markerText) => tracks.some((t) => t.marker === markerText),
         );
       }
 
@@ -1760,6 +2697,29 @@ export default defineUnlistedScript(() => {
         if (articleSwitched()) return { ok: false, error: ARTICLE_SWITCHED_ERROR, committed };
       }
 
+      // --- 封面后终核(不补传):清扫 / 封面期间若又被回退,按同一规则收口,保证报告与正文一致 ---
+      // 稳定窗用短上限:此前无新写入时条件立即满足、不额外耗时;清扫刚写过则最多再等 1.5s。
+      // 此后(结果返回后)的回退交导入后守护。终核读不到编辑器节点(返回 no-node)时不另行处理:下方残留
+      // 审计会把「图已不在」的残留占位报为 image-lost,而不是 marker-residue。
+      if (tracks.length) {
+        stage = 'reconcile-final';
+        if ((await quiesceAndReconcile(reconcileCtx, saveWatch.tracker, QUIESCE_FINAL_CAP_MS, false, 'final')) === 'switched') {
+          return { ok: false, error: ARTICLE_SWITCHED_ERROR, committed };
+        }
+        absorbLateRecovered();
+        // 被计过丢失的图若原图又回来了(瞬时回退后 X 恢复较新状态),撤销丢失记账并收口位置。
+        if ((await reviveLostTracks(reconcileCtx)) === 'switched') {
+          return { ok: false, error: ARTICLE_SWITCHED_ERROR, committed };
+        }
+      }
+      // 同一事实只记一份账:失败数从明细派生,天然不会与明细条数漂移。
+      // 取值位置:逐图核对(含封面后终核)之后——image-lost(图被编辑器回退丢失)计入 imageFail;
+      // marker 残留审计**之前**——残留条目(marker-residue)只进明细、不计 imageFail(图本身多已
+      // 落地、imageOk 已计,残留的是需手动删除的占位文本,计入会让「成功 = blockCount - imageFail」
+      // 误减、toast「图片 N/M」分母虚高);其后的 orphan-media / media-order-uncertain 同样不计。
+      // 例外:残留审计把「图已不在」的残留占位改报 image-lost 时同步 +1(见下)。
+      let imageFail = imageFailures.length;
+
       // --- marker 残留审计:sweep 未能确认干净时,读最终 state 如实上报,不再静默 ---
       // 此前残留完全不可见:报告 0 失败、console 无 error(真机回归批次三 T6)。本次 run 的
       // marker 能从尾部序号映射回第几张图 → 计入明细(reason 'marker-residue');历史前缀的
@@ -1771,7 +2731,8 @@ export default defineUnlistedScript(() => {
       if (imageMarkers.length || !sweepConfirmedClean) {
         const node = findDraftStateNode();
         if (node) {
-          const auditMap = readEditorState(node).getCurrentContent().getBlockMap();
+          const auditContent = readEditorState(node).getCurrentContent();
+          const auditMap = auditContent.getBlockMap();
           const re = new RegExp(`${markerPrefix}(\\d+)__`, 'g'); // markerPrefix 仅含字母数字下划线,无需转义
           const residueIdx = new Set<number>();
           let foreignResidue = false;
@@ -1789,6 +2750,30 @@ export default defineUnlistedScript(() => {
             if (text.includes(MARKER_SWEEP_PREFIX) && !text.includes(markerPrefix)) foreignResidue = true;
           });
           for (const idx of residueIdx) {
+            const t = tracks[idx];
+            if (t && t.expected === 'placed') {
+              if (!observeTrack(auditContent, t, tracks, initialMedia).mediaPresent) {
+                // 已归位的图却认不回(终核读不到编辑器节点而跳过,或终核之后又被回退):这行占位是它仅剩的
+                // 位置锚点,报 marker-residue 会引导用户把它当垃圾删掉——改报 image-lost(计入 imageFail),
+                // 并转为「应为原文」,导入后守护随后把占位写回该图原文。
+                t.expected = 'failed';
+                t.lostAwaitingFallback = true;
+                reconcileCtx.onLost(t, 'reverted by editor; placeholder kept as the only position anchor');
+                imageFail += 1;
+                continue;
+              }
+              // 图在、占位也在(同样只会出现在终核跳过或终核之后又被回退时):报 marker-residue 会诱导用户删掉
+              // 占位、图却仍停在被回退到的旧位置(常为文末)。此处仍在 runImport 内、写入闸门有效,按终核同一
+              // 口径顺手收口一次(挪回占位处;不能挪则只剥占位串并告警);收口不了才如实报残留。
+              if ((await relocateOrStrip(reconcileCtx, t, '残留审计')) === 'switched') {
+                return { ok: false, error: ARTICLE_SWITCHED_ERROR, committed };
+              }
+              // 读最新 state 复核:占位确已不在才算收口;仍在(写入未落地)则如实报残留。
+              const after = findDraftStateNode();
+              // 读不到节点时无法确认已收口:保守地照报残留,不静默放过(复审 N2)。
+              if (after && findMarkerBlock(readEditorState(after).getCurrentContent(), t.marker) === null) continue;
+            }
+            // 失败图的残留(原文写回失败等)照旧报 marker-residue。
             pushFailure(idx, imageMarkers[idx]?.source ?? '', 'upload', 'marker-residue');
           }
           if (fragmentResidue) console.warn('[MarkFlow] 检测到本次导入 marker 的残片(不完整形状),请在正文手动检查删除');
@@ -1844,7 +2829,11 @@ export default defineUnlistedScript(() => {
       if (imageFailures.length) console.warn('[MarkFlow] 图片失败明细', imageFailures);
       if (settleTimeouts.length) console.warn('[MarkFlow] settle 超时阶段', settleTimeouts);
       if (imageMarkers.length) {
-        startMarkerGuard(markerPrefix, articleSwitched, interactionLog, releases);
+        startMarkerGuard(markerPrefix, articleSwitched, interactionLog, releases, {
+          tracks,
+          baselineMedia: initialMedia,
+          saves: saveWatch,
+        });
         guardStarted = true;
       }
       return {
@@ -1882,7 +2871,10 @@ export default defineUnlistedScript(() => {
       writeBlocked = () => true;
       pendingLate = [];
       importInFlight = false;
-      if (!guardStarted) interactionLog.detach();
+      if (!guardStarted) {
+        interactionLog.detach();
+        saveWatch.disconnect();
+      }
     }
   };
 
