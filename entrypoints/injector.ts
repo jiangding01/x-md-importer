@@ -2976,8 +2976,26 @@ export default defineUnlistedScript(() => {
     try {
       const existing = readTitleValue(field);
       // C33:现有标题与目标相同 → 视同已设好,不构成冲突(ask 模式以 keep 探测,此前会
-      // 返回 applied:false 触发「覆盖/保留」弹窗,同标题也问一遍)。不写入,免得无谓派发事件。
+      // 返回 applied:false 触发「覆盖/保留」弹窗,同标题也问一遍)。
+      // 但仍要**重写一次**(先清空再写回):真机实证(2026-11-13),在一篇文章的编辑页里点「新建」
+      // 时,X 把上一篇的标题原样带进新草稿的标题框和它自己的 React 状态,却从未存进新草稿——
+      // 列表显示「(Needs title)」。此时「标题框已等于目标」是假象,直接返回会让新草稿永远没有标题。
+      // 同值写入 React 不会触发 onChange(值追踪器认为没变),所以先清空制造一次真实变化。
       if (existing.trim().length > 0 && existing.trim() === title.trim()) {
+        if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) {
+          const proto =
+            field instanceof HTMLInputElement
+              ? HTMLInputElement.prototype
+              : HTMLTextAreaElement.prototype;
+          const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+          if (setter) {
+            setter.call(field, '');
+            field.dispatchEvent(new Event('input', { bubbles: true }));
+            setter.call(field, existing);
+            field.dispatchEvent(new Event('input', { bubbles: true }));
+            field.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        }
         return { ok: true, applied: true };
       }
       // keep 策略:已有非空标题则跳过,不视为错误。
