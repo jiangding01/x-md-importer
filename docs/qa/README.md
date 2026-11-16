@@ -13,10 +13,10 @@
 
 ## 采集口径（复现方式）
 
-- 侧栏宽度 **420px**（@2x 采集）；富状态视口 **1700px**、空态/弹窗 **900px**。
+- 侧栏宽度 **420px**（实现截图为 1x；设计稿对比时可 @2x 采集）；富状态视口 **1700px**、空态/弹窗 **900px**。
 - 设计稿 = `~/Downloads/x-importer/design_handoff_markflow/MarkFlow v3.dc.html`（Vue 原型，需同目录 `support.js`）。
 - 实现 = `pnpm build` 产物 `.output/chrome-mv3/sidepanel.html`，静态托管后用 Playwright 驱动。
-  - 2026-11-13 起侧边栏依赖扩展 API（不在扩展环境会报 “This script should only be loaded in a browser extension” 并白屏）：静态托管时须在页面脚本运行前（`page.addInitScript`）注入模拟的 `globalThis.browser`（`runtime.id` 非空；`tabs.query` 返回一个 `https://x.com/compose/articles/edit/<id>` 的活动标签；`tabs.sendMessage` 对 `markflow:probe` 回「编辑器 / Draft 实例 / 上传通道均就绪、已有内容」，对 `markflow:import` 回 `ok:true`）与只含 `runtime.id` 的 `globalThis.chrome`（不提供 `chrome.storage`，存储自动回退 localStorage）。待发布页截图即按此方式采集：载入示例 → 预览 → 展开能力映射 → 预检 → 导入到 X → 覆盖。
+  - 2026-11-13 起侧边栏依赖扩展 API（不在扩展环境会报 “This script should only be loaded in a browser extension” 并白屏）：静态托管时须在页面脚本运行前（`page.addInitScript`）注入模拟的 `globalThis.browser`（`runtime.id` 非空；`tabs.query` 返回一个 `https://x.com/compose/articles/edit/<id>` 的活动标签；`tabs.sendMessage` 对 `markflow:probe` 回「编辑器 / Draft 实例 / 上传通道均就绪、已有内容」，对 `markflow:import` 回 `ok:true`）与只含 `runtime.id` 的 `globalThis.chrome`（不提供 `chrome.storage`，存储自动回退 localStorage）。两者的 `runtime` 还须提供 `getManifest()`（返回含 `version` 的对象），否则设置页底部版本号显示 `vdev`；`permissions.contains` / `permissions.request` 返回 `true`，否则导入时会弹「远程图未获授权」。截图为 420px 宽的 1x 图（2026-11-16 按此口径重拍）。待发布页截图即按此方式采集：载入示例 → 预览 → 展开能力映射 → 预检 → 导入到 X → 覆盖。
 - 记录 Tab 通过 `localStorage['markflow:history']` 注入与设计稿相同的 3 条数据以做 1:1 对比。
 
 ## 覆盖矩阵（13 组）
