@@ -1,0 +1,150 @@
+<!doctype html>
+<!--
+  Chrome 应用商店截图（1280×800）排版模板：左边标题与说明，右边放 src/ 下的界面截图。
+  地址参数：?shot=write|map|import|report|themes&lang=en|zh，截图文件为 src/<图名>-<lang>.png
+  导出 PNG：node scripts/render-promo.mjs（见 docs/store/LISTING.md「素材」）
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>MarkFlow screenshot</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+      html,
+      body {
+        width: 1280px;
+        height: 800px;
+        overflow: hidden;
+      }
+      body {
+        display: grid;
+        grid-template-columns: 420px 1fr;
+        align-items: center;
+        gap: 56px;
+        padding: 0 64px 0 72px;
+        background:
+          radial-gradient(520px 420px at 72% 50%, rgb(29 155 240 / 0.1), transparent 70%),
+          #0b0d10;
+        color: #fff;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Helvetica Neue", sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 28px;
+        color: rgb(255 255 255 / 0.7);
+        font-size: 18px;
+        font-weight: 700;
+      }
+      .brand .logo {
+        width: 40px;
+        height: 40px;
+        border-radius: 9px;
+        overflow: hidden;
+        box-shadow: 0 0 0 1px rgb(255 255 255 / 0.22);
+      }
+      .brand .logo img {
+        display: block;
+        width: 46px;
+        height: 46px;
+        margin: -3px;
+      }
+      h1 {
+        font-size: 46px;
+        font-weight: 800;
+        line-height: 1.12;
+        letter-spacing: -0.015em;
+      }
+      h1 em {
+        font-style: normal;
+        color: #1d9bf0;
+      }
+      p {
+        margin-top: 20px;
+        font-size: 20px;
+        line-height: 1.5;
+        color: rgb(255 255 255 / 0.68);
+      }
+      .frame {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 20px;
+        height: 700px;
+      }
+      .frame img {
+        max-width: 100%;
+        max-height: 100%;
+        border-radius: 16px;
+        box-shadow:
+          0 0 0 1.5px rgb(255 255 255 / 0.16),
+          0 24px 64px rgb(0 0 0 / 0.7);
+      }
+      /* themes 一张放两张侧边栏截图并排 */
+      .frame.pair img {
+        max-width: calc(50% - 10px);
+      }
+    </style>
+  </head>
+  <body>
+    <div>
+      <div class="brand">
+        <span class="logo"><img src="../../../public/icon-128.png" alt="" /></span>MarkFlow
+      </div>
+      <h1 id="title">MarkFlow</h1>
+      <p id="desc"></p>
+    </div>
+    <div class="frame" id="frame"></div>
+    <script>
+      // 标题里用 *…* 标出强调色的词；imgs 为 src/ 下的文件名（不含 -<lang>.png）
+      const copy = {
+        write: {
+          imgs: ['write'],
+          en: ['Write in *Markdown*', 'Paste or type your draft in the side panel and preview it the way X will show it.'],
+          zh: ['用 *Markdown* 写', '在侧边栏粘贴或输入草稿，预览就是导入 X 之后的样子。'],
+        },
+        map: {
+          imgs: ['map'],
+          en: ['No *surprises*', 'The Capability Map shows what every element becomes in X before you import. Nothing is silently dropped.'],
+          zh: ['导入前*心里有数*', '「能力映射」逐项列出每种元素在 X 里会变成什么，不会悄悄丢内容。'],
+        },
+        import: {
+          imgs: ['import'],
+          en: ['*One click* into X', 'Headings, code blocks, tables, math and images land in the X article editor. Publishing is still up to you.'],
+          zh: ['*一键*导入 X', '标题、代码块、表格、公式和图片直接写进 X 文章编辑器，发布仍由你来点。'],
+        },
+        report: {
+          imgs: ['report'],
+          en: ['Every item *accounted for*', 'The import report lists what succeeded, what fell back to plain text and why an image failed.'],
+          zh: ['每一项都*有交代*', '导入报告列出成功、降级和失败的每一项，图片失败也会说明原因。'],
+        },
+        themes: {
+          imgs: ['themes-a', 'themes-b'],
+          en: ['Make it *yours*', 'Four themes with light and dark modes, history you can search and re-import, all stored locally.'],
+          zh: ['*顺手*的工作台', '四套主题可切深浅色，导入记录可搜索、可重导，全部只存在本机。'],
+        },
+      };
+      const params = new URLSearchParams(location.search);
+      const shot = params.get('shot') in copy ? params.get('shot') : 'write';
+      const lang = params.get('lang') === 'zh' ? 'zh' : 'en';
+      const [title, desc] = copy[shot][lang];
+      document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+      document.getElementById('title').innerHTML = title.replace(/\*(.+?)\*/g, '<em>$1</em>');
+      document.getElementById('desc').textContent = desc;
+      const frame = document.getElementById('frame');
+      frame.classList.toggle('pair', copy[shot].imgs.length > 1);
+      for (const name of copy[shot].imgs) {
+        const img = document.createElement('img');
+        img.alt = '';
+        img.src = `src/${name}-${lang}.png`;
+        frame.append(img);
+      }
+    </script>
+  </body>
+</html>
