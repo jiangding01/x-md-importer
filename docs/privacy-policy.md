@@ -47,7 +47,7 @@ MarkFlow(「本扩展」)是一个把 Markdown 导入 X(原 Twitter)文章编辑
 
 ### 7. 联系方式
 
-如有疑问,请联系:<!-- 联系邮箱 -->
+如有疑问,请在 GitHub 提交 issue:<https://github.com/jiangding01/x-md-importer/issues>。
 
 ---
 
@@ -92,4 +92,4 @@ If this policy changes, it will be updated together with an extension release an
 
 ### 7. Contact
 
-Questions: <!-- 联系邮箱 -->
+Questions: open an issue at <https://github.com/jiangding01/x-md-importer/issues>.

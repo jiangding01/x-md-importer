@@ -7,7 +7,9 @@
 
 ## [Unreleased]
 
-> 2026-10-26 全面审查第三批阶段 A、阶段 B 的 I2 / I4 与阶段 C1–C4(见 `docs/review/修复方案-2026-10-26-第三批.md`),计划随 0.5.1 发布。v0.5.0 不再单独打 tag(2026-11-04 真机回归 A11 未通过,决定 0.5.0 的改动随 0.5.1 一并发布)。单测 818 → **930**。
+## [0.5.1] - 2026-11-16
+
+> 2026-10-26 全面审查第三批阶段 A、阶段 B 的 I2 / I4 与阶段 C1–C4(见 `docs/review/修复方案-2026-10-26-第三批.md`),以及 2026-11 发版回归中的修复。**本版同时发布未单独打 tag 的 [0.5.0] 全部改动**(2026-11-04 真机回归 A11 未通过,决定 0.5.0 随 0.5.1 一并发布;从 0.4.0 升级请一并阅读下方 [0.5.0] 段)。发版前按 `docs/qa/真机回归执行清单-v0.5.1-发版.md` 完成 45 条真机回归(A 组 19 条全部通过)。单测 818 → **930**。
 
 ### 修复
 
@@ -40,8 +42,10 @@
 - **CI 加 ESLint(O9,第三批阶段 C1)**:新增 `pnpm lint`,只开 `react-hooks/rules-of-hooks` 与 `react-hooks/exhaustive-deps` 两条规则(不用插件的 recommended 预设,其 React Compiler 规则与本项目无关),CI 在类型检查后执行;有意省略依赖处须写豁免注释,豁免失效时报错。新增 devDependencies:`eslint`、`@typescript-eslint/parser`、`eslint-plugin-react-hooks`。
 - **删除死代码(O8)**:`stripFirstImageLine` / `isImageLine`(仅测试在用)、context 里无人消费的 `editorHasContent`、`useTheme.setAccent` 与 `themes.ACCENTS`;设置页与素材板各一份的文件夹错误文案合并为 `lib/ui/folderErrText`。
 
-## [0.5.0] - 2026-10-22
+## [0.5.0] - 未单独发布(随 0.5.1 发布)
 
+> 本段改动未打 tag、未单独发布,随 0.5.1 一并发布(原定 2026-10-22)。
+>
 > 上线前两轮审查的修复合集:2026-08 全面审查(2 P0 / 12 P1 / 31 P2,见 `docs/review/上线前全面审查-2026-08-18.md`)的五批修复,加 2026-10 发版前复审(见 `docs/review/发版前审查-2026-10-22.md`)的阶段 0～3 修复,以及打 tag 前对 PR #33 的复审修复(见 `docs/review/修复方案-2026-10-23.md`:本地图同名歧义、晚到图片不再猜归属、权限提示与 ask 重复弹窗、解析标题单一来源与性能、SSRF 补漏),以及 2026-10-26 全面审查第一批(见 `docs/review/修复方案-2026-10-26.md`:`$$` 公式不再吞正文、去标题按块不丢上下文、引用里的代码原样保留、草稿不被自己的保存回声回退、报告记实际解析开关)与第二批阶段 A(见 `docs/review/修复方案-2026-10-26-第二批.md`:未闭合围栏到文末按代码写入、HTML 注释不写入、frontmatter 引号转义、强调不截断链接、链接 title 不截断 URL)与阶段 B(新建文章页状态、拖放文字、重探不闪烁、本地封面入口、报告卡三态、记录上限即时生效、清除数据断开文件夹、文案本地化、隐私政策订正);另含 v0.4.0 tag 之后才合入 main 的 PR #31(存储加载路径校验)。主线是**写入安全**(钉死目标文章、等 React 提交、超时晚到图片追回)、**解析正确性**(CommonMark 边角三十余项)、**数据不丢**(写失败可见、多窗口同步、恢复安全化)与**上架合规**(权限最小化、manifest 国际化、隐私政策)。单测 307(v0.4.0 tag)→ **818**。
 >
 > 编号约定:`P0-x`/`P1-x`/`P2-x` 对应 2026-08 审查报告;`A`(解析)/`B`(注入)/`C`(工作区与 UI)/`D`(发版合规)编号对应 2026-10 发版前审查。同一问题 8 月修了一半、10 月补完的,下面合并为一条。
@@ -407,8 +411,9 @@ v0.2.0 发布前按 `docs/qa/真机回归测试-v0.2.0加固批.md` 做全量真
 - 「写入 X 文章」、预检、连接文件夹等为 **mock 时序演示**（`lib/workspace/importService.ts`、`lib/bridge/useConnection.ts` 等），真实注入引擎待 M1 接入。
 - 设计稿「演示专用」内容（模拟 X 编辑页、setTimeout 时序）未照搬进产品。
 
-[Unreleased]: https://github.com/jiangding01/x-md-importer/compare/v0.5.0...HEAD
-[0.5.0]: https://github.com/jiangding01/x-md-importer/compare/v0.4.0...v0.5.0
+[Unreleased]: https://github.com/jiangding01/x-md-importer/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/jiangding01/x-md-importer/compare/v0.4.0...v0.5.1
+[0.5.0]: https://github.com/jiangding01/x-md-importer/compare/v0.4.0...v0.5.1
 [0.4.0]: https://github.com/jiangding01/x-md-importer/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jiangding01/x-md-importer/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/jiangding01/x-md-importer/compare/v0.2.1...v0.2.2
