@@ -9,31 +9,24 @@ const wrap: CSSProperties = {
   padding: '14px 18px 11px',
 };
 
+// 品牌 Logo 直接用扩展图标,不随主题字体 / 强调色变化。
+// icon-128.png 四周有 8px 透明边(方块 112px、圆角约 31px):图片放大到 34px 再由 30px 容器裁掉透明边,
+// 容器圆角 8px 与方块圆角吻合。图标是深色方块,深色主题下会融进背景,用主题分隔线色描 1px 轮廓
+// (浅色主题下几乎不可见)。
 const logo: CSSProperties = {
   width: 30,
   height: 30,
-  borderRadius: 9,
-  background: 'var(--ink)',
-  // P2-30:玻璃主题下 --p 是半透明面板色,当前景文字色会被 --ink 底透出,对比度不足——
-  // 改用不透明的 --pSolid(其余主题与 --p 同值,视觉零变化)。
-  color: 'var(--pSolid)',
-  display: 'grid',
-  placeItems: 'center',
-  font: "700 14px var(--fDisp)",
-  position: 'relative',
-  transition: 'background .35s',
+  borderRadius: 8,
+  overflow: 'hidden',
+  boxShadow: '0 0 0 1px var(--line)',
   flex: 'none',
 };
 
-const logoDot: CSSProperties = {
-  position: 'absolute',
-  right: -3,
-  bottom: -3,
-  width: 11,
-  height: 11,
-  borderRadius: '50%',
-  background: 'var(--acc)',
-  border: '2.5px solid var(--p)',
+const logoImg: CSSProperties = {
+  display: 'block',
+  width: 34,
+  height: 34,
+  margin: -2,
 };
 
 const segWrap: CSSProperties = {
@@ -66,8 +59,7 @@ export function Header() {
   return (
     <div style={wrap}>
       <div style={logo}>
-        M
-        <span style={logoDot} />
+        <img src="/icon-128.png" alt="" width={34} height={34} style={logoImg} draggable={false} />
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         <span style={{ font: '600 13.5px var(--fDisp)', color: 'var(--ink)', letterSpacing: '-.2px' }}>
