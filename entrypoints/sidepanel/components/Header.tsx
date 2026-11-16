@@ -11,16 +11,17 @@ const wrap: CSSProperties = {
 
 // 品牌 Logo 直接用扩展图标,不随主题字体 / 强调色变化。
 // icon-128.png 四周有 8px 透明边(方块 112px、圆角约 31px):图片放大到 34px 再由 30px 容器裁掉透明边,
-// 容器圆角 8px 与方块圆角吻合。图标是深色方块,深色主题下会融进背景,用主题分隔线色描 1px 轮廓
-// (浅色主题下几乎不可见)。
+// 容器圆角 8px 与方块圆角吻合。图标是深色方块,深色主题下会融进背景:描 1px 白色 22% 轮廓
+// (主题分隔线色只有 10%,轮廓几乎看不出);浅色主题用分隔线色,几乎不可见。
 const logo: CSSProperties = {
   width: 30,
   height: 30,
   borderRadius: 8,
   overflow: 'hidden',
-  boxShadow: '0 0 0 1px var(--line)',
   flex: 'none',
 };
+const logoRingDark = '0 0 0 1px rgba(255,255,255,.22)';
+const logoRingLight = '0 0 0 1px var(--line)';
 
 const logoImg: CSSProperties = {
   display: 'block',
@@ -58,7 +59,7 @@ export function Header() {
 
   return (
     <div style={wrap}>
-      <div style={logo}>
+      <div style={{ ...logo, boxShadow: dark ? logoRingDark : logoRingLight }}>
         <img src="/icon-128.png" alt="" width={34} height={34} style={logoImg} draggable={false} />
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
